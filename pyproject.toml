@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-human"
+version = "0.1.0"
+description = "Screen capture and lock screen typing for a Mac that a person and an agent share: a ScreenCaptureKit screenshot tool and a virtual HID keyboard helper"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Konstantinos Georgiou" }]
+dependencies = []
+keywords = ["macos", "screencapturekit", "screenshot", "karabiner", "virtual-hid", "claude", "remote"]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: MacOS", "Topic :: Utilities"]
+
+[project.urls]
+Homepage = "https://github.com/drkostas/claude-human"
+
+[project.scripts]
+claude-human = "claude_human.cli:main"
+
+[project.optional-dependencies]
+macos = ["pyobjc-framework-Quartz>=10; sys_platform == 'darwin'"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+claude_human = ["tools/sckshot/*.swift", "tools/sckshot/*.sh", "tools/vhid/*.cpp", "tools/vhid/*.sh"]
