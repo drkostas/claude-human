@@ -159,6 +159,40 @@ What it does for you.
 - With `CLAUDE_HUMAN_NOTIFY_HOLD=1` set (in a test run, for example) it sends nothing and says so.
 - `poll` turns `7d` into `168h`, because ntfy reads durations the Go way and has no day unit.
 
+## Asking a person to do something
+
+When an assistant needs a person for a step it cannot do itself (approve a permission, sign in, plug a cable in), it opens a task. `claude_human.tasks` keeps one open task per capability and subject, tells the person once, and closes the task only when a check says the thing is done. Pressing "done" runs the check. It never closes the task by itself.
+
+```bash
+claude-human task open connect device://backup-disk --reason "The nightly backup needs its disk." \
+    --steps "Connect the backup disk to the Mac with its USB cable and wait for it to appear in Finder." \
+    -- test -d /Volumes/Backup
+claude-human task list                  # the open tasks, with the chain each reader can show
+claude-human task verify                # run every open task's check, close the ones that pass
+claude-human task serve --port 8790     # the same tasks over HTTP on 127.0.0.1, with a bearer token
+```
+
+```python
+from claude_human import notify, tasks
+
+engine = tasks.TaskEngine(tasks.SqliteTaskStore(), notifier=notify.from_env(), link="myapp://task/{id}")
+task_id, new = engine.request(
+    "approve", "app://backup", "The backup needs Full Disk Access.", owner="backup-bot",
+    steps="System Settings > Privacy & Security > Full Disk Access > enable Backup",
+    verify=["/usr/local/bin/backup", "--check-access"],
+    handoffs=[tasks.Handoff("url", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+                            "Open the settings")])
+engine.verify_pending()                 # on a schedule
+```
+
+The check after `--` is a list of arguments and runs without a shell. A string in its place is refused. A check that is missing, fails to start or runs past its timeout counts as "not done". The task file is `~/.local/share/claude-human/tasks.db` unless `CLAUDE_HUMAN_TASKS_DB` names another. Whether a task is open is derived from its events, and the file refuses any edit of an event.
+
+A handoff is one way to put the person in front of the thing (a link, a station window, plain steps). The reader says what it can show (`supports`) and where it runs (`platform`), the server orders the chain, and the steps are always the last entry when the reader can show words. The app renders `head`, the first entry that is not words.
+
+Every part can be replaced. A program with its own records implements `TaskStore` (and `HandoffResolver`, `Authorizer` or `Verifier` when it needs to) and keeps the engine. `Authorizer.may_act` refusals are recorded before they are raised.
+
+The server answers `GET /pending`, `GET /task/<id>`, `GET /history`, `GET /comments`, `POST /done/<id>`, `POST /open/<id>`, `POST /comment/<id>` and `POST /withdraw/<id>`, and refuses to listen on anything but a loopback address. Its token is `CLAUDE_HUMAN_TASKS_TOKEN`, or the file `~/.config/claude-human/tasks-token`, made with mode 0600 on first use.
+
 ## Phone notifications without Firebase
 
 `js/` is the npm package `@drkostas/expo-ntfy`. It has a config plugin, the ntfy wire logic, and the Expo glue for notifications. See [js/README.md](js/README.md).
@@ -177,7 +211,7 @@ A major macOS upgrade can reset these grants. Nothing can grant them again excep
 
 ## Claude Code skill
 
-The package ships a Claude Code skill that teaches an agent how to use all of this safely. It covers building and signing the helpers, sending notifications and writing watchers, the macOS grants and what resets them, the consent rules for typing a password, the Android delivery traps, and a catalogue of the failures behind each rule.
+The package ships a Claude Code skill that teaches an agent how to use all of this safely. It covers building and signing the helpers, sending notifications and writing watchers, asking a person for a step with a task, the macOS grants and what resets them, the consent rules for typing a password, the Android delivery traps, and a catalogue of the failures behind each rule.
 
 ```bash
 claude-human skill                      # writes ~/.claude/skills/claude-human/SKILL.md
@@ -194,7 +228,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[test,macos]'
 cd js && npm ci && npm test
 ```
 
-The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the ntfy logic, and the config plugin run against a fixture Android project. On macOS one test also compiles `sckshot` without signing it.
+The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the task engine and its HTTP server against a temporary task file, the ntfy logic, and the config plugin run against a fixture Android project. On macOS one test also compiles `sckshot` without signing it.
 
 ## License
 
