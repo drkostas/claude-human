@@ -1,6 +1,6 @@
 ---
 name: claude-human
-description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, and delivering ntfy notifications to an Android phone that the OS does not stop. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, or when phone notifications stop arriving.
+description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, and writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, or when someone asks to be told when something happens.
 ---
 
 # claude-human
@@ -190,6 +190,66 @@ adb -s "$PHONE" shell dumpsys notification --noredact | grep "$PKG"   # did a me
 - `pollTopicOnce` with `registerTopicPoll` is a floor under the service. Android decides when it runs.
 - Hermes stores any string with a non-ASCII character as UTF-16 in the bundle. Search for both encodings before you decide a string is missing from a build.
 
+## Sending a notification to a person
+
+`claude_human.notify` publishes to a topic on an ntfy server. It uses only the standard library, and every notifier answers `(ok, detail)` instead of raising when the server is down, slow or refuses the message.
+
+```python
+import os
+from claude_human import notify
+
+n = notify.NtfyNotifier("https://ntfy.example.org/alerts", token=os.environ.get("NTFY_TOKEN"))
+ok, detail = n.notify("Backup failed", "The nightly dump exited 1. The log is attached below.",
+                      priority="high", link="myapp://task/42", tags=["warning"])
+ok, messages = n.poll("10m")             # what the server holds, to prove the send arrived
+
+floor = notify.FileNotifier("~/.local/state/myapp/notifications.jsonl")
+ok, detail = notify.FirstThatWorks(n, floor).notify("Backup failed", "...")
+```
+
+```bash
+export CLAUDE_HUMAN_NTFY_TOKEN=...       # or CLAUDE_HUMAN_NTFY_USER and CLAUDE_HUMAN_NTFY_PASSWORD
+claude-human notify --url https://ntfy.example.org/alerts --title "Backup failed" --priority high "The nightly dump exited 1."
+echo "long text" | claude-human notify --url https://ntfy.example.org/alerts --file ~/notify.jsonl -
+```
+
+- Record both halves of the answer. A sender that hides its own failure turns "nobody was told" into "nobody knows whether anybody was told". `detail` is the message id on success and the reason on failure.
+- A successful send means the message left the Mac. It does not mean the person read it. `poll` shows that the server holds it, and only a receipt from the phone shows it was opened.
+- The token and the password come from the environment. The command has no option that takes either, so neither appears in the process list. `--token-env` names a different variable.
+- Messages go to the server as JSON. ntfy's header form puts the title in an HTTP header, which Python encodes as latin-1, so a title with a check mark, a Greek word or an emoji used to crash the send.
+- Publishing to `127.0.0.1` from the server's own host is correct. A `link`, `attach` or action URL on a loopback address is not, because the phone opens it and reaches itself. Such a message is refused with a reason. `allow_loopback_links=True` turns the check off for a case you have thought about.
+- A test run must never reach a person. Set `CLAUDE_HUMAN_NOTIFY_HOLD=1` in the test environment, or pass `hold="test run"`, and every send answers `held` without a request. A program that adds its own rules (quiet hours, muted categories, a daily budget) applies them before it calls `notify`, in one place.
+- `poll` turns days into hours, because ntfy reads `since` as a Go duration and answers `7d` with a 400.
+- The priority is a name (`min`, `low`, `default`, `high`, `max`, `urgent`) or a number from 1 to 5.
+
+## Watching a condition, then telling someone
+
+A watcher is a short script that a scheduler (launchd, cron, systemd) runs every few minutes. It checks one source (a repository, an inbox, a health check, a deadline) and, only when something changed, sends one signal. The signal goes to a person through `claude_human.notify`, or into a running Claude chat through the claude-ops package (`claude_ops.inject.inject`, or `claude-ops inject --target NAME --text ...`). Decide which before you write the script. A person gets a notification for something they should know or do. A chat gets a prompt for work it should do now.
+
+```python
+from pathlib import Path
+from claude_ops.watch import State, lock, run_source
+from claude_human import notify
+
+with lock(Path("/tmp/repo-watch.lock")) as got:
+    if got:
+        state = State(Path.home() / ".local/state/repo-watch/state.json")
+        tell = notify.watch_sender(notify.from_env(), title="New issues", priority="high")
+        run_source(state, "issues", fetch=list_issue_ids, describe=lambda new: f"{len(new)} new issue(s)",
+                   target="me", send=tell)          # leave out send= to wake the chat named by target
+```
+
+The rules, each from a watcher that went wrong.
+
+- Stay silent when nothing changed. A watcher that sends "nothing new" every five minutes teaches the person to ignore it, and then misses the one message that mattered.
+- Advance the state only after the signal was delivered. `run_source` marks items seen only when `send` answers `{"result": "sent"}`, so a closed chat or a failed send offers the same items again next run. `watch_sender` gives a notifier that answer.
+- The first run records what is already there and sends nothing, so history is not replayed as news.
+- A source that keeps failing (an expired token, a blocked address) sends one alert after a few runs in a row, and nothing more until it works again. Silence from a broken source looks the same as silence from a quiet one.
+- Take the lock, so two scheduled runs cannot both send.
+- Never send with a loose `osascript -e 'display notification ...'` or `terminal-notifier` call. It ignores quiet hours, mutes and budgets, reaches only the person sitting at the Mac, and leaves no record that it fired. Use one notification path for everything, and add rules to that path.
+- A prompt sent into a chat is influence without a gate. Send only text you would trust that chat to act on, and keep secrets out of it. claude-ops records a hash of the text by default, not the text.
+- A job that cuts the network it reports over (joining a device's setup network, restarting the network stack) reports after it is back online, never during.
+
 ## Failure catalogue
 
 | Symptom | Cause | How it was caught | Fix |
@@ -220,3 +280,6 @@ adb -s "$PHONE" shell dumpsys notification --noredact | grep "$PKG"   # did a me
 | "Session expired" seconds after opening | the old token was revoked before the new one reached the page | the server log said why it refused | keep a short handover window for a replaced grant |
 | Typed text did not appear in a settings search field | synthetic characters do not reach SwiftUI fields | Command+A visibly worked, the typing did not | paste with Command+V |
 | A gesture change did not take effect | the WebView cached the page | the hint text on the page was the old one | serve `/view` with no-store |
+| Alerts stopped with a Greek title | ntfy's header form encodes the title as latin-1 | `UnicodeEncodeError` in the sender's log | publish as JSON |
+| Every test run sent real notifications | the test asked for a file, but the network sender joined anyway | the person reported alerts about a task that did not exist | `CLAUDE_HUMAN_NOTIFY_HOLD` in the test environment |
+| No notifications for weeks, no error | the sender had no topic URL in the process that ran it | the sender said "not configured" from a process whose config file named the URL | read configuration in the module that sends, and record each failure |

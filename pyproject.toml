@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-human"
-version = "0.2.0"
-description = "Screen capture, lock screen typing and a phone view of one window, for a Mac that a person and an agent share"
+version = "0.3.0"
+description = "Screen capture, lock screen typing, a phone view of one window and ntfy notifications, for a Mac that a person and an agent share"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Konstantinos Georgiou" }]
 dependencies = []
-keywords = ["macos", "screencapturekit", "screenshot", "karabiner", "virtual-hid", "claude", "remote"]
+keywords = ["macos", "ntfy", "notifications", "screencapturekit", "screenshot", "karabiner", "virtual-hid", "claude", "remote"]
 classifiers = ["Programming Language :: Python :: 3", "Operating System :: MacOS", "Topic :: Utilities"]
 
 [project.urls]

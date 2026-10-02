@@ -2,14 +2,15 @@
 
 claude-human is a small set of tools for a Mac that a person and an agent share. I run a system on my own Mac that hands tasks to me on my phone when it needs a person (approve a password prompt, look at a window, type a password at the lock screen). These are the parts of it that are not tied to that system.
 
-There are four pieces.
+There are five pieces.
 
 - `claude_human.screenshot` captures the screen or one window through ScreenCaptureKit, lists the windows a person works in, and tells a locked screen apart from a password panel.
 - `claude_human.unlock` types a password at the lock screen or into a SecurityAgent password panel through Karabiner's virtual HID keyboard, and then checks that it worked.
 - `claude_human.station` shows one window of the Mac on a phone and turns the person's taps and keys into clicks and key presses on the Mac, so a person can do a step on the Mac from anywhere.
+- `claude_human.notify` sends a message to a person through an ntfy server, with a file as the fallback, and plugs into a scheduled watcher.
 - `@drkostas/expo-ntfy` (in `js/`) gets messages from a self-hosted ntfy server to an Android phone without Firebase, through a native foreground service that an Expo config plugin adds to the app.
 
-The Python parts need macOS. The JavaScript part needs an Expo app.
+The Python parts need macOS, except `claude_human.notify`, which runs anywhere Python does. The JavaScript part needs an Expo app.
 
 ## Install
 
@@ -133,6 +134,31 @@ How it behaves.
 
 Please read [SECURITY.md](SECURITY.md) before you use this part. It types a password, and it should only ever do that on your own Mac.
 
+## Telling a person something
+
+```bash
+export CLAUDE_HUMAN_NTFY_TOKEN=tk_...            # read from the environment, never from an option
+claude-human notify --url https://ntfy.example.org/alerts --title "Backup failed" --priority high "The nightly dump exited 1."
+```
+
+```python
+from claude_human import notify
+
+n = notify.from_env("https://ntfy.example.org/alerts")     # token or basic auth from the environment
+ok, detail = n.notify("Backup failed", "The nightly dump exited 1.", priority="high",
+                      link="myapp://task/42", tags=["warning"])
+ok, messages = n.poll("10m")                                 # read back what the server holds
+```
+
+Every notifier returns `(ok, detail)` and never raises because the server was down or slow. `NtfyNotifier`, `FileNotifier` and `FirstThatWorks` (try each in order) all follow the `Notifier` protocol, so a program can swap one for another. `watch_sender` turns a notifier into the `send` argument of `claude_ops.watch.run_source`, so a scheduled watcher can tell a person instead of a Claude chat.
+
+What it does for you.
+
+- It publishes JSON, so titles and messages can hold any UTF-8 text. ntfy's header form encodes the title as latin-1 and fails on a Greek word or an emoji.
+- It refuses a message whose click link, picture or button URL is on `localhost`, because the phone would open itself. Publishing to a server on `localhost` is fine.
+- With `CLAUDE_HUMAN_NOTIFY_HOLD=1` set (in a test run, for example) it sends nothing and says so.
+- `poll` turns `7d` into `168h`, because ntfy reads durations the Go way and has no day unit.
+
 ## Phone notifications without Firebase
 
 `js/` is the npm package `@drkostas/expo-ntfy`. It has a config plugin, the ntfy wire logic, and the Expo glue for notifications. See [js/README.md](js/README.md).
@@ -151,7 +177,7 @@ A major macOS upgrade can reset these grants. Nothing can grant them again excep
 
 ## Claude Code skill
 
-The package ships a Claude Code skill that teaches an agent how to use all of this safely. It covers building and signing the helpers, the macOS grants and what resets them, the consent rules for typing a password, the Android delivery traps, and a catalogue of the failures behind each rule.
+The package ships a Claude Code skill that teaches an agent how to use all of this safely. It covers building and signing the helpers, sending notifications and writing watchers, the macOS grants and what resets them, the consent rules for typing a password, the Android delivery traps, and a catalogue of the failures behind each rule.
 
 ```bash
 claude-human skill                      # writes ~/.claude/skills/claude-human/SKILL.md
@@ -168,7 +194,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[test,macos]'
 cd js && npm ci && npm test
 ```
 
-The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the ntfy logic, and the config plugin run against a fixture Android project. On macOS one test also compiles `sckshot` without signing it.
+The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the ntfy logic, and the config plugin run against a fixture Android project. On macOS one test also compiles `sckshot` without signing it.
 
 ## License
 
