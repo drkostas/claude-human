@@ -1,0 +1,14 @@
+apply plugin: "com.android.application"
+
+android {
+    namespace "org.example.app"
+    defaultConfig {
+        applicationId "org.example.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        versionCode 1
+    }
+}
+
+dependencies {
+    implementation("com.facebook.react:react-android")
+}

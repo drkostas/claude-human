@@ -1,0 +1,80 @@
+{
+  "name": "@drkostas/expo-ntfy",
+  "version": "0.1.0",
+  "description": "Phone notifications from a self-hosted ntfy server in an Expo app, without Firebase: a config plugin that adds a native Android foreground service, plus the wire logic and the notification glue",
+  "license": "MIT",
+  "author": "Konstantinos Georgiou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drkostas/claude-human.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/drkostas/claude-human/tree/main/js#readme",
+  "keywords": [
+    "expo",
+    "expo-config-plugin",
+    "ntfy",
+    "notifications",
+    "android",
+    "foreground-service",
+    "react-native"
+  ],
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "react-native": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./proto": "./src/proto.ts",
+    "./poll": "./src/poll.ts",
+    "./notify": "./src/notify.ts",
+    "./background": "./src/background.ts",
+    "./plugin": "./app.plugin.js",
+    "./app.plugin.js": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "plugin",
+    "app.plugin.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "expo-background-task": "*",
+    "expo-notifications": "*",
+    "expo-task-manager": "*",
+    "react": "*",
+    "react-native": "*"
+  },
+  "peerDependenciesMeta": {
+    "expo": {
+      "optional": true
+    },
+    "expo-background-task": {
+      "optional": true
+    },
+    "expo-notifications": {
+      "optional": true
+    },
+    "expo-task-manager": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@expo/config-plugins": "^57.0.9",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
