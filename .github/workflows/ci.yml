@@ -57,3 +57,43 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  client:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      # the integration test runs the real task server, so the Python package is installed too
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ..
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+        env:
+          # here a missing server is a failure, not a skip
+          CLAUDE_HUMAN_REQUIRE_SERVER: "1"
+
+  example:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/expo-tasks
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

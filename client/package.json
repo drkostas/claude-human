@@ -1,0 +1,42 @@
+{
+  "name": "@drkostas/claude-human-client",
+  "version": "0.1.0",
+  "description": "A typed client for the claude-human task server: the pending tasks, one task with its handoff chain, opening a handoff, asking for the check, comments, withdrawals and history",
+  "license": "MIT",
+  "author": "Konstantinos Georgiou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drkostas/claude-human.git",
+    "directory": "client"
+  },
+  "homepage": "https://github.com/drkostas/claude-human/tree/main/client#readme",
+  "keywords": [
+    "claude-human",
+    "tasks",
+    "human-in-the-loop",
+    "client",
+    "react-native",
+    "expo"
+  ],
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "react-native": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

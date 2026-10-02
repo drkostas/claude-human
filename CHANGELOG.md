@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `@drkostas/claude-human-client` 0.1.0 in `client/`, a typed TypeScript client for `claude-human task serve`. It has a call for each route (`pending`, `task`, `open`, `done`, `comment`, `withdraw`, `history`, `comments`, `health`), the types of their JSON, `TaskApiError` for a status other than 2xx, retries for GETs only, and the helpers `waitingLabel`, `floorSteps` and `touchpointQuery`. The base URL and the token are passed in, and the token can be a function read at each request. Its tests run against a fake `fetch` and against the real server started on a free loopback port.
+- `examples/expo-tasks`, an Expo app built on the client and `@drkostas/expo-ntfy`, with a list of waiting tasks, a task page and the history.
+- CI typechecks and tests the client and the example app.
+- The skill has a section on reading tasks from an app.
+
 ## 0.4.0
 
 - `claude_human.tasks`, a task engine for the steps only a person can do. `TaskEngine.request` keeps one open task per capability and subject (a second request joins the first and nobody is told twice), asks an `Authorizer` and records a refusal before raising `Refused`, and tells the person through any `claude_human.notify` notifier with a link to the task. `verify_pending` closes a task only when its check passes, and a check that fails, is missing or times out leaves it open.

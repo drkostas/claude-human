@@ -1,6 +1,6 @@
 ---
 name: claude-human
-description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes, and opening a task for a person with claude_human.tasks that is asked once and closed only when a check says it is done. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, when someone asks to be told when something happens, or when an agent needs a person for a step it cannot do itself.
+description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes, opening a task for a person with claude_human.tasks that is asked once and closed only when a check says it is done, and reading those tasks from a phone app with @drkostas/claude-human-client. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, when someone asks to be told when something happens, or when an agent needs a person for a step it cannot do itself.
 ---
 
 # claude-human
@@ -283,6 +283,28 @@ claude-human task withdraw ID --reason "The backup moved to the network drive."
 - The HTTP server (`claude-human task serve`) listens on 127.0.0.1 only. Put TLS and access control in front of it (`tailscale serve`, for example) to reach it from a phone. Never bind it to the network.
 - Tests use a temporary task file and a fake notifier, or set `CLAUDE_HUMAN_NOTIFY_HOLD=1`, so a test run never reaches a person.
 - A program with its own records keeps them by implementing `TaskStore` (and `HandoffResolver`, `Authorizer` or `Verifier` when needed) and passing it to `TaskEngine`.
+
+## Reading tasks from an app
+
+An app reads the task server through `@drkostas/claude-human-client` (in `client/`). Use it instead of writing fetch calls by hand, so the routes and the JSON stay the same as the server's.
+
+```ts
+import { createTaskClient } from "@drkostas/claude-human-client";
+
+const tasks = createTaskClient({ baseUrl, token, supports: ["steps", "url"], platform: Platform.OS, retries: 1 });
+const pending = await tasks.pending();
+const ready = await tasks.open(id);     // prepared false means it is not ready, so do not show it as ready
+const answer = await tasks.done(id);    // the check decides, and answer.detail says what it saw
+```
+
+- Pass the base URL and the token from the app's configuration. Never write a host or a token into the code.
+- Send the real platform and only the kinds the app can open. The server orders the chain for that reader, and the app shows `head` without sorting the chain again.
+- Show the steps on every task page (`floorSteps(task)`). They are the one thing every reader can do.
+- Label the button as a request for the check ("I've done it, check") and show `detail` from the answer. Do not mark the task done in the app.
+- Show a refusal from `comment` or `withdraw` (`ok` false) to the person. It is an answer, not an error.
+- A program with its own server and more fields extends the types (`interface MyTask extends PendingTask`) and passes them to the call, so nothing it sends is lost to a narrow type.
+- An app that uses the client and `@drkostas/expo-ntfy` through `file:` dependencies needs Metro to watch their real folders and `preserveSymlinks` in `tsconfig.json`. `examples/expo-tasks` shows both.
+- Tests use a fake `fetch`. The client's own integration test starts the real server on a free loopback port with a temporary task file and a test token, and holds every notification with `CLAUDE_HUMAN_NOTIFY_HOLD=1`.
 
 ## Failure catalogue
 
