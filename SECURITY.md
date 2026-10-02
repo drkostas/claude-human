@@ -19,9 +19,17 @@ Please report a security problem privately through GitHub's "Report a vulnerabil
 - Screen Recording lets a program see everything on the screen, including other people's messages and passwords shown in plain text. Grant it only to `sckshot.app` and to the process that needs it.
 - If you send frames to another device, send them over an encrypted connection and only to people allowed to see the whole screen. When one window is asked for and cannot be cropped, this package returns nothing rather than the whole screen, and code built on it should keep that rule.
 
+## The station
+
+- The station clicks and types on the real Mac for whoever holds its token. It listens on 127.0.0.1 only and cannot be told to listen anywhere else. Reach it from another device only through something that adds its own login and encryption in front of it, and treat the token like a password.
+- The token goes only in the `Authorization` header. Do not put it in a URL, a QR code or a notification.
+- Give each task its own grant when you can (a `StationAuth` that pins one app and ends with the task), rather than one token that reaches every window for ever.
+- A pinned grant that cannot find its window gets nothing. It never gets the whole display instead, and code that builds on the station should keep that rule.
+
 ## Grants macOS needs
 
 - Screen Recording (System Settings > Privacy & Security > Screen Recording) for `sckshot.app`, and for the Python process that lists windows or uses the fallback capture.
+- Accessibility (System Settings > Privacy & Security > Accessibility) for the process that runs the station, so that its clicks reach the Mac.
 - The Karabiner-Elements driver extension, allowed in System Settings, for the virtual keyboard.
 - Full Keyboard Access (System Settings > Keyboard) for `approve`, so that Tab reaches the panel's buttons.
 

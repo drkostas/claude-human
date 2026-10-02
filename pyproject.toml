@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-human"
-version = "0.1.0"
-description = "Screen capture and lock screen typing for a Mac that a person and an agent share: a ScreenCaptureKit screenshot tool and a virtual HID keyboard helper"
+version = "0.2.0"
+description = "Screen capture, lock screen typing and a phone view of one window, for a Mac that a person and an agent share"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

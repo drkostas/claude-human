@@ -9,6 +9,8 @@
     claude-human use-password
     claude-human approve         (password on stdin)
     claude-human skill [--dir DIR]
+    claude-human station [--port N] [--app NAME] [--token-file FILE] [--fps N]
+    claude-human prepare [--phase place|input|all] APP STEP...
 
 A password is read only from stdin (or typed at a hidden prompt when stdin is a terminal). There is
 no option that takes one, so it never appears in the process list or the shell history.
@@ -67,6 +69,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("use-password", help="switch a Touch ID panel to its password field (presses Return only)")
     sub.add_parser("approve", help="type the password from stdin into the password panel on screen")
 
+    st = sub.add_parser("station", help="serve one window (or the display) to a phone, with input")
+    st.add_argument("--port", type=int, default=8789, help="port on 127.0.0.1 (default 8789, 0 for a free one)")
+    st.add_argument("--app", help="pin the token to this application's window (it then cannot list or choose windows)")
+    st.add_argument("--token-file", help="file holding the token (default: $CLAUDE_HUMAN_STATION_TOKEN_FILE or "
+                                         "~/.config/claude-human/station-token, made with mode 0600 if missing). "
+                                         "$CLAUDE_HUMAN_STATION_TOKEN wins over any file")
+    st.add_argument("--fps", type=float, default=8.0, help="default frames per second of a stream")
+
+    pr = sub.add_parser("prepare", help="run a window recipe (open, wait, search, click...) before handing a window over")
+    pr.add_argument("--phase", choices=("place", "input", "all"), default="all",
+                    help="place runs open and wait only, input runs the rest, all runs both (default)")
+    pr.add_argument("app", help="the application the recipe is for")
+    pr.add_argument("steps", nargs="*", help='steps such as "open x-apple.systempreferences:..." "wait 1" "search Login Items"')
+
     k = sub.add_parser("skill", help="install the Claude Code skill as <dir>/claude-human/SKILL.md")
     k.add_argument("--dir", default="~/.claude/skills", help="skills folder (default ~/.claude/skills)")
     return p
@@ -97,6 +113,33 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
     targets = {"sckshot": out / "sckshot.app", "vhid": out / paths.VHID_NAME}
     return [["bash", str(paths.tool_source(t) / "build.sh"), str(targets[t])]
             for t in TOOLS if not args.only or t in args.only]
+
+
+def station_auth(args: argparse.Namespace):
+    """The TokenAuth for ``claude-human station``, and where its token came from (never the token)."""
+    from .station import auth  # noqa: PLC0415
+    token = os.environ.get(auth.ENV_TOKEN, "").strip()
+    if token:
+        return auth.TokenAuth(token, app=args.app), f"${auth.ENV_TOKEN}"
+    path = args.token_file or os.environ.get(auth.ENV_TOKEN_FILE) or None
+    _tok, where = auth.load_or_create_token(path)
+    return auth.TokenAuth(token_file=where, app=args.app), str(where)
+
+
+def serve_station(args: argparse.Namespace) -> int:
+    from .station import make_server  # noqa: PLC0415
+    a, where = station_auth(args)
+    srv = make_server(a, port=args.port, fps=args.fps)
+    port = srv.server_address[1]
+    print(f"station on http://127.0.0.1:{port}/view (token from {where}"
+          f"{', pinned to ' + args.app if args.app else ''})", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+    return 0
 
 
 def read_password(stream=None) -> str:
@@ -130,6 +173,16 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "skill":
         print(install_skill(args.dir))
         return 0
+
+    if cmd == "station":
+        return serve_station(args)
+
+    if cmd == "prepare":
+        from .station import prepare  # noqa: PLC0415
+        log = prepare.run(args.app, args.steps, phase=args.phase)
+        for line in log:
+            print(line)
+        return 0 if prepare.succeeded(log) else 1
 
     if cmd in ("windows", "screenshot", "state"):
         from . import screenshot  # noqa: PLC0415 - needs Quartz

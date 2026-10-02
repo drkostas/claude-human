@@ -1,6 +1,6 @@
 ---
 name: claude-human
-description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, and delivering ntfy notifications to an Android phone that the OS does not stop. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, or when phone notifications stop arriving.
+description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, and delivering ntfy notifications to an Android phone that the OS does not stop. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, or when phone notifications stop arriving.
 ---
 
 # claude-human
@@ -114,6 +114,39 @@ ok, detail = unlock.relock()                      # watches the lock bit set
 - Screen Sharing is not a way past the lock. Its high performance mode drives a separate virtual display, never the console. Its classic mode with the dedicated Screen Sharing password shows a live login window that drops every key it is sent, by design, so that this password cannot be used to guess the login password. Signing in to Screen Sharing with the account name and the account password does attach to that account's session, which is the person's own remote route, not the assistant's.
 - To check that the virtual keyboard reaches the system at all without typing a password, read `HIDIdleTime` with `ioreg -c IOHIDSystem` before and after a harmless key. It falls back near zero only when a hardware-class event arrived.
 
+## Handing a window to the person
+
+When a step needs the person (a sign in, a setting only they should change, a choice that is theirs), hand them the window instead of describing it. `claude_human.station` streams one window to their phone and turns their taps into clicks on the Mac.
+
+```bash
+claude-human station --app "System Settings"     # token in ~/.config/claude-human/station-token (mode 0600)
+claude-human prepare --phase place "System Settings" "open x-apple.systempreferences:com.apple.LoginItems-Settings.extension" "wait 1"
+claude-human prepare --phase input "System Settings" "search Login Items"
+curl -s -H "Authorization: Bearer $(cat ~/.config/claude-human/station-token)" http://127.0.0.1:8789/health
+```
+
+```python
+from claude_human.station import Grant, StationAuth, Unavailable, make_server
+class TaskAuth(StationAuth):
+    def check(self, secret): ...          # Grant(master=False, station=..., holder=...) or None, asked per request
+    def app_for(self, grant): ...         # the app's name, None for the whole display, raise Unavailable when unsure
+    def perform(self, grant, act, run): return run()       # Spotlight, record who pressed it
+    def on_input(self, grant, msg, result): ...            # every handled tap and key
+make_server(TaskAuth(), port=8789).serve_forever()
+```
+
+- The station listens on 127.0.0.1 and refuses any other address. Reach it from the phone through a proxy that adds its own login and encryption (`tailscale serve`, an SSH tunnel). Never forward the port as it is, because every accepted tap is a real click.
+- The token goes in the `Authorization: Bearer` header and nowhere else. The page at `/view` has no secret in it. An app hands the token in with `window.__stationGrant(token)` or a `postMessage` of `{type: "station:grant", grant}`. Never put the token in a URL, a notification or a QR code.
+- Give each task its own grant that pins one app, and end it when the task ends. `check` runs on every request, so an ended grant stops at once. Keep one shared master token for your own tools only.
+- `app_for` returning None means the whole display. When the answer cannot be found (the database is down), raise `Unavailable`. The station then refuses, which is the only safe answer.
+- A pinned app that is not on the visible desktop gets no picture and no taps. A window on another desktop counts as not visible. Bring it to the visible desktop before you hand it over.
+- Run `prepare` before the person opens the window. Placement steps (`open`, `wait`) are safe anywhere. Input steps (`activate`, `type`, `key`, `click`, `scroll`, `search`) need the window frontmost on the visible desktop, because macOS sends synthetic keys to the frontmost app. Run them with `--phase input` only when the person is looking at that window, or the keys go into whatever they are doing.
+- Read the result of `prepare`. It exits 0 only when its last line is `<app>: still open`. A step the Mac refused (locked, a dialog holding focus, the window not visible) is a failed step.
+- A browser that has a JavaScript dialog open in any window answers no AppleScript at all, so `open <url>` for it fails after a few seconds and says so. The dialog belongs to the person, so tell them and never dismiss it for them.
+- While the Mac is locked, the picture is withheld and every tap is refused with `locked`. While a system dialog holds focus, taps are refused with `blocked`. Both are shown on the page. Ask the person, or follow the lock screen section above with their approval.
+- The station needs Screen Recording (picture and titles) and Accessibility (clicks) for the process that runs it. Check Accessibility with `/health`, whose `trusted` field is the answer from macOS. A test click proves nothing, because a click lands at a point and a window behind another never rises.
+- Test the station with a pinned grant for a harmless app and with fake input before you trust it with a real one. The package tests run the server on a free port with a fake screen and a fake input sink.
+
 ## A GUI task from start to end
 
 1. Ask whether the task needs the screen. A command, an API or a network call usually does the same job while the Mac stays locked.
@@ -181,3 +214,9 @@ adb -s "$PHONE" shell dumpsys notification --noredact | grep "$PKG"   # did a me
 | Silent after each update | update stops the service | install without opening, `dumpsys` showed no service | `MY_PACKAGE_REPLACED` receiver |
 | Service dies on one brand of phone | skin battery policy | service gone seconds after screen off | "Allow background activity", auto-launch |
 | A tap landed in the wrong app | coordinates reused without foregrounding | a screenshot after the tap | foreground and confirm before every step |
+| Taps on the phone did nothing and said nothing | a refused input was reported as success | the Mac was locked while the page showed ok | refusals return `ok: false` and the page shows the reason |
+| A tap meant for a task window clicked the person's own screen | a window on another desktop was mapped onto the display | the click landed in the person's browser | a named window that is not visible is refused |
+| A grant streamed the whole screen | the app was not found and the capture fell back to the display | the person's notifications appeared on the phone | the stream ends instead |
+| "Session expired" seconds after opening | the old token was revoked before the new one reached the page | the server log said why it refused | keep a short handover window for a replaced grant |
+| Typed text did not appear in a settings search field | synthetic characters do not reach SwiftUI fields | Command+A visibly worked, the typing did not | paste with Command+V |
+| A gesture change did not take effect | the WebView cached the page | the hint text on the page was the old one | serve `/view` with no-store |
