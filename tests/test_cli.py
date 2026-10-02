@@ -89,3 +89,24 @@ def test_skill_command_installs_the_packaged_skill(tmp_path, capsys):
 def test_the_two_copies_of_the_skill_are_identical():
     repo_copy = Path(__file__).resolve().parents[1] / "skill" / "SKILL.md"
     assert repo_copy.read_text() == cli.SKILL_FILE.read_text()
+
+
+def test_station_and_prepare_arguments():
+    a = parse("station", "--port", "0", "--app", "Notes")
+    assert (a.port, a.app, a.fps) == (0, "Notes", 8.0)
+    assert parse("station").port == 8789
+    p = parse("prepare", "--phase", "place", "Demo", "open x", "wait 1")
+    assert (p.phase, p.app, p.steps) == ("place", "Demo", ["open x", "wait 1"])
+    with pytest.raises(SystemExit):
+        parse("prepare", "--phase", "later", "Demo")
+
+
+def test_station_token_comes_from_the_environment_or_a_private_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_HUMAN_STATION_TOKEN", "from-env")
+    auth, where = cli.station_auth(parse("station"))
+    assert auth.check("from-env") and where == "$CLAUDE_HUMAN_STATION_TOKEN"
+    monkeypatch.delenv("CLAUDE_HUMAN_STATION_TOKEN")
+    f = tmp_path / "tok"
+    auth, where = cli.station_auth(parse("station", "--token-file", str(f), "--app", "Notes"))
+    assert where == str(f) and auth.check(f.read_text().strip()).master is False
+    assert "from-env" not in where
