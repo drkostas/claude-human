@@ -2,15 +2,17 @@
 
 claude-human is a small set of tools for a Mac that a person and an agent share. I run a system on my own Mac that hands tasks to me on my phone when it needs a person (approve a password prompt, look at a window, type a password at the lock screen). These are the parts of it that are not tied to that system.
 
-There are five pieces.
+There are seven pieces.
 
 - `claude_human.screenshot` captures the screen or one window through ScreenCaptureKit, lists the windows a person works in, and tells a locked screen apart from a password panel.
 - `claude_human.unlock` types a password at the lock screen or into a SecurityAgent password panel through Karabiner's virtual HID keyboard, and then checks that it worked.
 - `claude_human.station` shows one window of the Mac on a phone and turns the person's taps and keys into clicks and key presses on the Mac, so a person can do a step on the Mac from anywhere.
 - `claude_human.notify` sends a message to a person through an ntfy server, with a file as the fallback, and plugs into a scheduled watcher.
+- `claude_human.tasks` asks a person to do a step once, tells them, and closes the task only when a check says it is done. `claude-human task serve` serves the tasks over HTTP for an app.
+- `@drkostas/claude-human-client` (in `client/`) is a typed TypeScript client for that server.
 - `@drkostas/expo-ntfy` (in `js/`) gets messages from a self-hosted ntfy server to an Android phone without Firebase, through a native foreground service that an Expo config plugin adds to the app.
 
-The Python parts need macOS, except `claude_human.notify`, which runs anywhere Python does. The JavaScript part needs an Expo app.
+The Python parts need macOS, except `claude_human.notify`, which runs anywhere Python does. `@drkostas/expo-ntfy` needs an Expo app, and the client runs anywhere `fetch` does.
 
 ## Install
 
@@ -193,6 +195,22 @@ Every part can be replaced. A program with its own records implements `TaskStore
 
 The server answers `GET /pending`, `GET /task/<id>`, `GET /history`, `GET /comments`, `POST /done/<id>`, `POST /open/<id>`, `POST /comment/<id>` and `POST /withdraw/<id>`, and refuses to listen on anything but a loopback address. Its token is `CLAUDE_HUMAN_TASKS_TOKEN`, or the file `~/.config/claude-human/tasks-token`, made with mode 0600 on first use.
 
+## Reading tasks from an app
+
+`client/` is the npm package `@drkostas/claude-human-client`, a typed client for `claude-human task serve`. The base URL and the token are passed in, and the app says what it can show and where it runs.
+
+```ts
+import { createTaskClient } from "@drkostas/claude-human-client";
+
+const tasks = createTaskClient({ baseUrl: "https://tasks.example.org", token, supports: ["steps", "url"], platform: "android" });
+const pending = await tasks.pending();            // each task with its ordered chain and head
+const answer = await tasks.done(pending[0].intent); // runs the check, answers what it saw
+```
+
+It covers every route of the server (`pending`, `task`, `open`, `done`, `comment`, `withdraw`, `history`, `comments`, `health`). See [client/README.md](client/README.md).
+
+[examples/expo-tasks](examples/expo-tasks) is a small Expo app built on the client and `@drkostas/expo-ntfy`, with a list of waiting tasks, a task page with the handoff chain and the "I've done it, check" button, and the history.
+
 ## Phone notifications without Firebase
 
 `js/` is the npm package `@drkostas/expo-ntfy`. It has a config plugin, the ntfy wire logic, and the Expo glue for notifications. See [js/README.md](js/README.md).
@@ -226,9 +244,11 @@ The same file is at [skill/SKILL.md](skill/SKILL.md) for anyone who uses only th
 python -m venv .venv && .venv/bin/pip install -e '.[test,macos]'
 .venv/bin/pytest
 cd js && npm ci && npm test
+cd client && npm ci && npm test
+cd examples/expo-tasks && npm ci && npm run typecheck && npm test
 ```
 
-The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the task engine and its HTTP server against a temporary task file, the ntfy logic, and the config plugin run against a fixture Android project. On macOS one test also compiles `sckshot` without signing it.
+The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the task engine and its HTTP server against a temporary task file, the ntfy logic, the config plugin run against a fixture Android project, the task client against a fake `fetch` and against the real task server, and the example app's logic. On macOS one test also compiles `sckshot` without signing it.
 
 ## License
 

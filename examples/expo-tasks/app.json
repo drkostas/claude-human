@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Tasks",
+    "slug": "expo-tasks-example",
+    "version": "0.1.0",
+    "scheme": "expotasks",
+    "orientation": "portrait",
+    "android": { "package": "org.example.expotasks" },
+    "plugins": [
+      ["@drkostas/expo-ntfy", { "alertChannelName": "Tasks" }]
+    ]
+  }
+}
