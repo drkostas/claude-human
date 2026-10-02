@@ -12,6 +12,8 @@
     claude-human station [--port N] [--app NAME] [--token-file FILE] [--fps N]
     claude-human prepare [--phase place|input|all] APP STEP...
     claude-human notify [--url URL] [--title T] [--priority P] [--tag T] [--link URL] [--file F] MESSAGE
+    claude-human task open CAPABILITY SUBJECT --reason R [--steps S] [--handoff KIND=TARGET] [-- VERIFY ARGS...]
+    claude-human task list | verify [ID] | withdraw ID | comment ID TEXT | history | serve [--port N]
 
 A password is read only from stdin (or typed at a hidden prompt when stdin is a terminal). There is
 no option that takes one, so it never appears in the process list or the shell history. The same
@@ -100,6 +102,44 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--timeout", type=float, default=10.0, help="seconds before giving up (default 10)")
     n.add_argument("--file", help="also the floor: append the message to this file when the send fails")
 
+    t = sub.add_parser("task", help="ask a person to do something and close it only on an observation")
+    t.add_argument("--db", help="the task file (default: $CLAUDE_HUMAN_TASKS_DB or "
+                                "~/.local/share/claude-human/tasks.db)")
+    ts = t.add_subparsers(dest="task_command", required=True)
+    to = ts.add_parser("open", help="open a task, or join the open one for the same capability and subject")
+    to.epilog = "After --, the command that exits 0 only when the task is done, as separate arguments."
+    to.add_argument("capability", help="what the person does, such as approve, sign-in, plug-in")
+    to.add_argument("subject", help="what it is about, such as app://backup")
+    to.add_argument("--reason", required=True, help="why the person is asked")
+    to.add_argument("--steps", help="the words a person follows, the floor of every chain")
+    to.add_argument("--owner", help="who raised it (a chat, a program)")
+    to.add_argument("--actor", help="who asks, for the record")
+    to.add_argument("--tier", default="confirm", help="how carefully to act (default confirm)")
+    to.add_argument("--handoff", action="append", default=[], metavar="KIND=TARGET",
+                    help="a way to reach the thing, such as url=https://... (repeatable, best first)")
+    to.add_argument("--link", help="what a tap on the notification opens, with {id} for the task "
+                                   "(default: $CLAUDE_HUMAN_TASK_LINK)")
+    to.add_argument("--ntfy-url", help="tell the person through this ntfy topic "
+                                       "(default: $CLAUDE_HUMAN_NTFY_URL, none when unset)")
+    tl = ts.add_parser("list", help="the open tasks as JSON")
+    tl.add_argument("--supports", default="steps,url", help="the kinds the reader can show (default steps,url)")
+    tl.add_argument("--platform", default="any", help="where the reader runs (default any)")
+    tv = ts.add_parser("verify", help="run the verify command of open tasks and close the done ones")
+    tv.add_argument("id", nargs="?", help="only this task (exit 1 when it is not done)")
+    tw = ts.add_parser("withdraw", help="drop an open task")
+    tw.add_argument("id")
+    tw.add_argument("--reason")
+    tc = ts.add_parser("comment", help="record what a person said about a task")
+    tc.add_argument("id")
+    tc.add_argument("text")
+    th = ts.add_parser("history", help="what happened, newest first")
+    th.add_argument("--limit", type=int, default=50)
+    tsv = ts.add_parser("serve", help="serve the tasks over HTTP on 127.0.0.1 with a bearer token")
+    tsv.add_argument("--port", type=int, default=8790, help="port on 127.0.0.1 (default 8790, 0 for a free one)")
+    tsv.add_argument("--token-file", help="file holding the token (default: $CLAUDE_HUMAN_TASKS_TOKEN_FILE "
+                                          "or ~/.config/claude-human/tasks-token, made with mode 0600 "
+                                          "if missing). $CLAUDE_HUMAN_TASKS_TOKEN wins over any file")
+
     k = sub.add_parser("skill", help="install the Claude Code skill as <dir>/claude-human/SKILL.md")
     k.add_argument("--dir", default="~/.claude/skills", help="skills folder (default ~/.claude/skills)")
     return p
@@ -176,6 +216,77 @@ def send_notification(args: argparse.Namespace, stdin=None) -> int:
     return _report(ok, detail)
 
 
+def parse_handoff(text: str, preference: int):
+    from .tasks import Handoff  # noqa: PLC0415
+    kind, sep, target = text.partition("=")
+    if not sep or not kind or not target:
+        raise ValueError(f"a handoff is KIND=TARGET, not {text!r}")
+    return Handoff(kind.strip(), target, preference=preference)
+
+
+def run_task(args: argparse.Namespace) -> int:
+    from . import notify, tasks  # noqa: PLC0415
+    store = tasks.SqliteTaskStore(args.db)
+    tc = args.task_command
+    if tc == "open":
+        verify = list(getattr(args, "verify", None) or [])
+        try:
+            handoffs = [parse_handoff(h, (i + 1) * 10) for i, h in enumerate(args.handoff)]
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        url = args.ntfy_url or os.environ.get(notify.ENV_URL)
+        notifier = notify.from_env(url) if url else None
+        link = args.link or os.environ.get("CLAUDE_HUMAN_TASK_LINK")
+        engine = tasks.TaskEngine(store, notifier=notifier, link=link)
+        tid, new = engine.request(args.capability, args.subject, args.reason, owner=args.owner,
+                                  actor=args.actor, steps=args.steps, verify=verify or None,
+                                  handoffs=handoffs, tier=args.tier)
+        print(json.dumps({"id": tid, "new": new}))
+        return 0
+    engine = tasks.TaskEngine(store)
+    if tc == "list":
+        sup = [x for x in args.supports.split(",") if x] or ["steps"]
+        print(json.dumps(engine.pending_cards(sup, args.platform), indent=2, default=str))
+        return 0
+    if tc == "verify":
+        closed = engine.verify_pending(only=args.id)
+        for t in closed:
+            print(f"done {t.id} {t.capability} {t.subject}")
+        if args.id:
+            return 0 if closed else 1
+        return 0
+    if tc == "withdraw":
+        out = store.withdraw(args.id, os.environ.get("USER") or None, args.reason)
+        print(json.dumps(out))
+        return 0 if out.get("ok") else 1
+    if tc == "comment":
+        out = store.comment(args.id, args.text, os.environ.get("USER") or None)
+        print(json.dumps(out))
+        return 0 if out.get("ok") else 1
+    if tc == "history":
+        print(json.dumps(store.history(args.limit), indent=2, default=str))
+        return 0
+    if tc == "serve":
+        from .tasks import server  # noqa: PLC0415
+        token = os.environ.get(server.ENV_TOKEN, "").strip()
+        if token:
+            srv, where = server.make_server(engine, token=token, port=args.port), f"${server.ENV_TOKEN}"
+        else:
+            _tok, path = server.load_or_create_token(args.token_file)
+            srv, where = server.make_server(engine, token_file=path, port=args.port), str(path)
+        print(f"tasks on http://127.0.0.1:{srv.server_address[1]} (token from {where}, "
+              f"store {store.path})", flush=True)
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            srv.server_close()
+        return 0
+    return 2
+
+
 def read_password(stream=None) -> str:
     stream = stream or sys.stdin
     if stream.isatty():
@@ -189,7 +300,15 @@ def _report(ok: bool, detail: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `task open ... -- CMD ARGS` carries the verify command as separate arguments, so it is never
+    # a shell string. Everything after the first -- is that command.
+    verify: list[str] = []
+    if "--" in argv:
+        i = argv.index("--")
+        argv, verify = argv[:i], argv[i + 1:]
     args = build_parser().parse_args(argv)
+    args.verify = verify
     cmd = args.command
 
     if cmd == "build-tools":
@@ -213,6 +332,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "notify":
         return send_notification(args)
+
+    if cmd == "task":
+        return run_task(args)
 
     if cmd == "prepare":
         from .station import prepare  # noqa: PLC0415

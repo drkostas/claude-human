@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- `claude_human.tasks`, a task engine for the steps only a person can do. `TaskEngine.request` keeps one open task per capability and subject (a second request joins the first and nobody is told twice), asks an `Authorizer` and records a refusal before raising `Refused`, and tells the person through any `claude_human.notify` notifier with a link to the task. `verify_pending` closes a task only when its check passes, and a check that fails, is missing or times out leaves it open.
+- `CommandVerifier` runs the check as a list of arguments with no shell and a timeout. `filter_chain` and `DefaultResolver` order the handoffs (link, station window, steps) for what a reader can show and where it runs, with the steps as the floor, and `head` is the surface to render first.
+- `SqliteTaskStore`, the default `TaskStore`, in one SQLite file. Open or closed is derived from append only events, and comments, withdrawals, refusals and the notifier's answer are kept in the history.
+- `claude_human.tasks.server`, an HTTP server on a loopback address with a bearer token, with the routes and JSON shapes a phone app reads (`/pending`, `/task`, `/history`, `/comments`, `/done`, `/open`, `/comment`, `/withdraw`).
+- `claude-human task open|list|verify|withdraw|comment|history|serve`.
+- `station.auth.load_or_create_token` takes a `prefix` for the token it makes.
+- The skill has a new section on asking a person to do something.
+
 ## 0.3.0
 
 - `claude_human.notify`, a notifier for a person through an ntfy server, with the standard library only. `NtfyNotifier` publishes JSON (title, message, priority, tags, click link, picture, action buttons, Markdown) with a bearer token or basic auth and a timeout, and returns `(ok, detail)` instead of raising on a network failure. `poll` reads back what the server holds. `FileNotifier` writes each message to a JSON lines file as the floor, `FirstThatWorks` tries notifiers in order, and all of them follow the `Notifier` protocol.

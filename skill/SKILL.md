@@ -1,6 +1,6 @@
 ---
 name: claude-human
-description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, and writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, or when someone asks to be told when something happens.
+description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes, and opening a task for a person with claude_human.tasks that is asked once and closed only when a check says it is done. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, when someone asks to be told when something happens, or when an agent needs a person for a step it cannot do itself.
 ---
 
 # claude-human
@@ -250,6 +250,40 @@ The rules, each from a watcher that went wrong.
 - A prompt sent into a chat is influence without a gate. Send only text you would trust that chat to act on, and keep secrets out of it. claude-ops records a hash of the text by default, not the text.
 - A job that cuts the network it reports over (joining a device's setup network, restarting the network stack) reports after it is back online, never during.
 
+## Asking a person to do a step
+
+When the work needs a person (a permission only they can grant, a sign in, a cable), open a task with `claude_human.tasks`. Do not write the request into the chat and wait. A question in a terminal reaches only someone who is looking at it, and nothing records whether it was done.
+
+```python
+from claude_human import notify, tasks
+
+engine = tasks.TaskEngine(tasks.SqliteTaskStore(), notifier=notify.from_env(), link="myapp://task/{id}")
+task_id, new = engine.request(
+    "connect", "device://backup-disk", "The nightly backup needs its disk.", owner="backup-bot",
+    steps="Connect the backup disk to the Mac with its USB cable and wait for it to appear in Finder.",
+    verify=["test", "-d", "/Volumes/Backup"])
+closed = engine.verify_pending()        # run this on a schedule, or when the person says done
+```
+
+```bash
+claude-human task open connect device://backup-disk --reason "The nightly backup needs its disk." \
+    --steps "Connect the backup disk with its USB cable." -- test -d /Volumes/Backup
+claude-human task verify                # `task verify ID` exits 1 while that task is not done
+claude-human task comment ID "The disk is at the office today."
+claude-human task withdraw ID --reason "The backup moved to the network drive."
+```
+
+- Write the check before the task. It is a list of arguments that exits 0 only when the step is really done, and it runs with no shell. A task with no check never closes on its own, so it waits until someone withdraws it.
+- A "done" from the person asks for the check. It never closes the task. If the check still fails, tell the person what is still the case in the task's own terms, and leave it open.
+- Ask once. A second `request` for the same capability and subject joins the open task and sends nothing. Use a new subject only when it is a different thing.
+- Say why a person is needed in `reason`, and give steps a person can follow without asking anything (at least one full sentence, never "see what to do"). The steps are the floor of every chain, so a reader that can show only words still has something to do.
+- Add handoffs for what a phone can open (`url`, a station window as `vnc`), best first. The reader sends `supports` and `platform`, the server orders the chain, and the app shows `head` without ranking again.
+- Read comments before acting again. A comment does not close a task, and a person who says "the setting is not there" is telling you the steps are wrong.
+- Withdraw a task nobody needs any more, with a reason. A task left open for weeks teaches the person to ignore the next one.
+- The HTTP server (`claude-human task serve`) listens on 127.0.0.1 only. Put TLS and access control in front of it (`tailscale serve`, for example) to reach it from a phone. Never bind it to the network.
+- Tests use a temporary task file and a fake notifier, or set `CLAUDE_HUMAN_NOTIFY_HOLD=1`, so a test run never reaches a person.
+- A program with its own records keeps them by implementing `TaskStore` (and `HandoffResolver`, `Authorizer` or `Verifier` when needed) and passing it to `TaskEngine`.
+
 ## Failure catalogue
 
 | Symptom | Cause | How it was caught | Fix |
@@ -283,3 +317,5 @@ The rules, each from a watcher that went wrong.
 | Alerts stopped with a Greek title | ntfy's header form encodes the title as latin-1 | `UnicodeEncodeError` in the sender's log | publish as JSON |
 | Every test run sent real notifications | the test asked for a file, but the network sender joined anyway | the person reported alerts about a task that did not exist | `CLAUDE_HUMAN_NOTIFY_HOLD` in the test environment |
 | No notifications for weeks, no error | the sender had no topic URL in the process that ran it | the sender said "not configured" from a process whose config file named the URL | read configuration in the module that sends, and record each failure |
+| A comment on a task made the task disappear from the person's list | "open" was read as "no event at all", and a comment is an event | the person asked a question about a task and could no longer find it | only a closing event closes a task |
+| The person opened the app at once and reported "it has no task" | the list was sorted by risk, then oldest first, so the new task was fourth | the task was there, under three that had waited a day | list open tasks newest first |

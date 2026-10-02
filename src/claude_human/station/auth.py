@@ -113,8 +113,9 @@ class TokenAuth(StationAuth):
         return self.app
 
 
-def load_or_create_token(path: Optional[os.PathLike] = None) -> tuple[str, Path]:
-    """The station token from ``path`` (or the default file), made once with mode 0600 if missing.
+def load_or_create_token(path: Optional[os.PathLike] = None, *,
+                         prefix: str = "station_") -> tuple[str, Path]:
+    """The token from ``path`` (or the station's default file), made once with mode 0600 if missing.
 
     Returns the token and the file it lives in. The token is never printed by this package."""
     p = Path(path).expanduser() if path else default_token_file()
@@ -123,7 +124,7 @@ def load_or_create_token(path: Optional[os.PathLike] = None) -> tuple[str, Path]
         if tok:
             return tok, p
     p.parent.mkdir(parents=True, exist_ok=True)
-    tok = "station_" + secrets.token_urlsafe(24)
+    tok = prefix + secrets.token_urlsafe(24)
     fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     with os.fdopen(fd, "w") as fh:
         fh.write(tok + "\n")
