@@ -93,6 +93,17 @@ Please read [SECURITY.md](SECURITY.md) before you use this part. It types a pass
 
 A major macOS upgrade can reset these grants. Nothing can grant them again except a person in System Settings, which is how it should be.
 
+## Claude Code skill
+
+The package ships a Claude Code skill that teaches an agent how to use all of this safely. It covers building and signing the helpers, the macOS grants and what resets them, the consent rules for typing a password, the Android delivery traps, and a catalogue of the failures behind each rule.
+
+```bash
+claude-human skill                      # writes ~/.claude/skills/claude-human/SKILL.md
+claude-human skill --dir ./skills       # another skills folder
+```
+
+The same file is at [skill/SKILL.md](skill/SKILL.md) for anyone who uses only the npm package.
+
 ## Development
 
 ```bash

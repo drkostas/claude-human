@@ -73,3 +73,19 @@ def test_approve_failure_exits_1(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("x\n"))
     assert cli.main(["approve"]) == 1
     assert capsys.readouterr().out.startswith("FAIL No password prompt")
+
+
+def test_skill_command_installs_the_packaged_skill(tmp_path, capsys):
+    assert cli.SKILL_FILE.is_file()
+    assert cli.main(["skill", "--dir", str(tmp_path)]) == 0
+    target = tmp_path / "claude-human" / "SKILL.md"
+    assert capsys.readouterr().out.strip() == str(target)
+    text = target.read_text()
+    assert text == cli.SKILL_FILE.read_text()
+    assert text.startswith("---\nname: claude-human\ndescription: ")
+    assert parse("skill").dir == "~/.claude/skills"
+
+
+def test_the_two_copies_of_the_skill_are_identical():
+    repo_copy = Path(__file__).resolve().parents[1] / "skill" / "SKILL.md"
+    assert repo_copy.read_text() == cli.SKILL_FILE.read_text()

@@ -28,4 +28,4 @@ test = ["pytest>=8"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-claude_human = ["tools/sckshot/*.swift", "tools/sckshot/*.sh", "tools/vhid/*.cpp", "tools/vhid/*.sh"]
+claude_human = ["tools/sckshot/*.swift", "tools/sckshot/*.sh", "tools/vhid/*.cpp", "tools/vhid/*.sh", "skill/SKILL.md"]
