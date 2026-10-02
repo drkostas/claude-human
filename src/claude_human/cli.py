@@ -8,6 +8,7 @@
     claude-human relock
     claude-human use-password
     claude-human approve         (password on stdin)
+    claude-human skill [--dir DIR]
 
 A password is read only from stdin (or typed at a hidden prompt when stdin is a terminal). There is
 no option that takes one, so it never appears in the process list or the shell history.
@@ -18,6 +19,7 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +27,9 @@ from pathlib import Path
 from . import __version__, paths
 
 TOOLS = ("sckshot", "vhid")
+
+#: The Claude Code skill that ships inside the package.
+SKILL_FILE = Path(__file__).resolve().parent / "skill" / "SKILL.md"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,7 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("relock", help="sleep the display and wait for the session to lock")
     sub.add_parser("use-password", help="switch a Touch ID panel to its password field (presses Return only)")
     sub.add_parser("approve", help="type the password from stdin into the password panel on screen")
+
+    k = sub.add_parser("skill", help="install the Claude Code skill as <dir>/claude-human/SKILL.md")
+    k.add_argument("--dir", default="~/.claude/skills", help="skills folder (default ~/.claude/skills)")
     return p
+
+
+def install_skill(skills_dir: str | os.PathLike) -> Path:
+    """Copy the packaged SKILL.md to <skills_dir>/claude-human/SKILL.md and return that path."""
+    target = Path(skills_dir).expanduser() / "claude-human" / "SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(SKILL_FILE, target)
+    return target
 
 
 def build_env(args: argparse.Namespace) -> dict:
@@ -109,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
             if r.returncode != 0:
                 print(f"failed: {' '.join(c)}", file=sys.stderr)
                 return r.returncode
+        return 0
+
+    if cmd == "skill":
+        print(install_skill(args.dir))
         return 0
 
     if cmd in ("windows", "screenshot", "state"):
