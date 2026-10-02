@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- `claude_human.notify`, a notifier for a person through an ntfy server, with the standard library only. `NtfyNotifier` publishes JSON (title, message, priority, tags, click link, picture, action buttons, Markdown) with a bearer token or basic auth and a timeout, and returns `(ok, detail)` instead of raising on a network failure. `poll` reads back what the server holds. `FileNotifier` writes each message to a JSON lines file as the floor, `FirstThatWorks` tries notifiers in order, and all of them follow the `Notifier` protocol.
+- A message whose link, picture or button URL is on a loopback address is refused, because the phone would open itself. `CLAUDE_HUMAN_NOTIFY_HOLD` stops every send, for test runs. `since` values in days are turned into hours for ntfy.
+- `watch_sender`, which lets `claude_ops.watch.run_source` tell a person instead of a chat.
+- `claude-human notify`, which reads the token or password from the environment only.
+- The skill has new sections on sending notifications and on writing a watcher that tells a person or wakes a chat.
+
 ## 0.2.0
 
 - `claude_human.station`, a web server that shows one window of the Mac on a phone and sends the person's taps and keys back as clicks and key presses. It listens on 127.0.0.1 only, reads the token from the `Authorization` header only, and keeps a pinned grant to its own app's window (a window it cannot find is refused, never widened to the whole display).

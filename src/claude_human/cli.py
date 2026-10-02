@@ -11,9 +11,11 @@
     claude-human skill [--dir DIR]
     claude-human station [--port N] [--app NAME] [--token-file FILE] [--fps N]
     claude-human prepare [--phase place|input|all] APP STEP...
+    claude-human notify [--url URL] [--title T] [--priority P] [--tag T] [--link URL] [--file F] MESSAGE
 
 A password is read only from stdin (or typed at a hidden prompt when stdin is a terminal). There is
-no option that takes one, so it never appears in the process list or the shell history.
+no option that takes one, so it never appears in the process list or the shell history. The same
+holds for the ntfy token and password, which ``notify`` reads from the environment only.
 """
 from __future__ import annotations
 
@@ -83,6 +85,21 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("app", help="the application the recipe is for")
     pr.add_argument("steps", nargs="*", help='steps such as "open x-apple.systempreferences:..." "wait 1" "search Login Items"')
 
+    n = sub.add_parser("notify", help="send a message to a person through an ntfy topic")
+    n.add_argument("message", help='the message text ("-" reads it from stdin)')
+    n.add_argument("--url", help="the topic URL, https://host/topic (default: $CLAUDE_HUMAN_NTFY_URL)")
+    n.add_argument("--title", default="", help="the title line")
+    n.add_argument("--priority", help="min, low, default, high, max or 1 to 5")
+    n.add_argument("--tag", action="append", default=[], help="a tag or emoji short code (repeatable)")
+    n.add_argument("--link", help="where a tap on the message lands")
+    n.add_argument("--attach", help="a URL to a picture shown with the message")
+    n.add_argument("--token-env", default="CLAUDE_HUMAN_NTFY_TOKEN",
+                   help="the environment variable that holds the access token (default "
+                        "CLAUDE_HUMAN_NTFY_TOKEN). Basic auth reads CLAUDE_HUMAN_NTFY_USER and "
+                        "CLAUDE_HUMAN_NTFY_PASSWORD")
+    n.add_argument("--timeout", type=float, default=10.0, help="seconds before giving up (default 10)")
+    n.add_argument("--file", help="also the floor: append the message to this file when the send fails")
+
     k = sub.add_parser("skill", help="install the Claude Code skill as <dir>/claude-human/SKILL.md")
     k.add_argument("--dir", default="~/.claude/skills", help="skills folder (default ~/.claude/skills)")
     return p
@@ -142,6 +159,23 @@ def serve_station(args: argparse.Namespace) -> int:
     return 0
 
 
+def send_notification(args: argparse.Namespace, stdin=None) -> int:
+    from . import notify  # noqa: PLC0415
+    text = (stdin or sys.stdin).read() if args.message == "-" else args.message
+    try:
+        n = notify.from_env(args.url, token_env=args.token_env, timeout=args.timeout)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    ok, detail = n.notify(args.title, text, priority=args.priority, link=args.link,
+                          tags=args.tag, attach=args.attach)
+    if not ok and args.file:
+        fok, fdetail = notify.FileNotifier(args.file).notify(args.title, text, priority=args.priority,
+                                                             link=args.link, tags=args.tag)
+        detail += f"; file: {fdetail}"
+    return _report(ok, detail)
+
+
 def read_password(stream=None) -> str:
     stream = stream or sys.stdin
     if stream.isatty():
@@ -176,6 +210,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "station":
         return serve_station(args)
+
+    if cmd == "notify":
+        return send_notification(args)
 
     if cmd == "prepare":
         from .station import prepare  # noqa: PLC0415
