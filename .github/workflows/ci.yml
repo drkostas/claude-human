@@ -9,6 +9,7 @@ jobs:
   python:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ["3.10", "3.12", "3.13"]
     steps:
@@ -42,6 +43,7 @@ jobs:
   js:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         node: ["20", "22"]
     defaults:

@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -35,7 +36,8 @@ def test_build_scripts_carry_no_fixed_identity():
     assert "Apple Development: " in text  # found at build time, never written in
 
 
-@pytest.mark.skipif(shutil.which("swiftc") is None, reason="needs swiftc (macOS)")
+@pytest.mark.skipif(sys.platform != "darwin" or shutil.which("swiftc") is None,
+                    reason="needs swiftc and ScreenCaptureKit (macOS)")
 def test_sckshot_builds_unsigned(tmp_path):
     env = dict(os.environ, CLAUDE_HUMAN_IDENTITY="none", CLAUDE_HUMAN_BUNDLE_ID="org.example.sckshot")
     out = tmp_path / "sckshot.app"
