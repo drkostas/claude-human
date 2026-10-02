@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e '.[test]'
+      - run: python -m compileall -q src
+      - run: pytest -q
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install -e '.[test,macos]'
+      - run: pytest -q
+      - name: Build the tools without signing
+        env:
+          CLAUDE_HUMAN_IDENTITY: none
+          CLAUDE_HUMAN_BUNDLE_ID: org.example.sckshot
+        run: |
+          claude-human build-tools --out "$RUNNER_TEMP/bin"
+          test -x "$RUNNER_TEMP/bin/sckshot.app/Contents/MacOS/sckshot"
+          test -x "$RUNNER_TEMP/bin/vhid_type"
+          plutil -lint "$RUNNER_TEMP/bin/sckshot.app/Contents/Info.plist"
+
+  js:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "22"]
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
