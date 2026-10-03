@@ -40,7 +40,8 @@ describe("config plugin against a fixture project", () => {
     expect(out.kotlin).toContain("class NtfyService : Service()");
     expect(out.kotlin).toContain("class BootReceiver : BroadcastReceiver()");
     expect(out.kotlin).toContain("var topicUrl: String = BuildConfig.NTFY_TOPIC_URL");
-    expect(out.kotlin).toContain("FOREGROUND_SERVICE_TYPE_DATA_SYNC");
+    expect(out.kotlin).toContain("FOREGROUND_SERVICE_TYPE_SPECIAL_USE");
+    expect(out.kotlin).not.toContain("FOREGROUND_SERVICE_TYPE_DATA_SYNC");
     expect(out.kotlin).toContain("ACTION_MY_PACKAGE_REPLACED");
     expect(out.kotlin).toContain('click.startsWith("example://")');
     expect(out.kotlin).toContain('.ifBlank { "Example" }');
@@ -52,10 +53,14 @@ describe("config plugin against a fixture project", () => {
     expect(out.main).toContain("startForegroundService(svc)");
     expect(out.main.indexOf("super.onCreate(null)")).toBeLessThan(out.main.indexOf("NtfyService::class.java"));
 
-    for (const p of ["FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "RECEIVE_BOOT_COMPLETED", "WAKE_LOCK"]) {
+    for (const p of ["FOREGROUND_SERVICE", "FOREGROUND_SERVICE_SPECIAL_USE", "RECEIVE_BOOT_COMPLETED", "WAKE_LOCK"]) {
       expect(out.manifest).toContain(`android:name="android.permission.${p}"`);
     }
-    expect(out.manifest).toMatch(/<service android:name="\.NtfyService" android:exported="false" android:foregroundServiceType="dataSync"\/>/);
+    // Android 15 stops a dataSync service after 6 hours in 24 and refuses to restart it.
+    expect(out.manifest).toMatch(/<service android:name="\.NtfyService" android:exported="false" android:foregroundServiceType="specialUse">/);
+    expect(out.manifest).toContain('android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"');
+    expect(out.manifest).not.toContain("dataSync");
+    expect(out.manifest).not.toContain("FOREGROUND_SERVICE_DATA_SYNC");
     expect(out.manifest).toContain('<receiver android:name=".BootReceiver" android:exported="true">');
     expect(out.manifest).toContain("android.intent.action.BOOT_COMPLETED");
     expect(out.manifest).toContain("android.intent.action.MY_PACKAGE_REPLACED");
@@ -144,5 +149,25 @@ describe("plugin helpers", () => {
 
   it("keeps the fixture itself untouched", () => {
     expect(existsSync(join(FIXTURE, "android/app/src/main/java/org/example/app/NtfyService.kt"))).toBe(false);
+  });
+});
+
+describe("the service type on a manifest that already has the service", () => {
+  it("replaces an old dataSync entry and its permission, so a build without --clean is fixed too", () => {
+    const manifest = {
+      "uses-permission": [{ $: { "android:name": "android.permission.FOREGROUND_SERVICE_DATA_SYNC" } }],
+    };
+    const app = {
+      service: [{ $: { "android:name": ".NtfyService", "android:exported": "false",
+                       "android:foregroundServiceType": "dataSync" } }],
+    };
+    plugin.addManifestEntries(manifest, app);
+    const ours = app.service.filter((s) => s.$["android:name"] === ".NtfyService");
+    expect(ours).toHaveLength(1);
+    expect(ours[0].$["android:foregroundServiceType"]).toBe("specialUse");
+    expect(ours[0].property[0].$["android:name"]).toBe("android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE");
+    const perms = manifest["uses-permission"].map((p) => p.$["android:name"]);
+    expect(perms).not.toContain("android.permission.FOREGROUND_SERVICE_DATA_SYNC");
+    expect(perms).toContain("android.permission.FOREGROUND_SERVICE_SPECIAL_USE");
   });
 });
