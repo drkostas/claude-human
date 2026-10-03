@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `@drkostas/expo-ntfy`: the listener is a `specialUse` foreground service instead of `dataSync`. Android 15 stops a `dataSync` service after 6 hours in any 24 and refuses to restart it until the app is opened, so notifications stopped every afternoon. The plugin also rewrites an existing service entry and drops the old permission, so a build without `--clean` is fixed too.
 - `@drkostas/claude-human-client` 0.1.0 in `client/`, a typed TypeScript client for `claude-human task serve`. It has a call for each route (`pending`, `task`, `open`, `done`, `comment`, `withdraw`, `history`, `comments`, `health`), the types of their JSON, `TaskApiError` for a status other than 2xx, retries for GETs only, and the helpers `waitingLabel`, `floorSteps` and `touchpointQuery`. The base URL and the token are passed in, and the token can be a function read at each request. Its tests run against a fake `fetch` and against the real server started on a free loopback port.
 - `examples/expo-tasks`, an Expo app built on the client and `@drkostas/expo-ntfy`, with a list of waiting tasks, a task page and the history.
 - CI typechecks and tests the client and the example app.

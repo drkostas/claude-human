@@ -181,6 +181,7 @@ adb -s "$PHONE" shell dumpsys notification --noredact | grep "$PKG"   # did a me
 - A release build refuses plain HTTP by default. Serve ntfy over HTTPS on an address the phone can reach (a private network is fine), and keep the topic on a server with access control.
 - Only one part of the app may post to the tray. With the service and JavaScript both posting, every message arrived twice. `TRAY_IS_NATIVE` keeps the JavaScript glue out of the tray on Android. Count the notification records in `dumpsys notification` to check, rather than trusting one delivery.
 - Android 14 and later need the service type in the `startForeground` call as well as in the manifest, or the service crashes on start.
+- The service type is `specialUse`, never `dataSync`. Android 15 gives a `dataSync` service 6 hours in any 24, then stops it and refuses to start it again until the person opens the app, so a phone went quiet every afternoon. `adb logcat` shows `ForegroundServiceDidNotStopInTimeException` and then `Time limit already exhausted for foreground service type dataSync`, while the server still reports each message as sent.
 - Installing an update stops the app and its service, and nothing restarted it until someone opened the app. The receiver listens for `MY_PACKAGE_REPLACED` for that reason. Test by installing and not opening the app.
 - Some Android skins stop even a foreground service. On ColorOS, the app's battery setting must be "Allow background activity" (the default "Smart mode" stopped the service within seconds of screen off), and "Allow auto-launch" must be on, or the boot broadcast never arrives. Neither can be changed with adb permission commands. Tell the person, or drive the settings screen yourself if the task allows it.
 - ColorOS settings that adb cannot change can still be reached by reading the screen with `adb -s "$PHONE" shell uiautomator dump` and tapping the radio button at the bounds it reports, when the person has asked for the task.
@@ -328,6 +329,7 @@ const answer = await tasks.done(id);    // the check decides, and answer.detail 
 | Phone silent for days | `localhost` baked into the build | `logcat` showed the cleartext refusal for localhost | plugin refuses loopback |
 | Every message twice | two parts posted to the tray | two notification records per message | `TRAY_IS_NATIVE` |
 | Silent after each update | update stops the service | install without opening, `dumpsys` showed no service | `MY_PACKAGE_REPLACED` receiver |
+| Silent every afternoon, server says sent | Android 15 stops a `dataSync` service after 6 hours in 24 | `logcat` showed the timeout and then "Time limit already exhausted" | service type `specialUse` |
 | Service dies on one brand of phone | skin battery policy | service gone seconds after screen off | "Allow background activity", auto-launch |
 | A tap landed in the wrong app | coordinates reused without foregrounding | a screenshot after the tap | foreground and confirm before every step |
 | Taps on the phone did nothing and said nothing | a refused input was reported as success | the Mac was locked while the page showed ok | refusals return `ok: false` and the page shows the reason |
