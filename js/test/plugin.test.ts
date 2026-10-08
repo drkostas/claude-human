@@ -154,10 +154,12 @@ describe("plugin helpers", () => {
 
 describe("the service type on a manifest that already has the service", () => {
   it("replaces an old dataSync entry and its permission, so a build without --clean is fixed too", () => {
-    const manifest = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const manifest: Record<string, any[]> = {
       "uses-permission": [{ $: { "android:name": "android.permission.FOREGROUND_SERVICE_DATA_SYNC" } }],
     };
-    const app = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const app: { service: any[] } = {
       service: [{ $: { "android:name": ".NtfyService", "android:exported": "false",
                        "android:foregroundServiceType": "dataSync" } }],
     };
