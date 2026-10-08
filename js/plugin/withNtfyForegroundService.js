@@ -153,11 +153,12 @@ class NtfyService : Service() {
         super.onCreate()
         createChannels()
         // Android 14 and later throw unless the service type is also given here, not only in the
-        // manifest.
+        // manifest. specialUse, never dataSync: Android 15 gives dataSync 6 hours in any 24, then
+        // stops the service and refuses to start it again until the app is opened.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 ONGOING_ID, ongoingNotification(),
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             )
         } else {
             startForeground(ONGOING_ID, ongoingNotification())
@@ -331,9 +332,13 @@ function patchMainActivity(src) {
     } catch (e: Exception) { android.util.Log.w("NtfyService", "start: " + e.message) }`);
 }
 
+/** What the specialUse service is for, as Android asks every specialUse service to say. */
+const SPECIAL_USE_SUBTYPE =
+  "Holds the connection to a self-hosted ntfy server so its notifications arrive without Firebase";
+
 const PERMISSIONS = [
   "android.permission.FOREGROUND_SERVICE",
-  "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+  "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
   "android.permission.RECEIVE_BOOT_COMPLETED",
   "android.permission.WAKE_LOCK",
 ];
@@ -346,16 +351,28 @@ function addManifestEntries(manifest, app) {
       manifest["uses-permission"].push({ $: { "android:name": name } });
     }
   }
-  app.service = app.service || [];
-  if (!app.service.some((s) => s.$["android:name"] === ".NtfyService")) {
-    app.service.push({
+  // A listener runs all day, so its type is specialUse. A dataSync service gets 6 hours in any 24
+  // on Android 15: the system then stops it ("did not stop within its timeout") and refuses a new
+  // start ("Time limit already exhausted for foreground service type dataSync") until the person
+  // opens the app, so notifications stopped every afternoon with nothing on the phone to say so.
+  // specialUse has no time limit and must state its purpose in a property. The entry is rewritten
+  // rather than kept, so a build without --clean cannot carry an older type forward.
+  manifest["uses-permission"] = manifest["uses-permission"].filter(
+    (p) => p.$["android:name"] !== "android.permission.FOREGROUND_SERVICE_DATA_SYNC");
+  app.service = (app.service || []).filter((s) => s.$["android:name"] !== ".NtfyService");
+  app.service.push({
+    $: {
+      "android:name": ".NtfyService",
+      "android:exported": "false",
+      "android:foregroundServiceType": "specialUse",
+    },
+    property: [{
       $: {
-        "android:name": ".NtfyService",
-        "android:exported": "false",
-        "android:foregroundServiceType": "dataSync",
+        "android:name": "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE",
+        "android:value": SPECIAL_USE_SUBTYPE,
       },
-    });
-  }
+    }],
+  });
   app.receiver = app.receiver || [];
   if (!app.receiver.some((r) => r.$["android:name"] === ".BootReceiver")) {
     app.receiver.push({
