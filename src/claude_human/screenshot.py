@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 from . import paths
@@ -43,7 +44,7 @@ AUTH_MAX_FRACTION = 0.7
 
 
 def _quartz():
-    import Quartz  # noqa: PLC0415 - macOS only, see the module docstring
+    import Quartz
     return Quartz
 
 
@@ -209,11 +210,11 @@ def auth_prompt() -> dict | None:
 
 # ----------------------------------------------------------------------------- capture
 
-def _sckshot_frame(wid: int | None, max_w: int, binary: str | os.PathLike) -> tuple[bytes, int, int] | None:
+def _sckshot_frame(wid: int | None, max_w: int, binary: str | os.PathLike, *, env: Mapping[str, str] | None = None) -> tuple[bytes, int, int] | None:
     fd, tmp = tempfile.mkstemp(suffix=".jpg")
     os.close(fd)
     try:
-        r = subprocess.run(sckshot_args(binary, tmp, wid, max_w), capture_output=True, timeout=6)
+        r = subprocess.run(sckshot_args(binary, tmp, wid, max_w), capture_output=True, timeout=6, env=env)
         if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
             return None
         with open(tmp, "rb") as fh:
@@ -268,7 +269,7 @@ def _downscale(img, max_w: int):
 
 def _jpeg(img, quality: float) -> bytes:
     q = _quartz()
-    from CoreFoundation import CFDataCreateMutable  # noqa: PLC0415
+    from CoreFoundation import CFDataCreateMutable
     data = CFDataCreateMutable(None, 0)
     dest = q.CGImageDestinationCreateWithData(data, "public.jpeg", 1, None)
     q.CGImageDestinationAddImage(dest, img, {"kCGImageDestinationLossyCompressionQuality": quality})
@@ -278,11 +279,11 @@ def _jpeg(img, quality: float) -> bytes:
 
 def capture(wid: int | None = None, *, max_width: int = DEFAULT_MAX_WIDTH,
             quality: float = DEFAULT_QUALITY,
-            sckshot: str | os.PathLike | None = None) -> tuple[bytes, int, int] | None:
+            sckshot: str | os.PathLike | None = None, env: Mapping[str, str] | None = None) -> tuple[bytes, int, int] | None:
     """One JPEG of the screen (``wid`` None) or of one window: ``(bytes, width, height)`` or None.
 
     This does not check the lock state. Use ``frame`` for that."""
-    fr = _sckshot_frame(wid, max_width, paths.sckshot_path(sckshot))
+    fr = _sckshot_frame(wid, max_width, paths.sckshot_path(sckshot), env=env)
     if fr is not None:
         return fr
     img = _grab_legacy(wid)
@@ -304,14 +305,14 @@ def frame(wid: int | None = None, **kw: Any) -> tuple[bytes, int, int] | None:
 
 
 def save(out: str | os.PathLike, wid: int | None = None, *, max_width: int = 0,
-         sckshot: str | os.PathLike | None = None) -> tuple[int, int]:
+         sckshot: str | os.PathLike | None = None, env: Mapping[str, str] | None = None) -> tuple[int, int]:
     """Write one capture to ``out`` with sckshot (PNG, or JPEG for .jpg/.jpeg). Returns its size.
 
     Raises FileNotFoundError when sckshot is not built and RuntimeError when the capture fails."""
     binary = paths.sckshot_path(sckshot)
     if not binary.exists():
         raise FileNotFoundError(f"sckshot is not built at {binary} (run: claude-human build-tools)")
-    r = subprocess.run(sckshot_args(binary, str(out), wid, max_width), capture_output=True, timeout=20)
+    r = subprocess.run(sckshot_args(binary, str(out), wid, max_width), capture_output=True, timeout=20, env=env)
     size = parse_sckshot_output(r.stdout)
     if r.returncode != 0 or size is None:
         raise RuntimeError((r.stderr or r.stdout or b"").decode(errors="replace").strip() or "capture failed")

@@ -1,6 +1,6 @@
 {
   "name": "@drkostas/expo-ntfy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Phone notifications from a self-hosted ntfy server in an Expo app, without Firebase: a config plugin that adds a native Android foreground service, plus the wire logic and the notification glue",
   "license": "MIT",
   "author": "Konstantinos Georgiou",
