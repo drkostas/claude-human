@@ -41,10 +41,12 @@ whether the process is running.
 """
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 import subprocess
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
@@ -104,12 +106,12 @@ def argv_phase(argv: list[str]) -> tuple[str, list[str]]:
     return phase, rest
 
 
-def yabai_windows(yabai: str = "yabai") -> list[dict]:
+def yabai_windows(yabai: str = "yabai", *, env: Optional[Mapping[str, str]] = None) -> list[dict]:
     """Every window on every desktop, from yabai, as ``{id, space, app, title}``.
 
     Raises when yabai fails or answers something that is not a list. An empty answer is not an empty
     machine (at a locked screen yabai can exit 0 with a cut off answer)."""
-    r = subprocess.run([yabai, "-m", "query", "--windows"], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([yabai, "-m", "query", "--windows"], capture_output=True, text=True, timeout=10, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"yabai query --windows: {r.stderr.strip()[:200] or 'failed'}")
     try:
@@ -124,8 +126,8 @@ def yabai_windows(yabai: str = "yabai") -> list[dict]:
 
 def default_screen() -> Any:
     """The on-screen window list from ``claude_human.screenshot`` and the default input sink."""
-    from .. import screenshot  # noqa: PLC0415
-    from .input import QuartzInput  # noqa: PLC0415
+    from .. import screenshot
+    from .input import QuartzInput
     return SimpleNamespace(windows=screenshot.windows, do_input=QuartzInput().do_input)
 
 
@@ -136,16 +138,19 @@ class Preparer:
     - ``all_windows`` lists the windows on every desktop. The default is yabai when it is on the
       PATH, and otherwise the on-screen list (then the place phase cannot see other desktops).
     - ``run`` is ``subprocess.run`` or a stand-in, and ``clock`` has ``time()`` and ``sleep()``.
+    - ``env`` is the environment of every command the default ``run`` and yabai start (None inherits).
     """
 
     def __init__(self, screen: Any = None, *, all_windows: Optional[Callable[[], list]] = None,
                  run: Optional[Callable[..., Any]] = None, clock: Any = None,
-                 browser_timeout: float = BROWSER_TIMEOUT, search_at: Optional[dict] = None):
+                 browser_timeout: float = BROWSER_TIMEOUT, search_at: Optional[dict] = None,
+                 env: Optional[Mapping[str, str]] = None):
         self.screen = screen if screen is not None else default_screen()
         if all_windows is None:
-            all_windows = yabai_windows if shutil.which("yabai") else self.screen.windows
+            yabai = shutil.which("yabai") if env is None else shutil.which("yabai", path=env.get("PATH"))
+            all_windows = (lambda: yabai_windows(yabai, env=env)) if yabai else self.screen.windows
         self.all_windows = all_windows
-        self.sh = run or subprocess.run
+        self.sh = run or (subprocess.run if env is None else functools.partial(subprocess.run, env=env))
         self.clock = clock or time
         self.browser_timeout = browser_timeout
         self.search_at = SEARCH_AT if search_at is None else search_at
@@ -322,7 +327,7 @@ class Preparer:
                     self.step(app, verb.lower(), rest, settle)
                     log.append(f"{step}: ok")
                     break
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     if attempt == 1:
                         self.clock.sleep(0.8)
                         continue

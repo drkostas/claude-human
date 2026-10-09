@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections.abc import Mapping
 from typing import Callable, Optional
 
 from . import paths
@@ -41,7 +42,7 @@ Result = tuple[bool, str]
 def is_locked() -> Optional[bool]:
     """Whether the console session is locked. None when it cannot be read (no Quartz)."""
     try:
-        import Quartz  # noqa: PLC0415 - macOS only
+        import Quartz
         d = Quartz.CGSessionCopyCurrentDictionary() or {}
         return bool(d.get("CGSSessionScreenIsLocked"))
     except Exception:
@@ -49,7 +50,7 @@ def is_locked() -> Optional[bool]:
 
 
 def _default_prompt() -> Optional[dict]:
-    from .screenshot import auth_prompt  # noqa: PLC0415 - needs Quartz
+    from .screenshot import auth_prompt
     return auth_prompt()
 
 
@@ -63,14 +64,14 @@ def helper_argv(helper: str | os.PathLike, *flags: str, sudo: bool = True) -> li
 
 
 def _type(helper: str, text: str, flags: tuple[str, ...], timeout: float,
-          sudo: bool) -> tuple[bool, Optional[str]]:
+          sudo: bool, *, env: Mapping[str, str] | None = None) -> tuple[bool, Optional[str]]:
     """Run the helper once. Returns ``(could_run, error)``. ``error`` is None when it typed.
 
     ``could_run`` is False when the helper timed out or could not start at all, and True when it ran
     (even if it then reported a failure)."""
     try:
         r = _run(helper_argv(helper, *flags, sudo=sudo), input=text, text=True,
-                 capture_output=True, timeout=timeout)
+                 capture_output=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return False, "the virtual HID helper timed out"
     except OSError as e:
@@ -80,16 +81,16 @@ def _type(helper: str, text: str, flags: tuple[str, ...], timeout: float,
     return True, None
 
 
-def _wake() -> None:
+def _wake(*, env: Mapping[str, str] | None = None) -> None:
     try:
-        _popen(["/usr/bin/caffeinate", "-u", "-t", "30"])
+        _popen(["/usr/bin/caffeinate", "-u", "-t", "30"], env=env)
     except OSError:
         pass
 
 
 def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: float = 2.0,
            poll_seconds: float = 8.0, attempts: int = 2,
-           locked: Callable[[], Optional[bool]] | None = None, sudo: bool = True) -> Result:
+           locked: Callable[[], Optional[bool]] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None) -> Result:
     """Type ``password`` at the lock screen and observe the result. Returns ``(ok, detail)``.
 
     The display is woken first, then the helper taps Shift (to show the password field), clears the
@@ -108,12 +109,12 @@ def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: fl
     if not _exists(helper):
         return False, f"virtual HID helper not built ({helper})"
 
-    _wake()
+    _wake(env=env)
     _sleep(settle)
 
     helper_error = ""
     for attempt in range(max(1, attempts)):
-        ran, err = _type(helper, password, ("--wake", "--clear", "--return"), 45, sudo)
+        ran, err = _type(helper, password, ("--wake", "--clear", "--return"), 45, sudo, env=env)
         if not ran:
             return False, err or "the virtual HID helper did not run"
         if err:
@@ -126,7 +127,7 @@ def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: fl
                 return True, "Unlocked." if attempt == 0 else "Unlocked (took a second try)."
 
         if attempt < attempts - 1:
-            _wake()
+            _wake(env=env)
             _sleep(0.8)
 
     return False, helper_error or (f"typed the password at the lock screen, but it is still locked "
@@ -134,7 +135,7 @@ def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: fl
 
 
 def relock(*, poll_seconds: float = 5.0,
-           locked: Callable[[], Optional[bool]] | None = None) -> Result:
+           locked: Callable[[], Optional[bool]] | None = None, env: Mapping[str, str] | None = None) -> Result:
     """Lock the console and observe it. Returns ``(ok, detail)``. Nothing is typed.
 
     ``pmset displaysleepnow`` sleeps the display, and the session locks if the Mac is set to require
@@ -144,7 +145,7 @@ def relock(*, poll_seconds: float = 5.0,
     if locked() is True:
         return True, "Already locked."
     try:
-        r = _run(["/usr/bin/pmset", "displaysleepnow"], capture_output=True, text=True, timeout=10)
+        r = _run(["/usr/bin/pmset", "displaysleepnow"], capture_output=True, text=True, timeout=10, env=env)
     except subprocess.TimeoutExpired:
         return False, "pmset timed out"
     except OSError as e:
@@ -167,7 +168,7 @@ NO_PROMPT = "No password prompt is open on the Mac right now."
 
 
 def use_password(*, helper: str | os.PathLike | None = None,
-                 prompt_present: Callable[[], object] | None = None, sudo: bool = True) -> Result:
+                 prompt_present: Callable[[], object] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None) -> Result:
     """Switch a Touch ID first credential panel to its password field. Nothing is typed.
 
     Some panels open on the Touch ID screen with a "Use Password..." button and no field yet. That
@@ -180,14 +181,14 @@ def use_password(*, helper: str | os.PathLike | None = None,
     helper = str(paths.vhid_path(helper))
     if not _exists(helper):
         return False, f"virtual HID helper not built ({helper})"
-    _, err = _type(helper, "", ("--return",), 20, sudo)
+    _, err = _type(helper, "", ("--return",), 20, sudo, env=env)
     if err:
         return False, err
     return True, "Asked the Mac to switch to the password field."
 
 
 def approve(password: str, *, helper: str | os.PathLike | None = None, poll_seconds: float = 7.0,
-            prompt_present: Callable[[], object] | None = None, sudo: bool = True) -> Result:
+            prompt_present: Callable[[], object] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None) -> Result:
     """Type ``password`` into the credential panel on screen and observe it close.
 
     The OK button of the LocalAuthentication panel ignores Return, and synthetic clicks never reach
@@ -204,7 +205,7 @@ def approve(password: str, *, helper: str | os.PathLike | None = None, poll_seco
     helper = str(paths.vhid_path(helper))
     if not _exists(helper):
         return False, f"virtual HID helper not built ({helper})"
-    _, err = _type(helper, password + "\t\t ", ("--clear",), 45, sudo)
+    _, err = _type(helper, password + "\t\t ", ("--clear",), 45, sudo, env=env)
     if err:
         return False, err
 

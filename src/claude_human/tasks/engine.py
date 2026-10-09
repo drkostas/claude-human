@@ -21,10 +21,23 @@ The rules it keeps, each from a task loop that went wrong somewhere.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from typing import Iterable, Optional, Sequence
 
-from .model import (FLOOR_KINDS, FLOOR_PREFERENCE, Authorizer, ChainEntry, Handoff,
-                    HandoffResolver, Task, TaskStore, Verifier, entry_json, head, kind_of)
+from .model import (
+    FLOOR_KINDS,
+    FLOOR_PREFERENCE,
+    Authorizer,
+    ChainEntry,
+    Handoff,
+    HandoffResolver,
+    Task,
+    TaskStore,
+    Verifier,
+    entry_json,
+    head,
+    kind_of,
+)
 
 
 class Refused(Exception):
@@ -49,9 +62,9 @@ def filter_chain(declared: Iterable[Handoff], supports: Sequence[str], platform:
     return sorted(kept, key=lambda h: h.preference)
 
 
-def _run(argv: list[str], timeout: float) -> tuple[bool, str]:
+def _run(argv: list[str], timeout: float, env: Optional[Mapping[str, str]] = None) -> tuple[bool, str]:
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout:g}s"
     except (OSError, subprocess.SubprocessError, ValueError) as e:
@@ -70,10 +83,12 @@ class CommandVerifier:
     """Runs the task's verify command (a list of arguments, no shell) and answers whether it exited 0.
 
     A task with no command, or with a string where a list belongs, is never done. ``last`` keeps
-    the detail of the most recent run for the caller to show."""
+    the detail of the most recent run for the caller to show. ``env`` is the command's
+    environment (None inherits)."""
 
-    def __init__(self, timeout: float = 20.0):
+    def __init__(self, timeout: float = 20.0, *, env: Optional[Mapping[str, str]] = None):
         self.timeout = timeout
+        self.env = env
         self.last = ""
 
     def verify(self, task: Task) -> bool:
@@ -81,15 +96,16 @@ class CommandVerifier:
         if argv is None:
             self.last = "no verify command (a list of arguments) on this task"
             return False
-        ok, self.last = _run(argv, self.timeout)
+        ok, self.last = _run(argv, self.timeout, self.env)
         return ok
 
 
 class DefaultResolver:
     """Orders the task's own handoffs with ``filter_chain`` and runs a handoff's ``prepare``."""
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0, *, env: Optional[Mapping[str, str]] = None):
         self.timeout = timeout
+        self.env = env
 
     def chain(self, task: Task, supports: Sequence[str], platform: str) -> list[ChainEntry]:
         return list(filter_chain(task.handoffs, supports, platform, task.steps))
@@ -101,7 +117,7 @@ class DefaultResolver:
         argv = _argv(prep)
         if argv is None:
             return False, "prepare is not a list of arguments"
-        ok, detail = _run(argv, self.timeout)
+        ok, detail = _run(argv, self.timeout, self.env)
         return ok, ("prepared" if ok else f"not prepared: {detail}")
 
 
@@ -186,7 +202,7 @@ class TaskEngine:
         title, body, opts = self.notice(task)
         try:
             ok, detail = self.notifier.notify(title, body, **opts)
-        except Exception as e:                                          # noqa: BLE001
+        except Exception as e:
             ok, detail = False, f"{type(e).__name__}: {e}"
         # both halves are kept when the store can hold them: "nobody was told" must not turn
         # into "nobody knows whether anybody was told"
@@ -194,7 +210,7 @@ class TaskEngine:
         if callable(record):
             try:
                 record(task.id, "task.notify", "success" if ok else "failure", {"detail": detail})
-            except Exception:                                           # noqa: BLE001
+            except Exception:
                 pass
         return ok, detail
 

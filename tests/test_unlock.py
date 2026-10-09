@@ -29,7 +29,7 @@ def world(monkeypatch):
 
     clock = Clock()
     monkeypatch.setattr(u, "_run", run)
-    monkeypatch.setattr(u, "_popen", lambda argv: w.popen.append(argv))
+    monkeypatch.setattr(u, "_popen", lambda argv, **k: w.popen.append(argv))
     monkeypatch.setattr(u, "_sleep", lambda s: None)
     monkeypatch.setattr(u, "_now", clock.now)
     monkeypatch.setattr(u, "_exists", lambda p: True)
