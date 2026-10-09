@@ -1,3 +1,5 @@
+![claude-human](docs/images/banner.png)
+
 # claude-human
 
 claude-human is a small set of tools for a Mac that a person and an agent share. I run a system on my own Mac that hands tasks to me on my phone when it needs a person (approve a password prompt, look at a window, type a password at the lock screen). These are the parts of it that are not tied to that system.
