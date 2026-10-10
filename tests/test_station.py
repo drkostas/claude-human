@@ -355,9 +355,14 @@ class WindowAuth(FakeAuth):
         self.window = 22
         self.window_error = None
 
+    def check(self, secret):
+        g = super().check(secret)
+        return Grant(master=False, station=g.station, holder=g.holder, ref="task-1") if g and not g.master else g
+
     def window_for(self, grant):
         if self.window_error:
             raise self.window_error
+        assert grant.ref == "task-1"     # the auth's own reference reaches window_for
         return self.window
 
 

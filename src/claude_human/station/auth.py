@@ -49,10 +49,14 @@ class Unavailable(Exception):
 
 @dataclass(frozen=True)
 class Grant:
-    """What one bearer token may do, for the length of one request."""
+    """What one bearer token may do, for the length of one request.
+
+    ``ref`` is the auth's own reference for the grant (the task it was minted for, say), so that
+    ``app_for`` and ``window_for`` can find what it covers. The server never reads it."""
     master: bool
     station: Optional[str] = None
     holder: Optional[str] = None
+    ref: Optional[str] = None
 
 
 class StationAuth:
