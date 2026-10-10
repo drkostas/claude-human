@@ -65,12 +65,13 @@ class Station:
 
 
 class _Access:
-    """What the current request may do: the grant, and the app it is pinned to."""
+    """What the current request may do: the grant, and the app (and window) it is pinned to."""
 
-    def __init__(self, grant: Grant, app: Optional[str]):
+    def __init__(self, grant: Grant, app: Optional[str], window: Optional[int] = None):
         self.grant = grant
         self.master = grant.master
         self.app = app
+        self.window = window
 
 
 def default_screen() -> Any:
@@ -134,13 +135,15 @@ class Handler(BaseHTTPRequestHandler):
             return _Access(grant, None)
         try:
             app = self.st.auth.app_for(grant)
+            window = self.st.auth.window_for(grant) if app else None
         except Exception as e:  # noqa: BLE001
             # A station whose app cannot be read is not a station with no app. None would mean the
-            # whole display, the widest access, reached through the narrowest failure.
+            # whole display, the widest access, reached through the narrowest failure. The same
+            # holds for its window: unreadable is not "any window of the app".
             kind = "unavailable" if isinstance(e, Unavailable) else type(e).__name__
-            self._refuse(f"could not read the station's app ({kind}: {e})")
+            self._refuse(f"could not read the station's app or window ({kind}: {e})")
             return None
-        return _Access(grant, app)
+        return _Access(grant, app, int(window) if window else None)
 
     # ------------------------------------------------------------------ GET
 
@@ -176,10 +179,10 @@ class Handler(BaseHTTPRequestHandler):
         screen = self.st.screen
 
         def target():
-            # a pinned grant names its app; only a master grant chooses the app or a window id
+            # a pinned grant names its app, and maybe its window; only a master grant chooses
             if who.master:
                 return q.get("app", [None])[0], (int(q.get("window", ["0"])[0]) or None)
-            return who.app, None
+            return who.app, who.window
 
         try:
             if u.path == "/health":
@@ -263,6 +266,8 @@ class Handler(BaseHTTPRequestHandler):
                 # the grant decides where the input lands, not the body of the request
                 msg["app"] = who.app
                 msg.pop("window", None)
+                if who.window:
+                    msg["window"] = who.window
             sink = self.st.input
             if msg.get("type") == "spotlight":
                 result = self.st.auth.perform(who.grant, "spotlight", lambda: sink.do_input(msg))
