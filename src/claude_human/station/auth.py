@@ -13,7 +13,12 @@ A grant is one of two kinds.
   application's window, whatever the request asks for. When ``app_for`` answers None the station is
   the whole display, which is a deliberate answer and not a fallback.
 
-``app_for`` must raise ``Unavailable`` when it cannot answer (a database that does not respond, for
+A pinned grant can also be pinned to one window of that application: ``window_for`` answers its
+window id, and then every frame and input goes to that window only. When that window has gone, the
+request is refused; it never moves to the application's other window. Two tasks in two windows of
+one application are the case an application pin cannot tell apart.
+
+``app_for`` and ``window_for`` must raise ``Unavailable`` when they cannot answer (a database that does not respond, for
 example). The server then refuses the request. Returning None there would turn a passing error into
 access to the whole screen.
 
@@ -44,10 +49,14 @@ class Unavailable(Exception):
 
 @dataclass(frozen=True)
 class Grant:
-    """What one bearer token may do, for the length of one request."""
+    """What one bearer token may do, for the length of one request.
+
+    ``ref`` is the auth's own reference for the grant (the task it was minted for, say), so that
+    ``app_for`` and ``window_for`` can find what it covers. The server never reads it."""
     master: bool
     station: Optional[str] = None
     holder: Optional[str] = None
+    ref: Optional[str] = None
 
 
 class StationAuth:
@@ -62,6 +71,13 @@ class StationAuth:
 
     def app_for(self, grant: Grant) -> Optional[str]:
         """The application a pinned grant may drive, or None for the whole display.
+
+        Raise ``Unavailable`` when the answer cannot be found."""
+        return None
+
+    def window_for(self, grant: Grant) -> Optional[int]:
+        """The one window of ``app_for``'s application a pinned grant may drive, or None for
+        whichever window of it is in front (the behaviour before this hook existed).
 
         Raise ``Unavailable`` when the answer cannot be found."""
         return None

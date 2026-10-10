@@ -154,7 +154,16 @@ def resolve(app: str | None, wid: int | None) -> int | None:
 
     A CGWindowID changes every time an application restarts, so storing one and using it later can
     reach a different window. Pass the application name and the id is looked up again on every
-    call. With no application name, ``wid`` is returned as it is."""
+    call. With no application name, ``wid`` is returned as it is.
+
+    With both, the answer is that window and no other, and only while it is still on screen and
+    still the application's. Two windows of one app are the case an app name cannot tell apart, so
+    a window that has gone is None, never the app's other window."""
+    if app and wid:
+        want = app.lower()
+        ok = any(w["id"] == wid and (w["app"].lower() == want or want in w["app"].lower())
+                 for w in windows())
+        return wid if ok else None
     if app:
         return pick_window(windows(), app)
     return wid

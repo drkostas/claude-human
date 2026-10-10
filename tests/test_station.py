@@ -329,3 +329,79 @@ def test_view_names_can_be_set_and_are_checked():
     with pytest.raises(TypeError):
         render(colour="red")
     assert "Bearer" in render() and "?token" not in render()
+
+
+# ----------------------------------------------------------------------------- a pinned window
+
+class WindowScreen(FakeScreen):
+    """Two windows of one app: the case an app pin cannot tell apart."""
+
+    def __init__(self):
+        super().__init__()
+        self.wins.append({"id": 33, "app": "Safari", "title": "c", "x": 0, "y": 0,
+                          "width": 1200, "height": 900})
+
+    def resolve(self, app, wid):
+        if app and wid:
+            return wid if any(w["id"] == wid and w["app"] == app for w in self.wins) else None
+        return super().resolve(app, wid)
+
+
+class WindowAuth(FakeAuth):
+    """pinned-Safari is pinned to window 22 by window_for, the smaller of Safari's two."""
+
+    def __init__(self):
+        super().__init__()
+        self.window = 22
+        self.window_error = None
+
+    def check(self, secret):
+        g = super().check(secret)
+        return Grant(master=False, station=g.station, holder=g.holder, ref="task-1") if g and not g.master else g
+
+    def window_for(self, grant):
+        if self.window_error:
+            raise self.window_error
+        assert grant.ref == "task-1"     # the auth's own reference reaches window_for
+        return self.window
+
+
+@pytest.fixture()
+def window_station():
+    screen, sink, auth = WindowScreen(), FakeInput(), WindowAuth()
+    srv = make_server(auth, port=0, screen=screen, input=sink, log=lambda m: None)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield srv.server_address[1], screen, sink, auth
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_a_pinned_window_is_the_one_shown_and_driven(window_station):
+    port, screen, sink, _auth = window_station
+    code, _h, body = req(port, "GET", "/shot?window=33", token="pinned-Safari")
+    assert code == 200 and screen.framed[-1] == 22
+    code, _h, _b = req(port, "POST", "/input", token="pinned-Safari",
+                       body={"type": "click", "x": 0.5, "y": 0.5, "window": 33})
+    assert code == 200 and sink.got[-1]["window"] == 22 and sink.got[-1]["app"] == "Safari"
+
+
+def test_a_pinned_window_that_is_gone_is_refused_never_another_of_the_app(window_station):
+    port, screen, sink, auth = window_station
+    auth.window = 99
+    before = list(screen.framed)
+    code, _h, _b = req(port, "GET", "/shot", token="pinned-Safari")
+    assert code == 404 and screen.framed == before
+
+
+def test_a_window_that_cannot_be_read_is_a_refusal(window_station):
+    port, _screen, _sink, auth = window_station
+    auth.window_error = Unavailable("database down")
+    code, _h, _b = req(port, "GET", "/shot", token="pinned-Safari")
+    assert code == 401
+
+
+def test_without_window_for_a_pin_is_the_app_as_before(station):
+    port, screen, _sink, _auth, _logs = station
+    code, _h, _b = req(port, "GET", "/shot", token="pinned-Safari")
+    assert code == 200 and screen.framed[-1] == 22

@@ -70,3 +70,15 @@ def test_save_reports_a_missing_helper(tmp_path):
     import pytest
     with pytest.raises(FileNotFoundError):
         s.save(tmp_path / "x.png", sckshot=tmp_path / "missing")
+
+
+def test_resolve_with_an_id_is_that_window_only_while_it_is_the_apps(monkeypatch):
+    wins = [{"id": 5, "app": "Safari", "title": "", "x": 0, "y": 0, "width": 100, "height": 100},
+            {"id": 6, "app": "Safari", "title": "", "x": 0, "y": 0, "width": 900, "height": 900},
+            {"id": 7, "app": "Notes", "title": "", "x": 0, "y": 0, "width": 900, "height": 900}]
+    monkeypatch.setattr(s, "windows", lambda: list(wins))
+    assert s.resolve("Safari", None) == 6          # the app alone: its largest window, as before
+    assert s.resolve("Safari", 5) == 5             # both: that window, not the largest
+    assert s.resolve("Safari", 7) is None          # another app's window is not this app's
+    assert s.resolve("Safari", 99) is None         # a window that is gone is gone, never another
+    assert s.resolve(None, 7) == 7

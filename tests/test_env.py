@@ -52,5 +52,7 @@ def test_relock_passes_the_env(monkeypatch):
     monkeypatch.setattr(u, "_run", lambda argv, **k: seen.append(k.get("env")) or types.SimpleNamespace(
         returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(u, "_sleep", lambda s: None)
-    u.relock(poll_seconds=0, env=ENV)
+    # the lock state is faked: read from the real Mac, a locked screen returned "Already locked"
+    # before pmset ran, and this test failed whenever the Mac happened to be locked
+    u.relock(poll_seconds=0, env=ENV, locked=lambda: False)
     assert seen and all(e is ENV for e in seen)
