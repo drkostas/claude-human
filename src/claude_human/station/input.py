@@ -19,6 +19,8 @@ from typing import Any, Callable, Optional
 LOCKED_DETAIL = "The Mac is locked, so it will not accept clicks or typing."
 BLOCKED_DETAIL = ("A macOS permission dialog is open on the Mac and is taking every click. "
                   "Answer it on the Mac, then try again.")
+FOCUS_DETAIL = ("That window is not in front on the Mac, so typing would go to another window. "
+                "Tap it first, then type.")
 
 #: The input types that only move the pointer. They are allowed while the Mac is locked or a dialog
 #: is up, because they cannot press anything.
@@ -32,8 +34,8 @@ V_KEY = 9
 class QuartzInput:
     """The input sink the server uses by default.
 
-    ``screen`` answers ``screen_locked()``, ``blocked_by()``, ``resolve(app, wid)`` and
-    ``window_rect(wid)``. ``claude_human.screenshot`` is the default. ``post`` sends one event (the
+    ``screen`` answers ``screen_locked()``, ``blocked_by()``, ``resolve(app, wid)``,
+    ``window_rect(wid)`` and ``front_window()``. ``claude_human.screenshot`` is the default. ``post`` sends one event (the
     default posts it to the HID event tap), and ``quartz`` is the Quartz module or a stand-in."""
 
     def __init__(self, screen: Any = None, *, post: Optional[Callable[[Any], None]] = None,
@@ -169,9 +171,28 @@ class QuartzInput:
             return {"ok": True}
 
         if kind == "scroll":
-            self.post(q.CGEventCreateScrollWheelEvent(None, q.kCGScrollEventUnitPixel, 2,
-                                                      int(msg.get("dy", 0)), int(msg.get("dx", 0))))
+            e = q.CGEventCreateScrollWheelEvent(None, q.kCGScrollEventUnitPixel, 2,
+                                                int(msg.get("dy", 0)), int(msg.get("dx", 0)))
+            if wid is not None:
+                # ⚠️ A SCROLL GOES TO THE WINDOW UNDER THE POINTER, wherever the person at the Mac
+                # left it. For a named window the pointer is moved inside it first and the scroll
+                # is placed there, so it never scrolls the window someone else is reading.
+                pt = self.to_screen(wid, float(msg.get("x", 0.5)), float(msg.get("y", 0.5)))
+                if pt is None:
+                    return {"ok": False, "detail": "that window is gone"}
+                self.post(q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, pt, which))
+                q.CGEventSetLocation(e, pt)
+            self.post(e)
             return {"ok": True}
+
+        if kind in ("text", "key") and wid is not None:
+            # ⛔ TEXT AND KEYS GO TO WHATEVER WINDOW IS IN FRONT, NOT TO THE ONE NAMED. Typed into
+            # a station whose window was behind another, they landed in the person's own window.
+            # A tap on the window brings it forward, so the answer is "tap it first". A screen that
+            # cannot say what is in front refuses rather than guesses.
+            front = getattr(self.screen, "front_window", None)
+            if not callable(front) or front() != wid:
+                return {"ok": False, "detail": FOCUS_DETAIL}
 
         if kind == "text":
             return self._paste(str(msg.get("text", ""))[:2000])

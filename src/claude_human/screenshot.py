@@ -149,6 +149,17 @@ def windows() -> list[dict]:
     return to_windows(_raw_windows())
 
 
+def front_window(raw: Iterable[dict] | None = None) -> int | None:
+    """The id of the frontmost ordinary window, the one typed text and keys reach.
+
+    CGWindowListCopyWindowInfo lists on-screen windows front to back, so the first entry that is an
+    ordinary window (layer 0, the minimum size) is in front. None when there is none."""
+    for w in (raw if raw is not None else _raw_windows()):
+        if to_windows([w]):
+            return int(w.get("kCGWindowNumber"))
+    return None
+
+
 def resolve(app: str | None, wid: int | None) -> int | None:
     """Which window a request means right now.
 

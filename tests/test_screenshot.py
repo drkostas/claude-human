@@ -82,3 +82,16 @@ def test_resolve_with_an_id_is_that_window_only_while_it_is_the_apps(monkeypatch
     assert s.resolve("Safari", 7) is None          # another app's window is not this app's
     assert s.resolve("Safari", 99) is None         # a window that is gone is gone, never another
     assert s.resolve(None, 7) == 7
+
+
+def test_front_window_is_the_first_ordinary_window_front_to_back():
+    raw = [{"kCGWindowNumber": 1, "kCGWindowLayer": 25, "kCGWindowOwnerName": "Dock",
+            "kCGWindowBounds": {"Width": 500, "Height": 500}},
+           {"kCGWindowNumber": 2, "kCGWindowLayer": 0, "kCGWindowOwnerName": "Notes",
+            "kCGWindowBounds": {"Width": 10, "Height": 10}},
+           {"kCGWindowNumber": 3, "kCGWindowLayer": 0, "kCGWindowOwnerName": "Safari",
+            "kCGWindowBounds": {"Width": 800, "Height": 600}},
+           {"kCGWindowNumber": 4, "kCGWindowLayer": 0, "kCGWindowOwnerName": "Notes",
+            "kCGWindowBounds": {"Width": 800, "Height": 600}}]
+    assert s.front_window(raw) == 3
+    assert s.front_window([]) is None
