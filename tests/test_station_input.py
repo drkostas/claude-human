@@ -38,10 +38,16 @@ class FakeQuartz:
     def CGEventSetFlags(self, ev, flags):
         ev["flags"] = flags
 
+    def CGEventSetLocation(self, ev, pt):
+        ev["pt"] = pt
+
 
 class Screen:
-    def __init__(self, locked=False, blocker=None, apps=("Notes",)):
-        self.locked, self.blocker, self.apps = locked, blocker, apps
+    def __init__(self, locked=False, blocker=None, apps=("Notes",), front=7):
+        self.locked, self.blocker, self.apps, self.front = locked, blocker, apps, front
+
+    def front_window(self):
+        return self.front
 
     def screen_locked(self):
         return self.locked
@@ -138,3 +144,32 @@ def test_text_is_pasted_and_the_clipboard_is_put_back():
     assert s.do_input({"type": "text", "text": "hello"})["ok"]
     assert board.history == ["hello", "before"] and board.value == "before"
     assert [(e["code"], e["flags"]) for e in posted] == [(9, 0x100000), (9, 0x100000)]
+
+
+def test_typing_into_a_named_window_needs_it_in_front():
+    s, posted = sink(front=3)
+    for msg in ({"type": "text", "text": "hi", "app": "Notes"}, {"type": "key", "code": 36, "app": "Notes"}):
+        r = s.do_input(msg)
+        assert r["ok"] is False and "not in front" in r["detail"]
+    assert posted == []
+
+
+def test_typing_goes_through_once_the_window_is_in_front():
+    s, posted = sink(front=7)
+    assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"]
+    assert [e["code"] for e in posted] == [36, 36]
+
+
+def test_a_screen_that_cannot_say_what_is_in_front_refuses_typing_into_a_window():
+    class Blind(Screen):
+        front_window = None
+    posted = []
+    s = QuartzInput(Blind(), post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"] is False and posted == []
+
+
+def test_scroll_in_a_named_window_lands_inside_it():
+    s, posted = sink(front=3)          # scrolling needs no focus, only the right place
+    assert s.do_input({"type": "scroll", "app": "Notes", "dy": -40, "x": 0.5, "y": 0.5})["ok"]
+    assert posted[0] == {"kind": "move", "pt": (200.0, 100.0), "button": 0}
+    assert posted[1] == {"kind": "scroll", "dy": -40, "dx": 0, "pt": (200.0, 100.0)}
