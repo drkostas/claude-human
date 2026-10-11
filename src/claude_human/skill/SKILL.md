@@ -87,12 +87,18 @@ shot = screenshot.frame(wid, max_width=1100)   # (jpeg, width, height), or None
 The lock screen and SecurityAgent panels take input only from hardware. Synthetic key events, synthetic clicks and Screen Sharing input are all dropped there. The Karabiner virtual keyboard is seen as a physical keyboard, so `vhid_type` can type where nothing else can.
 
 ```bash
-claude-human state                                              # look first
-security find-generic-password -s mac-login -w | claude-human unlock   # keychain item named mac-login
-claude-human use-password                                       # a Touch ID panel, show its password field
-security find-generic-password -s mac-login -w | claude-human approve
-claude-human relock                                             # when you opened the lock
+claude-human state                                  # look first
+<approved password on stdin> | claude-human unlock   # only after the person approved this one use
+claude-human use-password                           # a Touch ID panel, show its password field
+<approved password on stdin> | claude-human approve
+claude-human relock                                 # when you opened the lock
 ```
+
+The password reaches stdin from the approval flow that holds it, never from a store you read
+yourself. Piping a keychain item into `unlock` unlocks the Mac with nobody approving it, which is
+the thing the first rule above forbids. On a machine that runs drlab, do not call these at all:
+ask with drlab's `ask_approval` tool, and drlab types the password after the person taps Approve
+on their phone.
 
 ```python
 from claude_human import unlock
@@ -153,7 +159,7 @@ make_server(TaskAuth(), port=8789).serve_forever()
 
 1. Ask whether the task needs the screen. A command, an API or a network call usually does the same job while the Mac stays locked.
 2. Run `claude-human state`. Note whether the Mac is locked and whether a panel or a system dialog is up.
-3. If it is locked, send the person a request for this one use, wait for the approval, then pipe the password into `claude-human unlock` and read its `OK` or `FAIL` line.
+3. If it is locked, send the person a request for this one use and wait for the approval. On a machine that runs drlab that request is `ask_approval`, and drlab unlocks after the approval. Elsewhere, pipe the approved password into `claude-human unlock` and read its `OK` or `FAIL` line.
 4. Keep the Mac awake for the duration (`caffeinate`), and open the task's window where it does not cover the window the person was using.
 5. Before each click, capture the window with `screenshot.frame` and read the image. After each click, capture again and confirm the change.
 6. Poll `auth_prompt()` the whole time. When a panel appears, capture it with `frame(prompt["wid"])`, show it to the person with the approval request, run `use-password` if it shows no field, then `approve`.
