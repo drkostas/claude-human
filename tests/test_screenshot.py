@@ -127,3 +127,48 @@ def test_activate_uses_open_b(monkeypatch):
     monkeypatch.setattr(ss.subprocess, "run", lambda argv, **kw: (seen.append(argv), sp.CompletedProcess(argv, 0))[1])
     assert ss.activate("com.googlecode.iterm2") and seen == [["/usr/bin/open", "-b", "com.googlecode.iterm2"]]
     assert not ss.activate(None)
+
+
+# --- a covered window is never captured through the display crop (reported by Dennis, 0.5.0) ------
+
+def test_covered_by_finds_another_app_in_front_that_overlaps():
+    settings = win(5, "System Settings", 700, 500, x=200, y=200)
+    arc = win(9, "Arc", 800, 600, x=100, y=100)
+    assert s.covered_by([arc, settings], 5) == "Arc"
+    assert s.covered_by([win(9, "Arc", 100, 100, x=0, y=0), settings], 5) is None, "no overlap"
+    assert s.covered_by([settings, arc], 5) is None, "a window behind it does not cover it"
+    assert s.covered_by([win(9, "Arc", 800, 600, x=100, y=100, alpha=0.0), settings], 5) is None
+    assert s.covered_by([win(7, "System Settings", 300, 200, x=300, y=300), settings], 5) is None, \
+        "the same application's own sheet is part of what the grant shows"
+    assert s.covered_by([arc], 5) == "", "a window not on screen reads as covered"
+
+
+def test_system_chrome_in_front_of_everything_does_not_count_but_a_banner_does():
+    settings = win(5, "System Settings", 700, 500, x=200, y=200)
+    # measured on a Mac: the Dock's window is the whole display, opaque, on layer 20
+    dock = win(8, "Dock", 1728, 1117, layer=20)
+    menubar = win(2904, "Window Server", 1728, 33, layer=24)
+    faint = win(13494, "BetterDisplay", 1, 1, layer=1000, alpha=0.003, x=250, y=250)
+    assert s.covered_by([faint, menubar, dock, settings], 5) is None
+    banner = win(77, "Notification Center", 400, 120, layer=23, x=600, y=220)
+    assert s.covered_by([banner, dock, settings], 5) == "Notification Center", \
+        "a notification banner carries another app's message, so it covers"
+
+
+def test_legacy_capture_refuses_a_covered_window_without_grabbing(monkeypatch):
+    grabbed = []
+
+    class Q:
+        CGRectInfinite = kCGWindowListOptionOnScreenOnly = kCGNullWindowID = 0
+        kCGWindowImageNominalResolution = 0
+
+        @staticmethod
+        def CGWindowListCreateImage(*a):
+            grabbed.append(a)
+            return "the whole display"
+
+    monkeypatch.setattr(s, "_quartz", lambda: Q)
+    monkeypatch.setattr(s, "_raw_windows", lambda: [win(9, "Arc", 800, 600, x=100, y=100),
+                                                    win(5, "System Settings", 700, 500, x=200, y=200)])
+    assert s._grab_legacy(5) is None
+    assert grabbed == [], "the display is not even captured for a window that is covered"

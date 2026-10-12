@@ -18,6 +18,7 @@ Please report a security problem privately through GitHub's "Report a vulnerabil
 
 - Screen Recording lets a program see everything on the screen, including other people's messages and passwords shown in plain text. Grant it only to `sckshot.app` and to the process that needs it.
 - If you send frames to another device, send them over an encrypted connection and only to people allowed to see the whole screen. When one window is asked for and cannot be cropped, this package returns nothing rather than the whole screen, and code built on it should keep that rule.
+- Without `sckshot`, a window is captured by cropping the whole display, so the crop would show whatever covers the window. Since 0.6.0 a window that another application covers is refused, and nothing is returned. Build `sckshot` (`claude-human build-tools`) to capture a window even when something covers it.
 
 ## The station
 
