@@ -244,12 +244,18 @@ class NtfyService : Service() {
             val title = f.optString("title").ifBlank { ${kt(o.defaultTitle)} }
             val body = f.optString("message").ifBlank { title }
             val click = f.optString("click")
-            val open = packageManager.getLaunchIntentForPackage(packageName)?.apply {
-                // only links into this app are followed; a link from the network is data
-                if (${linkCheck}) {
-                    action = Intent.ACTION_VIEW
-                    data = android.net.Uri.parse(click)
+            // Only links into this app are followed; a link from the network is data. A link opens
+            // as a link intent aimed at this app, not as the launcher intent with a link attached:
+            // the launcher intent carries CATEGORY_LAUNCHER, and when the app is already running
+            // Android then only brings its task to the front and never delivers the link, so a tap
+            // opened the app on whatever screen it was last on.
+            val open = if (${linkCheck}) {
+                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(click)).apply {
+                    setPackage(packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }
+            } else {
+                packageManager.getLaunchIntentForPackage(packageName)
             }
             val n = NotificationCompat.Builder(this, ALERT_CHANNEL)
                 .setContentTitle(title)

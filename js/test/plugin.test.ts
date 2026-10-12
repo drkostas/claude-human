@@ -45,6 +45,13 @@ describe("config plugin against a fixture project", () => {
     expect(out.kotlin).toContain("ACTION_MY_PACKAGE_REPLACED");
     expect(out.kotlin).toContain('click.startsWith("example://")');
     expect(out.kotlin).toContain('.ifBlank { "Example" }');
+    // A tap on a notification opens its link with a link intent aimed at the app. The launcher
+    // intent with a link attached only brought a running app to the front, without the link.
+    const handle = out.kotlin.slice(out.kotlin.indexOf("private fun handle("));
+    expect(handle).toContain("Intent(Intent.ACTION_VIEW, android.net.Uri.parse(click))");
+    expect(handle).toContain("setPackage(packageName)");
+    expect(handle).toContain("FLAG_ACTIVITY_SINGLE_TOP");
+    expect(handle.indexOf("Intent(Intent.ACTION_VIEW")).toBeLessThan(handle.indexOf("getLaunchIntentForPackage"));
 
     expect(out.gradle).toContain('buildConfigField("String", "NTFY_TOPIC_URL", "\\"https://ntfy.example.org/alerts\\"")');
     expect(out.gradle).toContain("buildFeatures { buildConfig true }");
