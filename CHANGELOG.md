@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
+- Security: without sckshot, capturing one window cropped the whole display to the window's rectangle, so whatever covered the window came through instead of it, and the station streamed that to a grant pinned to one app or one window. The capture now refuses a window that another application's window lies in front of and overlaps, checked before and after the grab, and returns nothing, as it already did for a window it cannot find. System chrome that draws no other application's content (the Dock, the menu bar) and windows with almost no opacity do not count, and Notification Center's banners do. Reported by Dennis. The sckshot path captures the window itself and was not affected.
 - `claude-human python-app` builds a signed `.app` that runs Python, so a long-running Python program keeps its Screen Recording and Accessibility grants across Python upgrades (Homebrew signs Python.app ad hoc, and a grant given to it is lost at every upgrade)
 - `screenshot.window_ids()`, the id of every window on every desktop, and `screenshot.activate(bundle_id)`, which brings an app to the front with `open -b` and needs no Automation grant
 

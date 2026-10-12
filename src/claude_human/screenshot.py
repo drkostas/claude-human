@@ -94,6 +94,58 @@ def pick_window(wins: list[dict], app: str) -> int | None:
     return max(matches, key=lambda w: w["width"] * w["height"])["id"]
 
 
+#: system chrome that lies in front of every window and draws no other application's content: the
+#: Dock keeps an opaque window the size of the whole display (measured: layer 20, alpha 1.0), the
+#: Window Server the cursor and the menu bar's backdrop, Control Center and SystemUIServer the menu
+#: bar's items. Counting them would refuse every window. Notification Center is NOT here: its banners
+#: carry other applications' messages.
+CHROME = frozenset({"Dock", "Window Server", "Control Center", "SystemUIServer"})
+#: below this a window shows nothing a viewer could read (an overlay measured at 0.003)
+INVISIBLE = 0.05
+
+
+def covered_by(raw: Iterable[dict], wid: int) -> str | None:
+    """The owner of the first window that lies in front of window ``wid`` and overlaps it, or None.
+
+    ``raw`` is the on-screen list from CGWindowListCopyWindowInfo, which runs front to back, so
+    every entry before ``wid`` is in front of it. A window of the same application (a sheet, a
+    popover) is part of what a grant for that application shows, a window with almost no opacity
+    shows nothing, and system chrome (``CHROME``) draws no other application's content, so none of
+    them counts. ``wid`` missing from the list reads as covered (an empty
+    owner), because a window that is not on screen cannot be shown either.
+
+    The capture without sckshot crops the whole display to a window's rectangle, so whatever lies
+    on top of the window would come through instead of it: another application's page, given to
+    someone who was granted only that one window."""
+    ahead: list[dict] = []
+    target = None
+    for w in raw:
+        if w.get("kCGWindowNumber") == wid:
+            target = w
+            break
+        ahead.append(w)
+    if target is None:
+        return ""
+    tb = target.get("kCGWindowBounds") or {}
+    tx, ty = float(tb.get("X", 0)), float(tb.get("Y", 0))
+    tw, th = float(tb.get("Width", 0)), float(tb.get("Height", 0))
+    mine = target.get("kCGWindowOwnerPID"), str(target.get("kCGWindowOwnerName") or "")
+    for w in ahead:
+        if float(w.get("kCGWindowAlpha", 1.0) or 0.0) <= INVISIBLE:
+            continue
+        pid, owner = w.get("kCGWindowOwnerPID"), str(w.get("kCGWindowOwnerName") or "")
+        if owner in CHROME:
+            continue
+        if (pid is not None and pid == mine[0]) or (pid is None and owner and owner == mine[1]):
+            continue
+        b = w.get("kCGWindowBounds") or {}
+        x, y = float(b.get("X", 0)), float(b.get("Y", 0))
+        ww, wh = float(b.get("Width", 0)), float(b.get("Height", 0))
+        if min(tx + tw, x + ww) > max(tx, x) and min(ty + th, y + wh) > max(ty, y):
+            return owner or "an unnamed window"
+    return None
+
+
 def find_blocker(raw: Iterable[dict], blocking: set[str] = BLOCKING_APPS) -> str | None:
     """The owner name of the first window, on any layer, that belongs to a blocking system app."""
     for w in raw:
@@ -287,9 +339,17 @@ def _grab_legacy(wid: int | None):
     The per-window variant returns None on recent macOS, so a window is the whole display cropped to
     the window's rectangle. When one window is asked for and the rectangle cannot be found (most
     often because the window is on another desktop), this returns None and never the full screen:
-    returning the full screen would show every other window to someone who was given only one."""
+    returning the full screen would show every other window to someone who was given only one.
+
+    ⛔ AND A WINDOW ANOTHER APPLICATION COVERS IS REFUSED TOO (reported by Dennis, 0.5.0). The crop
+    is of the display, not of the window, so with Arc on top of System Settings a capture of
+    Settings returned Arc's page. Whatever lies in front of the window is checked before and after
+    the grab (``covered_by``), and a covered window gives None, as a missing one does. The sckshot
+    path captures the window itself and does not need this."""
     q = _quartz()
     try:
+        if wid and covered_by(_raw_windows(), wid) is not None:
+            return None
         full = q.CGWindowListCreateImage(q.CGRectInfinite, q.kCGWindowListOptionOnScreenOnly,
                                          q.kCGNullWindowID, q.kCGWindowImageNominalResolution)
         if not wid:
@@ -297,6 +357,8 @@ def _grab_legacy(wid: int | None):
         r = window_rect(wid)
         if full is None or r is None:
             return None
+        if covered_by(_raw_windows(), wid) is not None:
+            return None                          # something moved on top while the grab ran
         return q.CGImageCreateWithImageInRect(
             full, q.CGRectMake(r.origin.x, r.origin.y, r.size.width, r.size.height))
     except Exception:
