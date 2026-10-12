@@ -104,9 +104,9 @@ claude-human relock                                 # when you opened the lock
 
 The password reaches stdin from the approval flow that holds it, never from a store you read
 yourself. Piping a keychain item into `unlock` unlocks the Mac with nobody approving it, which is
-the thing the first rule above forbids. On a machine that runs drlab, do not call these at all:
-ask with drlab's `ask_approval` tool, and drlab types the password after the person taps Approve
-on their phone.
+the thing the first rule above forbids. When the machine has its own approval service (a request
+the person answers on their phone, for example), do not call these at all. Ask through that
+service, and let it type the password after the person approves.
 
 ```python
 from claude_human import unlock
@@ -167,7 +167,7 @@ make_server(TaskAuth(), port=8789).serve_forever()
 
 1. Ask whether the task needs the screen. A command, an API or a network call usually does the same job while the Mac stays locked.
 2. Run `claude-human state`. Note whether the Mac is locked and whether a panel or a system dialog is up.
-3. If it is locked, send the person a request for this one use and wait for the approval. On a machine that runs drlab that request is `ask_approval`, and drlab unlocks after the approval. Elsewhere, pipe the approved password into `claude-human unlock` and read its `OK` or `FAIL` line.
+3. If it is locked, send the person a request for this one use and wait for the approval. When the machine has its own approval service, that service unlocks after the approval. Otherwise, pipe the approved password into `claude-human unlock` and read its `OK` or `FAIL` line.
 4. Keep the Mac awake for the duration (`caffeinate`), and open the task's window where it does not cover the window the person was using.
 5. Before each click, capture the window with `screenshot.frame` and read the image. After each click, capture again and confirm the change.
 6. Poll `auth_prompt()` the whole time. When a panel appears, capture it with `frame(prompt["wid"])`, show it to the person with the approval request, run `use-password` if it shows no field, then `approve`.
