@@ -95,3 +95,35 @@ def test_front_window_is_the_first_ordinary_window_front_to_back():
             "kCGWindowBounds": {"Width": 800, "Height": 600}}]
     assert s.front_window(raw) == 3
     assert s.front_window([]) is None
+
+
+def test_window_ids_reads_every_desktop(monkeypatch):
+    from claude_human import screenshot as ss
+
+    class Q:
+        kCGWindowListOptionAll = 0
+        kCGNullWindowID = 0
+
+        @staticmethod
+        def CGWindowListCopyWindowInfo(opts, wid):
+            return [{"kCGWindowNumber": 5}, {"kCGWindowNumber": 18738}]
+
+    monkeypatch.setattr(ss, "_quartz", lambda: Q)
+    assert ss.window_ids() == {5, 18738}
+
+    class Empty(Q):
+        @staticmethod
+        def CGWindowListCopyWindowInfo(opts, wid):
+            return []
+
+    monkeypatch.setattr(ss, "_quartz", lambda: Empty)
+    assert ss.window_ids() is None          # an empty answer is a failed read
+
+
+def test_activate_uses_open_b(monkeypatch):
+    import subprocess as sp
+    from claude_human import screenshot as ss
+    seen = []
+    monkeypatch.setattr(ss.subprocess, "run", lambda argv, **kw: (seen.append(argv), sp.CompletedProcess(argv, 0))[1])
+    assert ss.activate("com.googlecode.iterm2") and seen == [["/usr/bin/open", "-b", "com.googlecode.iterm2"]]
+    assert not ss.activate(None)

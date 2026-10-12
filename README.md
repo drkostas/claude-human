@@ -32,6 +32,17 @@ claude-human build-tools --only vhid --pqrs-commit <commit>
 
 The signing identity defaults to the first "Apple Development" identity in your keychain, and to an ad-hoc signature when there is none. With an ad-hoc signature the Screen Recording grant does not survive a rebuild, because macOS ties it to the signature. Keep the bundle id the same between builds for the same reason. `--identity none` skips signing (CI uses it).
 
+### A signed app for a Python program
+
+A launch agent written in Python is judged by the binary that runs it. Homebrew's Python.app is signed ad hoc, so a grant given to it is lost at the next Python upgrade. `python-app` builds a small signed app that runs Python, and the grant is then held against its bundle id and your certificate:
+
+```bash
+exe="$(claude-human python-app "$HOME/Applications/My Agent.app" --bundle-id dev.example.agent)"
+"$exe" -m my.agent
+```
+
+It rebuilds only when the bundle is not current, so it is safe to run at every install.
+
 ## Screenshots
 
 ```bash

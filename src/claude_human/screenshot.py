@@ -149,6 +149,36 @@ def windows() -> list[dict]:
     return to_windows(_raw_windows())
 
 
+def window_ids() -> set[int] | None:
+    """The id of every window the window server has, on EVERY desktop, off-screen and minimised
+    ones included. yabai's window ids are these ids, so a window whose id is missing here is
+    closed. None when it could not be read: an empty answer from a running Mac is a failed read,
+    never "no windows"."""
+    try:
+        q = _quartz()
+        listed = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionAll, q.kCGNullWindowID)
+        ids = {int(w["kCGWindowNumber"]) for w in (listed or [])}
+    except Exception:  # noqa: BLE001 - not able to ask is unknown
+        return None
+    return ids or None
+
+
+def activate(bundle_id: str | None, *, env: Mapping[str, str] | None = None) -> bool:
+    """Bring an application to the front by its bundle id, with ``open -b``.
+
+    LaunchServices does it, so no Automation grant is needed. ⚠️ AppKit's activateWithOptions is not
+    reliable for this: measured 2026-10-11, it brought iTerm back right after another app made a
+    window, but was ignored right after Brave had been activated. ``open -b`` worked in both."""
+    if not bundle_id:
+        return False
+    try:
+        r = subprocess.run(["/usr/bin/open", "-b", bundle_id], capture_output=True, text=True,
+                           timeout=10, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
 def front_window(raw: Iterable[dict] | None = None) -> int | None:
     """The id of the frontmost ordinary window, the one typed text and keys reach.
 

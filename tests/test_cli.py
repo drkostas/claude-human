@@ -110,3 +110,14 @@ def test_station_token_comes_from_the_environment_or_a_private_file(monkeypatch,
     auth, where = cli.station_auth(parse("station", "--token-file", str(f), "--app", "Notes"))
     assert where == str(f) and auth.check(f.read_text().strip()).master is False
     assert "from-env" not in where
+
+
+def test_python_app_passes_its_options_to_the_build_script(tmp_path):
+    from claude_human import cli
+    args = cli.build_parser().parse_args(["python-app", str(tmp_path / "A.app"), "--bundle-id", "dev.x.a",
+                                          "--name", "A agent", "--exe", "a-agent"])
+    cmd = cli.python_app_command(args)
+    assert cmd[0] == "bash" and cmd[1].endswith("pyapp/build.sh") and cmd[2].endswith("A.app")
+    env = cli.python_app_env(args)
+    assert env["CLAUDE_HUMAN_BUNDLE_ID"] == "dev.x.a" and env["CLAUDE_HUMAN_APP_NAME"] == "A agent"
+    assert env["CLAUDE_HUMAN_EXE"] == "a-agent" and "CLAUDE_HUMAN_PYTHON" not in env

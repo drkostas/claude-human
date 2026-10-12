@@ -58,6 +58,14 @@ A sudoers file with mode 0644 is ignored by sudo without any message, so the `ch
 - A major macOS upgrade can reset every Screen Recording and Accessibility grant and remove entries from the list. After an upgrade, run the checks above before trusting anything.
 - To send the person to the right pane, run `open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"`. The older `com.apple.preference.security?Privacy_ScreenCapture` form opens nothing on recent macOS and reports no error, so confirm which app is in front afterwards.
 - A new launch agent that scripts another app (a terminal, for example) raises an Automation consent dialog on its first run. Until the person answers it, every script call to that app that lists windows hangs, from every process. A call that only asks for the app's version still answers, which makes the app look healthy.
+- A Homebrew Python upgrade takes away every grant given to Homebrew's Python.app, because Homebrew signs it ad hoc and macOS holds the grant against the hash of that one build (2026-10-10: a dependency install updated python@3.14 and a station lost Screen Recording and Accessibility). `brew pin` does not prevent it. Give each long-running Python program its own signed app instead, and grant that:
+
+  ```bash
+  exe="$(claude-human python-app "$HOME/Applications/My Agent.app" --bundle-id dev.example.agent)"
+  "$exe" -m my.agent            # the launchd job runs this; the grant is held against the bundle id and certificate
+  ```
+
+  It copies Python.app's launcher, links it to the framework through the opt path, and signs it with the first Apple Development identity. It rebuilds only when it is not current, so call it at every install. Do not wrap `exec python3` in a bundle (exec replaces the process image, so python3 is the binary asking) and do not copy bin/python3 into one (same bytes, same verdict).
 - A Mac upgrade can also disable Screen Sharing. That matters only for the person's own remote viewing, since Screen Sharing input never reaches the lock screen (see the catalogue).
 
 ## Screenshots
