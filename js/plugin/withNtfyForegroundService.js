@@ -285,11 +285,16 @@ class NtfyService : Service() {
  * Starts the service after a reboot and after the app is updated. Installing a new version stops
  * the app and its services, and without MY_PACKAGE_REPLACED nothing would start the service again
  * until someone opened the app, so messages would stop arriving after every update.
+ *
+ * Some Android builds do not always deliver MY_PACKAGE_REPLACED, so the service can stay stopped
+ * after an update. <package>.START_LISTENER starts it from outside without opening the app, for
+ * example over adb: am broadcast -n <package>/.BootReceiver -a <package>.START_LISTENER
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
-            intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            intent.action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            intent.action == context.packageName + ".START_LISTENER") {
             val i = Intent(context, NtfyService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
             else context.startService(i)
@@ -379,16 +384,17 @@ function addManifestEntries(manifest, app) {
       },
     }],
   });
-  app.receiver = app.receiver || [];
-  if (!app.receiver.some((r) => r.$["android:name"] === ".BootReceiver")) {
-    app.receiver.push({
-      $: { "android:name": ".BootReceiver", "android:exported": "true" },
-      "intent-filter": [
-        { action: [{ $: { "android:name": "android.intent.action.BOOT_COMPLETED" } }] },
-        { action: [{ $: { "android:name": "android.intent.action.MY_PACKAGE_REPLACED" } }] },
-      ],
-    });
-  }
+  // Rewritten like the service, so a build without --clean gets the START_LISTENER filter too.
+  // ${applicationId} is filled in by Gradle's manifest merger.
+  app.receiver = (app.receiver || []).filter((r) => r.$["android:name"] !== ".BootReceiver");
+  app.receiver.push({
+    $: { "android:name": ".BootReceiver", "android:exported": "true" },
+    "intent-filter": [
+      { action: [{ $: { "android:name": "android.intent.action.BOOT_COMPLETED" } }] },
+      { action: [{ $: { "android:name": "android.intent.action.MY_PACKAGE_REPLACED" } }] },
+      { action: [{ $: { "android:name": "${applicationId}.START_LISTENER" } }] },
+    ],
+  });
   return manifest;
 }
 
