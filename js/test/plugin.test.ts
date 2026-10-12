@@ -71,6 +71,9 @@ describe("config plugin against a fixture project", () => {
     expect(out.manifest).toContain('<receiver android:name=".BootReceiver" android:exported="true">');
     expect(out.manifest).toContain("android.intent.action.BOOT_COMPLETED");
     expect(out.manifest).toContain("android.intent.action.MY_PACKAGE_REPLACED");
+    // The listener can be started from outside (adb) when an update did not restart it.
+    expect(out.manifest).toContain('android:name="${applicationId}.START_LISTENER"');
+    expect(out.kotlin).toContain('intent.action == context.packageName + ".START_LISTENER"');
     expect(out.manifest).toContain('android:name="android.permission.INTERNET"');
   });
 
