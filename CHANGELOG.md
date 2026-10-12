@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The two npm packages are published from GitHub Actions with npm's trusted publishing, `@drkostas/expo-ntfy` on an `expo-ntfy-v<version>` tag and `@drkostas/claude-human-client` on a `client-v<version>` tag, so no npm token is kept anywhere, and each release carries provenance
+
 ## 0.6.0
 
 - Security: without sckshot, capturing one window cropped the whole display to the window's rectangle, so whatever covered the window came through instead of it, and the station streamed that to a grant pinned to one app or one window. The capture now refuses a window that another application's window lies in front of and overlaps, checked before and after the grab, and returns nothing, as it already did for a window it cannot find. System chrome that draws no other application's content (the Dock, the menu bar) and windows with almost no opacity do not count, and Notification Center's banners do. Reported by Dennis. The sckshot path captures the window itself and was not affected.

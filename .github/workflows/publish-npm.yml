@@ -1,0 +1,34 @@
+name: Publish to npm
+
+# A tag expo-ntfy-v<version> publishes @drkostas/expo-ntfy (js/), and client-v<version> publishes
+# @drkostas/claude-human-client (client/). npm trusts this workflow (trusted publishing), so the job
+# holds no token: npm checks the GitHub OIDC identity and records provenance.
+on:
+  push:
+    tags: ["expo-ntfy-v*", "client-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1
+      - name: Which package the tag names
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            expo-ntfy-v*) echo "DIR=js" >> "$GITHUB_ENV"; echo "VERSION=${GITHUB_REF_NAME#expo-ntfy-v}" >> "$GITHUB_ENV" ;;
+            client-v*) echo "DIR=client" >> "$GITHUB_ENV"; echo "VERSION=${GITHUB_REF_NAME#client-v}" >> "$GITHUB_ENV" ;;
+            *) echo "no package for ${GITHUB_REF_NAME}"; exit 1 ;;
+          esac
+      - name: The tag matches the package version
+        run: test "$(node -p "require('./${DIR}/package.json').version")" = "${VERSION}"
+      - run: npm publish --provenance --access public
+        working-directory: ${{ env.DIR }}
