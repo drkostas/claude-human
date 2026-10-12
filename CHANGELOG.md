@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `claude-human python-app` builds a signed `.app` that runs Python, so a long-running Python program keeps its Screen Recording and Accessibility grants across Python upgrades (Homebrew signs Python.app ad hoc, and a grant given to it is lost at every upgrade)
+- `screenshot.window_ids()`, the id of every window on every desktop, and `screenshot.activate(bundle_id)`, which brings an app to the front with `open -b` and needs no Automation grant
+
 ## 0.5.0
 
 - Every function that starts a process takes an optional `env` for it: `unlock`, `relock`, `use_password`, `approve`, `screenshot.capture` and `save`, `yabai_windows`, and the classes `CommandVerifier`, `DefaultResolver` and `station.prepare.Preparer`. `None` keeps the inherited environment. With an env, the preparer also looks for yabai on that env's PATH

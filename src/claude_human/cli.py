@@ -1,6 +1,7 @@
 """The ``claude-human`` command.
 
     claude-human build-tools [--out DIR] [--only sckshot|vhid] [--identity ID] [--bundle-id ID]
+    claude-human python-app OUT.app --bundle-id ID [--name NAME] [--exe NAME] [--python PY] [--identity ID]
     claude-human windows
     claude-human screenshot --out FILE [--window ID | --app NAME] [--max-width N]
     claude-human state
@@ -55,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--bundle-id", help="bundle identifier for sckshot.app (default local.claude-human.sckshot)")
     b.add_argument("--usage-text", help="the Screen Recording usage text shown by macOS")
     b.add_argument("--pqrs-commit", help="Karabiner-DriverKit-VirtualHIDDevice commit to build vhid_type against")
+
+    pa = sub.add_parser("python-app", help="build a signed .app that runs Python, so a program keeps "
+                                           "its macOS grants across Python upgrades; prints its executable")
+    pa.add_argument("out", help="the .app to build (rebuilt only when it is not current)")
+    pa.add_argument("--bundle-id", required=True, help="CFBundleIdentifier; grants are held against it")
+    pa.add_argument("--name", help="the name macOS shows in Privacy & Security (default: the .app's name)")
+    pa.add_argument("--exe", help="the executable's name (default: the name in lowercase, with dashes)")
+    pa.add_argument("--python", help="the Python to run (default /opt/homebrew/bin/python3)")
+    pa.add_argument("--identity", help='"auto" (default), "-" for ad-hoc, or an identity name')
 
     sub.add_parser("windows", help="list the ordinary on-screen windows as JSON")
 
@@ -170,6 +180,22 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
     targets = {"sckshot": out / "sckshot.app", "vhid": out / paths.VHID_NAME}
     return [["bash", str(paths.tool_source(t) / "build.sh"), str(targets[t])]
             for t in TOOLS if not args.only or t in args.only]
+
+
+def python_app_command(args: argparse.Namespace) -> list[str]:
+    """The build script invocation for ``python-app``."""
+    return ["bash", str(paths.tool_source("pyapp") / "build.sh"), str(args.out)]
+
+
+def python_app_env(args: argparse.Namespace) -> dict[str, str]:
+    """The environment ``python-app`` passes to its build script."""
+    env = dict(os.environ, CLAUDE_HUMAN_BUNDLE_ID=args.bundle_id)
+    for opt, var in (("name", "CLAUDE_HUMAN_APP_NAME"), ("exe", "CLAUDE_HUMAN_EXE"),
+                     ("python", "CLAUDE_HUMAN_PYTHON"), ("identity", "CLAUDE_HUMAN_IDENTITY")):
+        value = getattr(args, opt, None)
+        if value:
+            env[var] = value
+    return env
 
 
 def station_auth(args: argparse.Namespace):
@@ -322,6 +348,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"failed: {' '.join(c)}", file=sys.stderr)
                 return r.returncode
         return 0
+
+    if cmd == "python-app":
+        if sys.platform != "darwin":
+            print("python-app needs macOS (codesign, install_name_tool)", file=sys.stderr)
+            return 2
+        r = subprocess.run(python_app_command(args), env=python_app_env(args),
+                           capture_output=True, text=True)
+        sys.stderr.write(r.stderr)
+        if r.returncode == 0:
+            print(r.stdout.strip())
+        return r.returncode
 
     if cmd == "skill":
         print(install_skill(args.dir))

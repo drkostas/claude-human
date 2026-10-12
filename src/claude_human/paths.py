@@ -49,7 +49,7 @@ def vhid_path(override: str | os.PathLike | None = None) -> Path:
 
 
 def tool_source(name: str) -> Path:
-    """The folder holding a helper's source and build script ("sckshot" or "vhid")."""
+    """The folder holding a helper's source and build script ("sckshot", "vhid" or "pyapp")."""
     path = TOOLS / name
     if not (path / "build.sh").is_file():
         raise ValueError(f"no build script for {name!r} in {TOOLS}")

@@ -45,3 +45,38 @@ def test_sckshot_builds_unsigned(tmp_path):
     assert r.returncode == 0, r.stderr
     assert (out / "Contents" / "MacOS" / "sckshot").is_file()
     assert "org.example.sckshot" in (out / "Contents" / "Info.plist").read_text()
+
+
+PYAPP = paths.tool_source("pyapp") / "build.sh"
+
+
+def test_python_app_script_parses_and_checks_its_inputs(tmp_path):
+    assert subprocess.run(["bash", "-n", str(PYAPP)]).returncode == 0
+    r = subprocess.run(["bash", str(PYAPP)], capture_output=True, text=True)
+    assert r.returncode != 0 and "usage" in r.stderr
+    env = dict(os.environ)
+    env.pop("CLAUDE_HUMAN_BUNDLE_ID", None)
+    r = subprocess.run(["bash", str(PYAPP), str(tmp_path / "x.app")], env=env, capture_output=True, text=True)
+    assert r.returncode == 2 and "bundle id" in r.stderr
+    r = subprocess.run(["bash", str(PYAPP), str(tmp_path / "x")], env=dict(env, CLAUDE_HUMAN_BUNDLE_ID="a.b"),
+                       capture_output=True, text=True)
+    assert r.returncode == 2 and ".app" in r.stderr
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.exists("/opt/homebrew/bin/python3"),
+                    reason="needs macOS and Homebrew's Python")
+def test_python_app_builds_once_and_runs_python(tmp_path):
+    env = dict(os.environ, CLAUDE_HUMAN_BUNDLE_ID="org.example.pyapp", CLAUDE_HUMAN_IDENTITY="-",
+               CLAUDE_HUMAN_APP_NAME="Example Agent")
+    out = tmp_path / "Example Agent.app"
+    r = subprocess.run(["bash", str(PYAPP), str(out)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    exe = r.stdout.strip()
+    assert exe == str(out / "Contents" / "MacOS" / "example-agent")
+    assert subprocess.run([exe, "-c", "import sys; print(sys.version_info[0])"],
+                          capture_output=True, text=True).stdout.strip() == "3"
+    assert "org.example.pyapp" in (out / "Contents" / "Info.plist").read_text()
+    stamp = (out / "Contents" / "MacOS" / "example-agent").stat().st_mtime_ns
+    r = subprocess.run(["bash", str(PYAPP), str(out)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == exe
+    assert (out / "Contents" / "MacOS" / "example-agent").stat().st_mtime_ns == stamp  # not rebuilt
