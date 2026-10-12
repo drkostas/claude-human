@@ -271,16 +271,23 @@ def window_rect(wid: int):
 
 # ----------------------------------------------------------------------------- screen state
 
-def screen_locked() -> bool:
-    """Whether the session reports itself locked.
+def screen_locked() -> bool | None:
+    """Whether the session reports itself locked. ``None`` when that cannot be read.
 
     A locked Mac still captures, but drops synthetic input, so a viewer would see a live picture that
-    ignores every tap. Note that a credential panel sets the same bit (see ``auth_prompt``)."""
+    ignores every tap. Note that a credential panel sets the same bit (see ``auth_prompt``).
+
+    A process outside the login session (a launchd daemon, anything started in the system domain)
+    gets no session dictionary at all. That is not an unlocked screen: reading it as one told such a
+    process "unlocked" while the Mac sat locked. So no dictionary, or no Quartz, is ``None``, and a
+    caller that only tests truthiness behaves as before."""
     try:
         d = _quartz().CGSessionCopyCurrentDictionary()
-        return bool(d and d.get("CGSSessionScreenIsLocked"))
     except Exception:
-        return False
+        return None
+    if d is None:
+        return None
+    return bool(d.get("CGSSessionScreenIsLocked"))
 
 
 def blocked_by() -> str | None:
