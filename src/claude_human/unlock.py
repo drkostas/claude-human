@@ -40,13 +40,11 @@ Result = tuple[bool, str]
 
 
 def is_locked() -> Optional[bool]:
-    """Whether the console session is locked. None when it cannot be read (no Quartz)."""
-    try:
-        import Quartz
-        d = Quartz.CGSessionCopyCurrentDictionary() or {}
-        return bool(d.get("CGSSessionScreenIsLocked"))
-    except Exception:
-        return None
+    """Whether the console session is locked. None when it cannot be read (no Quartz, or a process
+    outside the login session, which gets no session dictionary). Same reader as
+    ``screenshot.screen_locked``."""
+    from .screenshot import screen_locked
+    return screen_locked()
 
 
 def _default_prompt() -> Optional[dict]:

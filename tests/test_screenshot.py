@@ -172,3 +172,36 @@ def test_legacy_capture_refuses_a_covered_window_without_grabbing(monkeypatch):
                                                     win(5, "System Settings", 700, 500, x=200, y=200)])
     assert s._grab_legacy(5) is None
     assert grabbed == [], "the display is not even captured for a window that is covered"
+
+
+class _Session:
+    def __init__(self, answer):
+        self.answer = answer
+
+    def CGSessionCopyCurrentDictionary(self):
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def test_screen_locked_reads_the_session_bit(monkeypatch):
+    monkeypatch.setattr(s, "_quartz", lambda: _Session({"CGSSessionScreenIsLocked": 1}))
+    assert s.screen_locked() is True
+    monkeypatch.setattr(s, "_quartz", lambda: _Session({"CGSSessionOnConsoleKey": 1}))
+    assert s.screen_locked() is False
+
+
+def test_no_session_dictionary_is_unknown_not_unlocked(monkeypatch):
+    # a process outside the login session gets None, whether the screen is locked or not
+    monkeypatch.setattr(s, "_quartz", lambda: _Session(None))
+    assert s.screen_locked() is None
+    monkeypatch.setattr(s, "_quartz", lambda: _Session(RuntimeError("no window server")))
+    assert s.screen_locked() is None
+
+
+def test_is_locked_uses_the_same_reader(monkeypatch):
+    from claude_human import unlock
+    monkeypatch.setattr(s, "_quartz", lambda: _Session(None))
+    assert unlock.is_locked() is None
+    monkeypatch.setattr(s, "_quartz", lambda: _Session({"CGSSessionScreenIsLocked": True}))
+    assert unlock.is_locked() is True

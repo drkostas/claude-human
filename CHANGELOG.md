@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `screenshot.screen_locked()` and `unlock.is_locked()` return `None` when the lock state cannot be read. A process outside the login session (a launchd daemon, the system domain) gets no session dictionary, and both functions used to read that as unlocked while the screen was locked. A caller that only tests truthiness behaves as before. `is_locked` now uses the same reader as `screen_locked`.
 - The two npm packages are published from GitHub Actions with npm's trusted publishing, `@drkostas/expo-ntfy` on an `expo-ntfy-v<version>` tag and `@drkostas/claude-human-client` on a `client-v<version>` tag, so no npm token is kept anywhere, and each release carries provenance
 
 ## 0.6.0
