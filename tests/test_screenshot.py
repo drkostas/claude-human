@@ -205,3 +205,25 @@ def test_is_locked_uses_the_same_reader(monkeypatch):
     assert unlock.is_locked() is None
     monkeypatch.setattr(s, "_quartz", lambda: _Session({"CGSSessionScreenIsLocked": True}))
     assert unlock.is_locked() is True
+
+
+def test_capture_approvals_are_read_with_their_dates_in_utc(tmp_path):
+    import plistlib
+    from datetime import datetime, timezone
+
+    f = tmp_path / "ScreenCaptureApprovals.plist"
+    f.write_bytes(plistlib.dumps({
+        "file:///Users/someone/Applications/My%20Viewer.app/": {
+            "kScreenCaptureApprovalLastAlerted": datetime(2030, 1, 12, 16, 44, 18),
+            "kScreenCapturePrivacyHintDate": datetime(2030, 2, 11, 16, 44, 18),
+            "kScreenCapturePrivacyHintPolicy": 2592000},
+        "com.example.recorder": {"kScreenCaptureApprovalLastAlerted": datetime(2030, 1, 1)},
+        "broken": "not a dictionary"}))
+    got = s.capture_approvals(f)
+    viewer = s.capture_approval_of(got, "/Users/someone/Applications/My Viewer.app")
+    assert viewer == {"asked": datetime(2030, 1, 12, 16, 44, 18, tzinfo=timezone.utc),
+                      "asks_again": datetime(2030, 2, 11, 16, 44, 18, tzinfo=timezone.utc),
+                      "every_s": 2592000}
+    assert s.capture_approval_of(got, "com.example.recorder")["asks_again"] is None
+    assert s.capture_approval_of(got, "com.example.other") is None and "broken" not in got
+    assert s.capture_approvals(tmp_path / "missing.plist") is None

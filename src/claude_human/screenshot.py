@@ -15,10 +15,13 @@ Without the grant macOS returns windows with empty titles, which is the sign to 
 from __future__ import annotations
 
 import os
+import plistlib
 import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from urllib.parse import quote
 from typing import Any, Iterable
 
 from . import paths
@@ -315,6 +318,60 @@ def auth_prompt() -> dict | None:
         return find_auth_panel(raw, (disp.size.width, disp.size.height))
     except Exception:
         return None
+
+
+# ----------------------------------------------------------------------------- capture approvals
+
+#: Where macOS 15 and later keep, for each application that records the screen without the system
+#: picker, when they last asked the person to confirm it ("... is requesting to bypass the system
+#: private window picker", answered with "Allow For One Month") and when they will ask again. The
+#: file belongs to the system and is only read here.
+CAPTURE_APPROVALS = "~/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
+
+
+def _utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    # plistlib returns naive datetimes in UTC (an aware option exists only from Python 3.13)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def parse_capture_approvals(data: Mapping[str, Any] | None) -> dict[str, dict]:
+    """Pure. Each application's entry as ``{"asked", "asks_again", "every_s"}``: when macOS last
+    asked to confirm its screen recording, when it will ask again (UTC datetimes, or None) and the
+    interval in seconds. The key is the one macOS uses: a bundle id, an executable path, or the
+    file URL of an app bundle (``capture_approval_of`` finds an app under any of them)."""
+    out: dict[str, dict] = {}
+    for app, entry in (data or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        every = entry.get("kScreenCapturePrivacyHintPolicy")
+        out[str(app)] = {"asked": _utc(entry.get("kScreenCaptureApprovalLastAlerted")),
+                         "asks_again": _utc(entry.get("kScreenCapturePrivacyHintDate")),
+                         "every_s": int(every) if isinstance(every, (int, float)) else None}
+    return out
+
+
+def capture_approvals(path: str | os.PathLike | None = None) -> dict[str, dict] | None:
+    """Every application's screen-recording confirmation (``parse_capture_approvals``), or None
+    when the file cannot be read: an older macOS, or a process without access to it."""
+    try:
+        with open(os.path.expanduser(str(path or CAPTURE_APPROVALS)), "rb") as fh:
+            return parse_capture_approvals(plistlib.load(fh))
+    except Exception:
+        return None
+
+
+def capture_approval_of(approvals: Mapping[str, dict] | None, app: str) -> dict | None:
+    """Pure. The entry for one application, given as a bundle id or as the path of its ``.app``
+    bundle, which macOS keys as a file URL with a trailing slash. None when it has none."""
+    if not approvals or not app:
+        return None
+    keys = [app]
+    if app.startswith("/"):
+        bundle = app.rstrip("/")
+        keys += [bundle, "file://" + quote(bundle) + "/"]
+    return next((approvals[k] for k in keys if k in approvals), None)
 
 
 # ----------------------------------------------------------------------------- capture
