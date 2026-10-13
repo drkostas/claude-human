@@ -90,6 +90,16 @@ def test_a_system_dialog_refuses_clicks():
     assert r["ok"] is False and r["blocked"] is True and posted == []
 
 
+def test_a_dialog_refusal_names_the_dialog_and_can_be_worded_from_it():
+    s, posted = sink(blocker="UserNotificationCenter")
+    r = s.do_input({"type": "click", "x": 0.5, "y": 0.5})
+    assert r["blocker"] == "UserNotificationCenter" and r["detail"] == s.blocked_detail and posted == []
+    worded = QuartzInput(Screen(blocker="UserNotificationCenter"), post=posted.append, quartz=FakeQuartz(),
+                         blocked_detail=lambda app: f"{app} is asking something")
+    assert worded.do_input({"type": "click", "x": 0.5, "y": 0.5})["detail"] == "UserNotificationCenter is asking something"
+    assert worded.do_input({"type": "move", "x": 0.5, "y": 0.5})["ok"], "a move is still allowed"
+
+
 def test_a_missing_window_is_refused_and_never_mapped_to_the_display():
     s, posted = sink(apps=())
     r = s.do_input({"type": "click", "app": "Notes", "x": 0.5, "y": 0.5})

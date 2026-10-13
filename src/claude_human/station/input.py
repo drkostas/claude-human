@@ -34,13 +34,17 @@ V_KEY = 9
 class QuartzInput:
     """The input sink the server uses by default.
 
+    ``blocked_detail`` is the refusal's text while a system dialog is up, or a function that gets
+    the dialog's application name and returns the text.
+
     ``screen`` answers ``screen_locked()``, ``blocked_by()``, ``resolve(app, wid)``,
     ``window_rect(wid)`` and ``front_window()``. ``claude_human.screenshot`` is the default. ``post`` sends one event (the
     default posts it to the HID event tap), and ``quartz`` is the Quartz module or a stand-in."""
 
     def __init__(self, screen: Any = None, *, post: Optional[Callable[[Any], None]] = None,
                  quartz: Any = None, pasteboard: Any = None,
-                 locked_detail: str = LOCKED_DETAIL, blocked_detail: str = BLOCKED_DETAIL,
+                 locked_detail: str = LOCKED_DETAIL,
+                 blocked_detail: str | Callable[[str], str] = BLOCKED_DETAIL,
                  sleep: Callable[[float], None] = time.sleep):
         if screen is None:
             from .. import screenshot as screen  # noqa: PLC0415
@@ -136,8 +140,12 @@ class QuartzInput:
         kind = msg.get("type")
         if kind not in HARMLESS and self.screen.screen_locked():
             return {"ok": False, "locked": True, "detail": self.locked_detail}
-        if kind not in HARMLESS and self.screen.blocked_by():
-            return {"ok": False, "blocked": True, "detail": self.blocked_detail}
+        blocker = self.screen.blocked_by() if kind not in HARMLESS else None
+        if blocker:
+            # the caller may word it from the blocking app's name, which is also returned
+            detail = (self.blocked_detail(str(blocker)) if callable(self.blocked_detail)
+                      else self.blocked_detail)
+            return {"ok": False, "blocked": True, "blocker": str(blocker), "detail": detail}
         # A request that names a window and cannot find it is refused. It must never fall back to
         # the whole display: the normalised point would then land at the same place on whatever the
         # person at the Mac is looking at, as a real click.
