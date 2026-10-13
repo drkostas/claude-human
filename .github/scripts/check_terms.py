@@ -17,7 +17,7 @@ import sys
 
 
 def patterns(name):
-    return [re.compile(line.strip(), re.I) for line in os.environ.get(name, "").splitlines()
+    return [re.compile(line.strip(), re.IGNORECASE) for line in os.environ.get(name, "").splitlines()
             if line.strip()]
 
 
