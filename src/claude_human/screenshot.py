@@ -218,13 +218,21 @@ def window_ids() -> set[int] | None:
     return ids or None
 
 
+#: apps never brought back with ``open -b``. To an app that is already running, ``open -b`` is a
+#: reopen, and Finder answers a reopen with no window open by opening a new window at its default
+#: folder, on whatever desktop is showing. Finder is in front when the desktop itself has focus, so
+#: there is no window of it to give focus back to, and asking only made a window appear.
+NO_REOPEN = frozenset({"com.apple.finder"})
+
+
 def activate(bundle_id: str | None, *, env: Mapping[str, str] | None = None) -> bool:
-    """Bring an application to the front by its bundle id, with ``open -b``.
+    """Bring an application to the front by its bundle id, with ``open -b``. False when it was not
+    asked: no bundle id, or an app in NO_REOPEN.
 
     LaunchServices does it, so no Automation grant is needed. ⚠️ AppKit's activateWithOptions is not
     reliable for this: measured 2026-10-11, it brought iTerm back right after another app made a
     window, but was ignored right after Brave had been activated. ``open -b`` worked in both."""
-    if not bundle_id:
+    if not bundle_id or bundle_id in NO_REOPEN:
         return False
     try:
         r = subprocess.run(["/usr/bin/open", "-b", bundle_id], capture_output=True, text=True,
