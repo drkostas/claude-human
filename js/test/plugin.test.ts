@@ -43,15 +43,18 @@ describe("config plugin against a fixture project", () => {
     expect(out.kotlin).toContain("FOREGROUND_SERVICE_TYPE_SPECIAL_USE");
     expect(out.kotlin).not.toContain("FOREGROUND_SERVICE_TYPE_DATA_SYNC");
     expect(out.kotlin).toContain("ACTION_MY_PACKAGE_REPLACED");
-    expect(out.kotlin).toContain('click.startsWith("example://")');
+    expect(out.kotlin).toContain('private fun intoApp(link: String): Boolean = link.startsWith("example://")');
     expect(out.kotlin).toContain('.ifBlank { "Example" }');
     // A tap on a notification opens its link with a link intent aimed at the app. The launcher
     // intent with a link attached only brought a running app to the front, without the link.
+    // A button opens its link the same way.
+    const link = out.kotlin.slice(out.kotlin.indexOf("private fun linkIntent("));
+    expect(link).toContain("Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link))");
+    expect(link).toContain("setPackage(packageName)");
+    expect(link).toContain("FLAG_ACTIVITY_SINGLE_TOP");
     const handle = out.kotlin.slice(out.kotlin.indexOf("private fun handle("));
-    expect(handle).toContain("Intent(Intent.ACTION_VIEW, android.net.Uri.parse(click))");
-    expect(handle).toContain("setPackage(packageName)");
-    expect(handle).toContain("FLAG_ACTIVITY_SINGLE_TOP");
-    expect(handle.indexOf("Intent(Intent.ACTION_VIEW")).toBeLessThan(handle.indexOf("getLaunchIntentForPackage"));
+    expect(handle).toContain(
+      "val open = if (intoApp(click)) linkIntent(click) else packageManager.getLaunchIntentForPackage(packageName)");
 
     expect(out.gradle).toContain('buildConfigField("String", "NTFY_TOPIC_URL", "\\"https://ntfy.example.org/alerts\\"")');
     expect(out.gradle).toContain("buildFeatures { buildConfig true }");
@@ -91,7 +94,7 @@ describe("config plugin against a fixture project", () => {
     expect(out.kotlin).toContain('const val ONGOING_CHANNEL = "lab_watching"');
     expect(out.kotlin).toContain('const val ALERT_CHANNEL = "lab_alerts"');
     expect(out.kotlin).toContain('.setContentTitle("Lab \\"is\\" watching \\$now")');
-    expect(out.kotlin).toContain('click.startsWith("lab://")');
+    expect(out.kotlin).toContain('link.startsWith("lab://")');
     expect(out.kotlin).toContain("BuildConfig.LAB_NTFY_URL");
     expect(out.gradle).toContain('buildConfigField("String", "LAB_NTFY_URL", "\\"https://push.example.net:8443/lab\\"")');
   });
@@ -103,7 +106,7 @@ describe("config plugin against a fixture project", () => {
       { url: "https://ntfy.example.org/t" });
     await compileModsAsync(config, { projectRoot: root, platforms: ["android"], assertMissingModProviders: false });
     const kotlin = readFileSync(join(root, "android/app/src/main/java/org/example/app/NtfyService.kt"), "utf8");
-    expect(kotlin).toContain("if (false) {");
+    expect(kotlin).toContain("private fun intoApp(link: String): Boolean = false");
   });
 
   it("refuses a loopback or missing URL at prebuild, but not when the config is only read", async () => {
@@ -145,7 +148,7 @@ describe("plugin helpers", () => {
     const app: { [k: string]: unknown } = {};
     plugin.addManifestEntries(manifest, app);
     plugin.addManifestEntries(manifest, app);
-    expect((manifest["uses-permission"] as unknown[]).length).toBe(4);
+    expect((manifest["uses-permission"] as unknown[]).length).toBe(5);
     expect((app.service as unknown[]).length).toBe(1);
     expect((app.receiver as unknown[]).length).toBe(1);
   });
@@ -181,5 +184,86 @@ describe("the service type on a manifest that already has the service", () => {
     const perms = manifest["uses-permission"].map((p) => p.$["android:name"]);
     expect(perms).not.toContain("android.permission.FOREGROUND_SERVICE_DATA_SYNC");
     expect(perms).toContain("android.permission.FOREGROUND_SERVICE_SPECIAL_USE");
+  });
+});
+
+describe("what a message shows", () => {
+  const ENV = { EXPO_PUBLIC_NTFY_URL: "https://ntfy.example.org/alerts" };
+  /** One function of the generated service, from its name to the next function. */
+  const fn = (kotlin: string, name: string) => {
+    const start = kotlin.indexOf(`private fun ${name}(`);
+    expect(start, `no function ${name}`).toBeGreaterThan(-1);
+    const next = kotlin.indexOf("\n    private fun ", start + 1);
+    return kotlin.slice(start, next === -1 ? undefined : next);
+  };
+
+  it("draws each view action into the app as a button, at most three, each with its own request code", async () => {
+    const { kotlin } = await prebuild({}, ENV);
+    expect(fn(kotlin, "handle")).toContain('for ((label, tap) in buttons(id, f.optJSONArray("actions"))) addAction(0, label, tap)');
+    const buttons = fn(kotlin, "buttons");
+    expect(buttons).toContain("if (out.size == MAX_BUTTONS) break");
+    expect(buttons).toContain('a.optString("action") != "view"');
+    expect(buttons).toContain("!intoApp(url)");
+    expect(buttons).toContain('PendingIntent.getActivity(this, "$id#$i".hashCode(), linkIntent(url), FLAGS)');
+    expect(kotlin).toContain("const val MAX_BUTTONS = 3");
+    expect(kotlin).toContain("const val FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT");
+  });
+
+  it("posts on the alarm, chime or silent channel by the message's priority", async () => {
+    const { kotlin, manifest } = await prebuild({}, ENV);
+    const handle = fn(kotlin, "handle");
+    expect(handle).toContain('val channel = channelFor(f.optInt("priority", 3))');
+    expect(handle).toContain("NotificationCompat.Builder(this, channel)");
+    const pick = fn(kotlin, "channelFor");
+    expect(pick).toContain("priority >= ALARM_FROM -> ALARM_CHANNEL");
+    expect(pick).toContain("priority >= CHIME_FROM -> ALERT_CHANNEL");
+    expect(pick).toContain("else -> SILENT_CHANNEL");
+    expect(kotlin).toContain("const val ALARM_FROM = 5");
+    expect(kotlin).toContain("const val CHIME_FROM = 4");
+    const channels = fn(kotlin, "createChannels");
+    expect(channels).toContain('NotificationChannel(ALERT_CHANNEL, "Example", NotificationManager.IMPORTANCE_HIGH)');
+    expect(channels).toContain('NotificationChannel(ALARM_CHANNEL, "Urgent", NotificationManager.IMPORTANCE_HIGH)');
+    expect(channels).toContain("setUsage(AudioAttributes.USAGE_ALARM)");
+    expect(channels).toContain("setBypassDnd(true)");
+    expect(channels).toContain('NotificationChannel(SILENT_CHANNEL, "Quiet", NotificationManager.IMPORTANCE_LOW)');
+    // Do Not Disturb access is what lets the alarm channel keep its bypass, and Android lists an
+    // app for that access only when the manifest asks for it.
+    expect(manifest).toContain('android:name="android.permission.ACCESS_NOTIFICATION_POLICY"');
+  });
+
+  it("folds to the title and the message's first line, and pulls down to the whole message", async () => {
+    const { kotlin } = await prebuild({}, ENV);
+    const handle = fn(kotlin, "handle");
+    expect(handle).toContain(".setContentText(firstLine(body))");
+    expect(handle).toContain(".setStyle(NotificationCompat.BigTextStyle().bigText(body))");
+    expect(handle).not.toContain(".setContentText(body)");
+    expect(fn(kotlin, "firstLine")).toContain("body.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: body");
+  });
+
+  it("shows a tag that has the sub text prefix in the header, and no tag without the option", async () => {
+    const plain = await prebuild({}, ENV);
+    expect(plain.kotlin).toContain('private const val SUBTEXT_TAG_PREFIX = ""');
+    const tagged = await prebuild({ subTextTagPrefix: "area:" }, ENV);
+    expect(tagged.kotlin).toContain('private const val SUBTEXT_TAG_PREFIX = "area:"');
+    expect(fn(tagged.kotlin, "handle")).toContain('subText(f.optJSONArray("tags"))?.let { setSubText(it) }');
+  });
+
+  it("uses the options for the new channels and the priorities, and refuses bad ones", async () => {
+    const { kotlin } = await prebuild({
+      alarmChannelId: "lab_alarm", alarmChannelName: "Lab alarms",
+      silentChannelId: "lab_quiet", silentChannelName: "Lab results",
+      alarmPriority: 4, chimePriority: 3,
+    }, ENV);
+    expect(kotlin).toContain('const val ALARM_CHANNEL = "lab_alarm"');
+    expect(kotlin).toContain('const val SILENT_CHANNEL = "lab_quiet"');
+    expect(kotlin).toContain('NotificationChannel(ALARM_CHANNEL, "Lab alarms", NotificationManager.IMPORTANCE_HIGH)');
+    expect(kotlin).toContain("const val ALARM_FROM = 4");
+    expect(kotlin).toContain("const val CHIME_FROM = 3");
+    const url = "https://a.example/b";
+    expect(() => plugin.resolveOptions(BASE, { url, alarmPriority: 6 })).toThrow(/alarmPriority/);
+    expect(() => plugin.resolveOptions(BASE, { url, chimePriority: 2.5 })).toThrow(/chimePriority/);
+    expect(() => plugin.resolveOptions(BASE, { url, alarmPriority: 4, chimePriority: 5 })).toThrow(/above/);
+    expect(() => plugin.resolveOptions(BASE, { url, silentChannelId: "ntfy_messages" })).toThrow(/differ/);
+    expect(() => plugin.resolveOptions(BASE, { url, alarmChannelId: "a b" })).toThrow(/alarmChannelId/);
   });
 });
