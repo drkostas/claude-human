@@ -21,7 +21,19 @@
  *   ongoingChannelId, ongoingChannelName, ongoingChannelDescription, ongoingTitle, ongoingText
  *                     the low-importance channel and notification a foreground service must show
  *   alertChannelId, alertChannelName, alertChannelDescription
- *                     the channel messages are posted on
+ *                     the chime channel, for messages from chimePriority up to alarmPriority. It
+ *                     keeps the id every message was posted on before there were three channels,
+ *                     so the settings a person chose for it carry over.
+ *   alarmChannelId, alarmChannelName, alarmChannelDescription
+ *                     the alarm channel, for messages at alarmPriority or above: the phone's alarm
+ *                     sound, played as an alarm, and through Do Not Disturb where Android allows it
+ *   silentChannelId, silentChannelName, silentChannelDescription
+ *                     the silent channel, for messages below chimePriority: in the tray, no sound
+ *   alarmPriority     the lowest ntfy priority that rings the alarm (default 5)
+ *   chimePriority     the lowest ntfy priority that chimes (default 4). ntfy's default priority is
+ *                     3, so a message published without one is silent unless this is set to 3.
+ *   subTextTagPrefix  a tag that starts with this is shown, without it, next to the app's name in
+ *                     the notification's header (default "": no tag is shown)
  *   logTag            Android log tag (default "NtfyService")
  *
  * The Android prebuild fails when the URL is missing or points at the build machine itself (localhost,
@@ -96,13 +108,36 @@ function resolveOptions(config, options = {}, env = process.env) {
     alertChannelId: options.alertChannelId || "ntfy_messages",
     alertChannelName: options.alertChannelName || name,
     alertChannelDescription: options.alertChannelDescription || "Messages from the server",
+    alarmChannelId: options.alarmChannelId || "ntfy_alarm",
+    alarmChannelName: options.alarmChannelName || "Urgent",
+    alarmChannelDescription: options.alarmChannelDescription ||
+      "Messages at the highest priority, with the alarm sound",
+    silentChannelId: options.silentChannelId || "ntfy_silent",
+    silentChannelName: options.silentChannelName || "Quiet",
+    silentChannelDescription: options.silentChannelDescription || "Messages at a low priority, without a sound",
+    alarmPriority: options.alarmPriority !== undefined ? options.alarmPriority : 5,
+    chimePriority: options.chimePriority !== undefined ? options.chimePriority : 4,
+    subTextTagPrefix: options.subTextTagPrefix || "",
     logTag: options.logTag || "NtfyService",
   };
   if (!/^[A-Z_][A-Z0-9_]*$/.test(o.buildConfigField)) {
     throw new Error(`expo-ntfy: buildConfigField must be an upper case identifier (got ${o.buildConfigField})`);
   }
-  for (const k of ["ongoingChannelId", "alertChannelId"]) {
+  const channels = ["ongoingChannelId", "alertChannelId", "alarmChannelId", "silentChannelId"];
+  for (const k of channels) {
     if (!/^[A-Za-z0-9_.-]+$/.test(o[k])) throw new Error(`expo-ntfy: invalid ${k} ${JSON.stringify(o[k])}`);
+  }
+  if (new Set(channels.map((k) => o[k])).size !== channels.length) {
+    throw new Error(`expo-ntfy: the four channel ids must differ (got ${channels.map((k) => o[k]).join(", ")})`);
+  }
+  // ntfy priorities run from 1 (min) to 5 (max), and they are written into the service as numbers
+  for (const k of ["alarmPriority", "chimePriority"]) {
+    if (!Number.isInteger(o[k]) || o[k] < 1 || o[k] > 5) {
+      throw new Error(`expo-ntfy: ${k} must be a whole ntfy priority from 1 to 5 (got ${JSON.stringify(o[k])})`);
+    }
+  }
+  if (o.chimePriority > o.alarmPriority) {
+    throw new Error(`expo-ntfy: chimePriority (${o.chimePriority}) is above alarmPriority (${o.alarmPriority})`);
   }
   return o;
 }
@@ -115,17 +150,20 @@ function kt(s) {
 
 function renderKotlin(o) {
   const linkCheck = o.linkPrefix
-    ? `click.startsWith(${kt(o.linkPrefix)})`
+    ? `link.startsWith(${kt(o.linkPrefix)})`
     : "false";
   return `package ${o.package}
 
 import android.app.*
 import android.content.*
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import okhttp3.*
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -133,12 +171,29 @@ import java.util.concurrent.TimeUnit
  * Holds the ntfy topic's WebSocket open natively, so messages arrive while the phone is locked and
  * the JavaScript side is suspended. It posts what it receives to the tray itself and does not talk
  * to JavaScript. Written by the expo-ntfy config plugin; regenerated on every prebuild.
+ *
+ * A message is posted on one of three channels by its ntfy priority (an alarm, a chime, or no
+ * sound). It folds to its title and first line, pulls down to the whole message, and carries a
+ * button for each of its view actions that links into the app.
  */
 class NtfyService : Service() {
     companion object {
         const val ONGOING_CHANNEL = ${kt(o.ongoingChannelId)}
+        /** the chime channel, which keeps the id messages were always posted on */
         const val ALERT_CHANNEL = ${kt(o.alertChannelId)}
+        const val ALARM_CHANNEL = ${kt(o.alarmChannelId)}
+        const val SILENT_CHANNEL = ${kt(o.silentChannelId)}
         const val ONGOING_ID = 4711
+        /** the lowest ntfy priorities that ring the alarm and that chime; below CHIME_FROM is silent */
+        const val ALARM_FROM = ${o.alarmPriority}
+        const val CHIME_FROM = ${o.chimePriority}
+        /** Android's notification templates show at most three buttons */
+        const val MAX_BUTTONS = 3
+        /** Android 12 and later require every PendingIntent to say whether it is mutable, and
+         *  Android 14 and later refuse a mutable one whose intent names no app. These are immutable,
+         *  and each intent names this app's package. */
+        const val FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        private const val SUBTEXT_TAG_PREFIX = ${kt(o.subTextTagPrefix)}
         private const val TAG = ${kt(o.logTag)}
         var topicUrl: String = BuildConfig.${o.buildConfigField}
     }
@@ -186,6 +241,32 @@ class NtfyService : Service() {
         mgr.createNotificationChannel(
             NotificationChannel(ALERT_CHANNEL, ${kt(o.alertChannelName)}, NotificationManager.IMPORTANCE_HIGH)
                 .apply { description = ${kt(o.alertChannelDescription)} }
+        )
+        // The alarm plays the phone's alarm sound as an alarm, so it rings at the alarm volume and
+        // Do Not Disturb lets it through wherever it lets alarms through. Android keeps the
+        // channel's own bypass only when the app has Do Not Disturb access (the person grants it in
+        // the system settings) and clears it otherwise. The channels are created at every start,
+        // so access granted later applies at the next start, unless the person changed the channel.
+        // Android fixes a channel's sound when it is first created, so the alarm has its own id.
+        mgr.createNotificationChannel(
+            NotificationChannel(ALARM_CHANNEL, ${kt(o.alarmChannelName)}, NotificationManager.IMPORTANCE_HIGH)
+                .apply {
+                    description = ${kt(o.alarmChannelDescription)}
+                    setSound(
+                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    enableVibration(true)
+                    setBypassDnd(true)
+                }
+        )
+        // Silent: in the tray and on the lock screen, with no sound and no vibration.
+        mgr.createNotificationChannel(
+            NotificationChannel(SILENT_CHANNEL, ${kt(o.silentChannelName)}, NotificationManager.IMPORTANCE_LOW)
+                .apply { description = ${kt(o.silentChannelDescription)} }
         )
     }
 
@@ -241,43 +322,102 @@ class NtfyService : Service() {
         try {
             val f = JSONObject(text)
             if (f.optString("event") != "message") return
+            val id = f.optString("id")
             val title = f.optString("title").ifBlank { ${kt(o.defaultTitle)} }
             val body = f.optString("message").ifBlank { title }
             val click = f.optString("click")
-            // Only links into this app are followed; a link from the network is data. A link opens
-            // as a link intent aimed at this app, not as the launcher intent with a link attached:
-            // the launcher intent carries CATEGORY_LAUNCHER, and when the app is already running
-            // Android then only brings its task to the front and never delivers the link, so a tap
-            // opened the app on whatever screen it was last on.
-            val open = if (${linkCheck}) {
-                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(click)).apply {
-                    setPackage(packageName)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                }
-            } else {
-                packageManager.getLaunchIntentForPackage(packageName)
-            }
-            val n = NotificationCompat.Builder(this, ALERT_CHANNEL)
+            val open = if (intoApp(click)) linkIntent(click) else packageManager.getLaunchIntentForPackage(packageName)
+            // ntfy leaves the priority out for its default, 3
+            val channel = channelFor(f.optInt("priority", 3))
+            val n = NotificationCompat.Builder(this, channel)
                 .setContentTitle(title)
-                .setContentText(body)
+                // folded, on the lock screen and in the shade: the title and the first line
+                .setContentText(firstLine(body))
+                // pulled down: the whole message, and the buttons
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))
                 .setSmallIcon(applicationInfo.icon)
                 .setAutoCancel(true)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setPriority(priorityFor(channel))
                 .apply {
+                    subText(f.optJSONArray("tags"))?.let { setSubText(it) }
                     if (open != null) setContentIntent(
-                        PendingIntent.getActivity(
-                            this@NtfyService, click.hashCode(), open,
-                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                        )
+                        PendingIntent.getActivity(this@NtfyService, click.hashCode(), open, FLAGS)
                     )
+                    for ((label, tap) in buttons(id, f.optJSONArray("actions"))) addAction(0, label, tap)
                 }
                 .build()
-            getSystemService(NotificationManager::class.java)
-                .notify(f.optString("id").hashCode(), n)
+            getSystemService(NotificationManager::class.java).notify(id.hashCode(), n)
         } catch (e: Exception) {
             Log.w(TAG, "bad frame: " + e.message)
         }
+    }
+
+    /** Only links into this app are followed. A link in a notification is data from the network. */
+    private fun intoApp(link: String): Boolean = ${linkCheck}
+
+    /**
+     * A link opens as a link intent aimed at this app, not as the launcher intent with a link
+     * attached: the launcher intent carries CATEGORY_LAUNCHER, and when the app is already running
+     * Android then only brings its task to the front and never delivers the link, so a tap opened
+     * the app on whatever screen it was last on. The app's own link handling takes it from here.
+     */
+    private fun linkIntent(link: String): Intent =
+        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link)).apply {
+            setPackage(packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+
+    /**
+     * ntfy's view actions as buttons, at most MAX_BUTTONS, in the order they came. Like the tap, a
+     * button opens its link only when the link is into this app. It opens the app straight from
+     * the notification, because Android 12 and later do not let a receiver or service started by a
+     * notification open an activity. So a button does not dismiss the notification, and ntfy's
+     * "clear" is not honoured. ntfy's http and broadcast actions are not drawn. Each button has its
+     * own request code, so no two share a PendingIntent.
+     */
+    private fun buttons(id: String, actions: JSONArray?): List<Pair<String, PendingIntent>> {
+        val out = mutableListOf<Pair<String, PendingIntent>>()
+        if (actions == null) return out
+        for (i in 0 until actions.length()) {
+            if (out.size == MAX_BUTTONS) break
+            val a = actions.optJSONObject(i) ?: continue
+            val label = a.optString("label")
+            val url = a.optString("url")
+            if (a.optString("action") != "view" || label.isBlank() || !intoApp(url)) continue
+            out.add(label to PendingIntent.getActivity(this, "$id#$i".hashCode(), linkIntent(url), FLAGS))
+        }
+        return out
+    }
+
+    /** The channel for an ntfy priority: an alarm, a chime, or no sound. */
+    private fun channelFor(priority: Int): String = when {
+        priority >= ALARM_FROM -> ALARM_CHANNEL
+        priority >= CHIME_FROM -> ALERT_CHANNEL
+        else -> SILENT_CHANNEL
+    }
+
+    /** What Android before 8.0, which has no channels, goes by instead. */
+    private fun priorityFor(channel: String): Int = when (channel) {
+        ALARM_CHANNEL -> NotificationCompat.PRIORITY_MAX
+        ALERT_CHANNEL -> NotificationCompat.PRIORITY_HIGH
+        else -> NotificationCompat.PRIORITY_LOW
+    }
+
+    /** The message's first line that has text, for the folded notification. */
+    private fun firstLine(body: String): String =
+        body.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: body
+
+    /** The first tag that starts with SUBTEXT_TAG_PREFIX, without it, for the header next to the
+     *  app's name. No tag is shown when the prefix is empty. */
+    private fun subText(tags: JSONArray?): String? {
+        if (tags == null || SUBTEXT_TAG_PREFIX.isEmpty()) return null
+        for (i in 0 until tags.length()) {
+            val t = tags.optString(i)
+            if (t.startsWith(SUBTEXT_TAG_PREFIX) && t.length > SUBTEXT_TAG_PREFIX.length) {
+                return t.substring(SUBTEXT_TAG_PREFIX.length)
+            }
+        }
+        return null
     }
 }
 
@@ -352,6 +492,9 @@ const PERMISSIONS = [
   "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
   "android.permission.RECEIVE_BOOT_COMPLETED",
   "android.permission.WAKE_LOCK",
+  // Android lists an app under Do Not Disturb access only when it asks for this. The person grants
+  // that access there, and only then does the alarm channel keep its bypass of Do Not Disturb.
+  "android.permission.ACCESS_NOTIFICATION_POLICY",
 ];
 
 /** The manifest (as Expo's parsed XML object) with the permissions, the service and the receiver. */
