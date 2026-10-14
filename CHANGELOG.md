@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `@drkostas/expo-ntfy` 0.2.1: `pollTopicOnce` gives up after `timeoutMs` (default 20 seconds, `POLL_TIMEOUT_MS`). It aborts the fetch through an `AbortSignal` and also stops waiting for a fetch that ignores the signal, and it then rejects without announcing anything or moving the mark. Before, a topic that never answered kept the background task pending, and Android's WorkManager starts no other run of a task while one is pending, so one hung connection stopped every later background poll.
 - `screenshot.activate` no longer brings Finder back with `open -b`. To a running app that is a reopen, and Finder answers a reopen with no window open by opening a new window at its default folder on the visible desktop, so giving focus back after another app took it (Finder is in front when the desktop itself has focus) made Finder windows appear. Such apps are listed in `screenshot.NO_REOPEN`, and `activate` returns False for them without asking
 - CI compiles the Android service the expo-ntfy plugin writes (`npm run compile:service` in js/), against the Android 36 platform and the libraries the plugin adds, so a service that does not compile fails a pull request instead of an app's build.
 - `screenshot.capture_approvals()` and `capture_approval_of()`: when macOS last asked each app to confirm that it may keep recording the screen, and when it asks again (macOS 15 and later ask monthly for an app that records without the system picker). Read only, from the system's own file, with the dates in UTC.

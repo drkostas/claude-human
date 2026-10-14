@@ -27,7 +27,14 @@ export interface PollOptions {
   /** backlog window, a Go duration or "all" (default "all") */
   since?: string;
   fetch?: typeof fetch;
+  /** how long the read may take, in milliseconds (default 20000). Without a limit, a topic that
+   *  never answers (a network that drops packets, a server that is down) keeps the background task
+   *  pending, and Android's WorkManager starts no other run of a task while one is pending. */
+  timeoutMs?: number;
 }
+
+/** The default limit for one read of the backlog. */
+export const POLL_TIMEOUT_MS = 20_000;
 
 /** Read the backlog once, announce the new messages oldest first, then commit the watermark.
  *  Returns how many were announced.
@@ -40,9 +47,30 @@ export async function pollTopicOnce(o: PollOptions): Promise<number> {
   const mark: Watermark =
     stored == null ? ZERO_WATERMARK : typeof stored === "number" ? { time: stored, idsAtTime: [] } : stored;
   const get = o.fetch ?? fetch;
-  const r = await get(pollUrlFrom(o.topicUrl, o.since));
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const frames = parseBacklog(await r.text());
+  const ms = o.timeoutMs ?? POLL_TIMEOUT_MS;
+  const ctrl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // the abort stops a fetch that honours its signal; the race also ends one that does not
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      ctrl.abort();
+      reject(new Error(`the topic did not answer within ${ms} ms`));
+    }, ms);
+  });
+  let body: string;
+  try {
+    body = await Promise.race([
+      (async () => {
+        const r = await get(pollUrlFrom(o.topicUrl, o.since), { signal: ctrl.signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.text();
+      })(),
+      late,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+  const frames = parseBacklog(body);
   const next = newSince(frames, mark);
   for (const f of next.fresh.slice().reverse()) {
     await o.announce(frameToNotification(f, o.text), f);

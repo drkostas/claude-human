@@ -80,3 +80,36 @@ describe("pollTopicOnce", () => {
     expect(committed).toBe(false);
   });
 });
+
+
+describe("pollTopicOnce's time limit", () => {
+  it("gives up on a topic that never answers, announces nothing and keeps the mark", async () => {
+    let signal: AbortSignal | undefined;
+    const silent = ((_url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>(() => {});            // never answers, ignores the signal
+    }) as unknown as typeof globalThis.fetch;
+    let announced = 0;
+    let committed = false;
+    const started = Date.now();
+    await expect(pollTopicOnce({
+      topicUrl: "https://ntfy.example.org/t",
+      readMark: async () => null,
+      announce: async () => { announced += 1; },
+      commitMark: async () => { committed = true; },
+      fetch: silent,
+      timeoutMs: 50,
+    })).rejects.toThrow("did not answer within 50 ms");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(signal?.aborted).toBe(true);
+    expect(announced).toBe(0);
+    expect(committed).toBe(false);
+  });
+
+  it("does not cut a read that answers in time", async () => {
+    const { fetch } = backlog(msg("a", 10));
+    const n = await pollTopicOnce({ topicUrl: "https://ntfy.example.org/t", readMark: async () => 5,
+                                    announce: async () => {}, fetch, timeoutMs: 1000 });
+    expect(n).toBe(1);
+  });
+});
