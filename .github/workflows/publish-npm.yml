@@ -1,14 +1,17 @@
 name: Publish to npm
 
-# A tag expo-ntfy-v<version> publishes @drkostas/expo-ntfy (js/), and client-v<version> publishes
-# @drkostas/claude-human-client (client/). npm trusts this workflow (trusted publishing), so the job
-# holds no token: npm checks the GitHub OIDC identity and records provenance.
+# A tag expo-ntfy-v<version> releases @drkostas/expo-ntfy (js/), and client-v<version> releases
+# @drkostas/claude-human-client (client/). The release is the package's npm pack tarball, attached to
+# a GitHub release of the tag, so an app can install it by URL and its lock file keeps the checksum.
+# When the repository variable NPM_PUBLISH is "true", the same tarball is also published to npm. npm
+# trusts this workflow (trusted publishing), so the job holds no token: npm checks the GitHub OIDC
+# identity and records provenance. Without that trust on npm's side, leave NPM_PUBLISH unset.
 on:
   push:
     tags: ["expo-ntfy-v*", "client-v*"]
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -30,5 +33,32 @@ jobs:
           esac
       - name: The tag matches the package version
         run: test "$(node -p "require('./${DIR}/package.json').version")" = "${VERSION}"
-      - run: npm publish --provenance --access public
+      - name: Pack the package
         working-directory: ${{ env.DIR }}
+        run: |
+          F=$(npm pack --json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8"))[0].filename')
+          test -f "$F"
+          echo "TARBALL=$F" >> "$GITHUB_ENV"
+          echo "NAME=$(node -p "require('./package.json').name")" >> "$GITHUB_ENV"
+      - name: Attach the tarball to a GitHub release of the tag
+        working-directory: ${{ env.DIR }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          URL="https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/${TARBALL}"
+          {
+            echo "${NAME} ${VERSION}, packed with npm pack. Install it by URL:"
+            echo
+            echo "~~~bash"
+            echo "npm install ${URL}"
+            echo "~~~"
+            echo
+            echo "The changes are in CHANGELOG.md."
+          } > notes.md
+          gh release create "${GITHUB_REF_NAME}" "${TARBALL}" --repo "${REPO}" --verify-tag \
+            --title "${NAME} ${VERSION}" --notes-file notes.md
+      - name: Publish the same tarball to npm
+        if: vars.NPM_PUBLISH == 'true'
+        working-directory: ${{ env.DIR }}
+        run: npm publish "${TARBALL}" --provenance --access public
