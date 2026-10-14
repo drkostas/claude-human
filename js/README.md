@@ -10,9 +10,13 @@ It has three parts.
 
 ## Install
 
+Each release is attached to the GitHub release of its tag, `expo-ntfy-v<version>`, and installs from there by URL:
+
 ```bash
-npm install @drkostas/expo-ntfy
+npm install https://github.com/drkostas/claude-human/releases/download/expo-ntfy-v0.2.0/drkostas-expo-ntfy-0.2.0.tgz
 ```
+
+Versions up to 0.1.1 are also on npm (`npm install @drkostas/expo-ntfy`).
 
 It expects `expo`, `expo-notifications`, `react` and `react-native` in the app, and `expo-background-task` and `expo-task-manager` if you use the background poll.
 
@@ -41,6 +45,10 @@ The topic URL comes from `EXPO_PUBLIC_NTFY_URL` at prebuild time, or from the `u
 | `defaultTitle` | `expo.name` |
 | `linkPrefix` | `<expo.scheme>://`, or no links when there is no scheme |
 | `alertChannelId`, `alertChannelName`, `alertChannelDescription` | `ntfy_messages`, `expo.name`, a short text |
+| `alarmChannelId`, `alarmChannelName`, `alarmChannelDescription` | `ntfy_alarm`, `Urgent`, a short text |
+| `silentChannelId`, `silentChannelName`, `silentChannelDescription` | `ntfy_silent`, `Quiet`, a short text |
+| `alarmPriority`, `chimePriority` | `5`, `4` |
+| `subTextTagPrefix` | empty, so no tag is shown |
 | `ongoingChannelId`, `ongoingChannelName`, `ongoingChannelDescription` | `ntfy_connection`, `Connection`, a short text |
 | `ongoingTitle`, `ongoingText` | `<expo.name> is connected`, `waiting for messages` |
 | `logTag` | `NtfyService` |
@@ -50,9 +58,18 @@ What it writes at prebuild.
 - `NtfyService.kt` and `BootReceiver` next to `MainActivity`, in the app's package.
 - The URL as a BuildConfig field. It is replaced on every build, so building again with a different URL corrects a wrong one.
 - A call in `MainActivity.onCreate` that starts the service.
-- The manifest entries for the service (type `dataSync`), the receiver, and the permissions `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `RECEIVE_BOOT_COMPLETED` and `WAKE_LOCK`.
+- The manifest entries for the service (type `specialUse`), the receiver, and the permissions `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK` and `ACCESS_NOTIFICATION_POLICY`.
 
 A message's click URL opens the app only when it starts with `linkPrefix`. A notification is data from the network, so any other link is shown in the text but never followed.
+
+## What a message shows
+
+- Folded, on the lock screen and in the shade, a notification shows the message's title and the first line of its text. Pulled down, it shows the whole text and its buttons.
+- Each `view` action becomes a button, up to three, in the order they came. A button opens its URL in the app the same way a tap opens `click`, and only when the URL starts with `linkPrefix`. `http` and `broadcast` actions are not drawn. A button does not dismiss the notification, so ntfy's `clear` has no effect. Dismissing it first would need a receiver between the tap and the app, and Android 12 and later do not let such a receiver open an activity.
+- The priority picks one of three channels. At `alarmPriority` or above (5 by default) the message rings the alarm channel, which plays the phone's alarm sound as an alarm. At `chimePriority` or above (4) it chimes on the alert channel, which keeps the id messages were posted on before there were three channels. Below that it is silent, in the tray with no sound. ntfy's default priority is 3, so set `chimePriority` to 3 if a message published without a priority should still make a sound.
+- Do Not Disturb lets the alarm through wherever it lets alarms through. The alarm channel also asks to bypass Do Not Disturb, and Android keeps that only when the app has Do Not Disturb access, which the person grants in the system settings. The app is listed there because the manifest asks for `ACCESS_NOTIFICATION_POLICY`.
+- With `subTextTagPrefix` set (for example `"area:"`), the first tag that starts with it is shown, without the prefix, next to the app's name in the notification's header.
+- Android fixes a channel's sound when the channel is created. The person can still change each channel's sound in the app's notification settings.
 
 ## The glue
 
