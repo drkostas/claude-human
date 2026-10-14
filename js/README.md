@@ -113,6 +113,8 @@ npm test
 
 The plugin test copies a fixture Android project to a temporary folder, runs the plugin through `@expo/config-plugins`, and reads the Kotlin, Gradle and manifest files it wrote.
 
+`npm run compile:service` compiles the service the plugin writes, against the Android 36 platform and the libraries the plugin adds. It needs Java 17 or later and an Android SDK with `platforms;android-36` (or `ANDROID_JAR` set to an `android.jar`), and downloads the Kotlin compiler and the libraries once, checked by their SHA-256 sums. `scripts/compile-service.sh FILE.kt` compiles a service that an app's prebuild wrote. CI runs it on every pull request.
+
 ## License
 
 MIT
