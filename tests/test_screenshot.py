@@ -129,6 +129,15 @@ def test_activate_uses_open_b(monkeypatch):
     assert not ss.activate(None)
 
 
+def test_finder_is_never_sent_a_reopen(monkeypatch):
+    # Finder answers a reopen with no window open by opening a new one at its default folder, so
+    # giving focus back to Finder (the desktop had focus) made a window appear on the visible desktop
+    from claude_human import screenshot as ss
+    seen = []
+    monkeypatch.setattr(ss.subprocess, "run", lambda argv, **k: seen.append(argv))
+    assert ss.activate("com.apple.finder") is False and seen == []
+
+
 # --- a covered window is never captured through the display crop (reported by Dennis, 0.5.0) ------
 
 def test_covered_by_finds_another_app_in_front_that_overlaps():

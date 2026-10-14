@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `screenshot.activate` no longer brings Finder back with `open -b`. To a running app that is a reopen, and Finder answers a reopen with no window open by opening a new window at its default folder on the visible desktop, so giving focus back after another app took it (Finder is in front when the desktop itself has focus) made Finder windows appear. Such apps are listed in `screenshot.NO_REOPEN`, and `activate` returns False for them without asking
 - CI compiles the Android service the expo-ntfy plugin writes (`npm run compile:service` in js/), against the Android 36 platform and the libraries the plugin adds, so a service that does not compile fails a pull request instead of an app's build.
 - `screenshot.capture_approvals()` and `capture_approval_of()`: when macOS last asked each app to confirm that it may keep recording the screen, and when it asks again (macOS 15 and later ask monthly for an app that records without the system picker). Read only, from the system's own file, with the dates in UTC.
 - The station's refusal while a system dialog is up carries the dialog's app as `blocker`, and `QuartzInput(blocked_detail=...)` may be a function of that name, so the text can say which question is waiting.
