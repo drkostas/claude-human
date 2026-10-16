@@ -104,6 +104,9 @@ export interface UseNtfyOptions {
   trayIsNative?: boolean;
   /** delay before reconnecting a dropped socket, in ms (default 3000) */
   retryMs?: number;
+  /** an access token for a server that requires authentication, sent as a Bearer header when the
+   *  socket opens (React Native's WebSocket takes headers as its third argument) */
+  token?: string;
 }
 
 /** Hold the topic's WebSocket open while the component is mounted, reconnecting when it drops.
@@ -136,7 +139,12 @@ export function useNtfy(
 
     const connect = () => {
       if (closed) return;
-      ws = new WebSocket(wsUrlFrom(topicUrl));
+      const token = options.current.token;
+      // React Native's WebSocket takes headers in a third argument the DOM type does not declare
+      const Socket = WebSocket as unknown as new (url: string, protocols?: string[], init?: { headers: Record<string, string> }) => WebSocket;
+      ws = token
+        ? new Socket(wsUrlFrom(topicUrl), undefined, { headers: { Authorization: `Bearer ${token}` } })
+        : new WebSocket(wsUrlFrom(topicUrl));
       ws.onopen = () => setConnected(true);
       ws.onclose = () => {
         setConnected(false);

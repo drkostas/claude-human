@@ -27,6 +27,8 @@ export interface PollOptions {
   /** backlog window, a Go duration or "all" (default "all") */
   since?: string;
   fetch?: typeof fetch;
+  /** an access token for a server that requires authentication, sent as a Bearer header */
+  token?: string;
   /** how long the read may take, in milliseconds (default 20000). Without a limit, a topic that
    *  never answers (a network that drops packets, a server that is down) keeps the background task
    *  pending, and Android's WorkManager starts no other run of a task while one is pending. */
@@ -61,7 +63,10 @@ export async function pollTopicOnce(o: PollOptions): Promise<number> {
   try {
     body = await Promise.race([
       (async () => {
-        const r = await get(pollUrlFrom(o.topicUrl, o.since), { signal: ctrl.signal });
+        const r = await get(pollUrlFrom(o.topicUrl, o.since), {
+          signal: ctrl.signal,
+          ...(o.token ? { headers: { Authorization: `Bearer ${o.token}` } } : {}),
+        });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
       })(),

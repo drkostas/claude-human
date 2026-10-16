@@ -71,9 +71,11 @@ else
 fi
 # The service reads its topic from the app's BuildConfig, which only an app build generates.
 PKG=$(sed -n 's/^package \([A-Za-z0-9_.]*\).*/\1/p' "$W/src/NtfyService.kt" | head -1)
-FIELD=$(grep -o 'BuildConfig\.[A-Z_][A-Z0-9_]*' "$W/src/NtfyService.kt" | head -1 | cut -d. -f2)
-printf 'package %s\nobject BuildConfig { const val %s = "https://ntfy.example.org/alerts" }\n' "$PKG" "$FIELD" \
-  > "$W/src/BuildConfig.kt"
+# Every field the service reads (the topic URL and the access token) gets a stand-in value.
+FIELDS=$(grep -o 'BuildConfig\.[A-Z_][A-Z0-9_]*' "$W/src/NtfyService.kt" | cut -d. -f2 | sort -u)
+{ printf 'package %s\nobject BuildConfig {\n' "$PKG"
+  for f in $FIELDS; do printf '    const val %s = "https://ntfy.example.org/alerts"\n' "$f"; done
+  printf '}\n'; } > "$W/src/BuildConfig.kt"
 unzip -q -o "$CORE" classes.jar -d "$W/core"
 CP="$ANDROID_JAR:$W/core/classes.jar:$ANNOTATION:$OKHTTP:$OKIO"
 "$KOTLINC" -nowarn -jvm-target 17 -cp "$CP" -d "$W/out" "$W/src/NtfyService.kt" "$W/src/BuildConfig.kt" 2>&1 \
