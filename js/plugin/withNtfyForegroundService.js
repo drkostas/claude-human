@@ -40,6 +40,12 @@
  *                     3, so a message published without one is silent unless this is set to 3.
  *   subTextTagPrefix  a tag that starts with this is shown, without it, next to the app's name in
  *                     the notification's header (default "": no tag is shown)
+ *   keyTagPrefix      a tag that starts with this names the notification by the rest of the tag:
+ *                     a later message with the same key replaces it instead of adding another
+ *                     (default "": every message is its own notification)
+ *   clearTag          a message carrying this tag and a key tag removes the notification of that
+ *                     key and shows nothing, for a sender to take back a notice that no longer
+ *                     needs the person (default "": no message removes one)
  *   logTag            Android log tag (default "NtfyService")
  *
  * The Android prebuild fails when the URL is missing or points at the build machine itself (localhost,
@@ -136,6 +142,8 @@ function resolveOptions(config, options = {}, env = process.env) {
     alarmPriority: options.alarmPriority !== undefined ? options.alarmPriority : 5,
     chimePriority: options.chimePriority !== undefined ? options.chimePriority : 4,
     subTextTagPrefix: options.subTextTagPrefix || "",
+    keyTagPrefix: options.keyTagPrefix || "",
+    clearTag: options.clearTag || "",
     logTag: options.logTag || "NtfyService",
   };
   for (const k of ["buildConfigField", "tokenBuildConfigField"]) {
@@ -217,6 +225,8 @@ class NtfyService : Service() {
          *  and each intent names this app's package. */
         const val FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         private const val SUBTEXT_TAG_PREFIX = ${kt(o.subTextTagPrefix)}
+        private const val KEY_TAG_PREFIX = ${kt(o.keyTagPrefix)}
+        private const val CLEAR_TAG = ${kt(o.clearTag)}
         private const val TAG = ${kt(o.logTag)}
         var topicUrl: String = BuildConfig.${o.buildConfigField}
     }
@@ -350,6 +360,14 @@ class NtfyService : Service() {
             val f = JSONObject(text)
             if (f.optString("event") != "message") return
             val id = f.optString("id")
+            // a key names the notification, so a later message with it replaces this one, and a
+            // clear message with it takes it back
+            val key = tagAfter(f.optJSONArray("tags"), KEY_TAG_PREFIX)
+            val shown = (key ?: id).hashCode()
+            if (CLEAR_TAG.isNotEmpty() && hasTag(f.optJSONArray("tags"), CLEAR_TAG)) {
+                if (key != null) getSystemService(NotificationManager::class.java).cancel(shown)
+                return
+            }
             val title = f.optString("title").ifBlank { ${kt(o.defaultTitle)} }
             val body = f.optString("message").ifBlank { title }
             val click = f.optString("click")
@@ -373,7 +391,7 @@ class NtfyService : Service() {
                     for ((label, tap) in buttons(id, f.optJSONArray("actions"))) addAction(0, label, tap)
                 }
                 .build()
-            getSystemService(NotificationManager::class.java).notify(id.hashCode(), n)
+            getSystemService(NotificationManager::class.java).notify(shown, n)
         } catch (e: Exception) {
             Log.w(TAG, "bad frame: " + e.message)
         }
@@ -436,15 +454,22 @@ class NtfyService : Service() {
 
     /** The first tag that starts with SUBTEXT_TAG_PREFIX, without it, for the header next to the
      *  app's name. No tag is shown when the prefix is empty. */
-    private fun subText(tags: JSONArray?): String? {
-        if (tags == null || SUBTEXT_TAG_PREFIX.isEmpty()) return null
+    private fun subText(tags: JSONArray?): String? = tagAfter(tags, SUBTEXT_TAG_PREFIX)
+
+    /** The rest of the first tag that starts with prefix, or null; always null for an empty prefix. */
+    private fun tagAfter(tags: JSONArray?, prefix: String): String? {
+        if (tags == null || prefix.isEmpty()) return null
         for (i in 0 until tags.length()) {
             val t = tags.optString(i)
-            if (t.startsWith(SUBTEXT_TAG_PREFIX) && t.length > SUBTEXT_TAG_PREFIX.length) {
-                return t.substring(SUBTEXT_TAG_PREFIX.length)
-            }
+            if (t.startsWith(prefix) && t.length > prefix.length) return t.substring(prefix.length)
         }
         return null
+    }
+
+    private fun hasTag(tags: JSONArray?, tag: String): Boolean {
+        if (tags == null) return false
+        for (i in 0 until tags.length()) if (tags.optString(i) == tag) return true
+        return false
     }
 }
 

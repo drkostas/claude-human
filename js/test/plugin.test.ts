@@ -248,6 +248,21 @@ describe("what a message shows", () => {
     expect(fn(tagged.kotlin, "handle")).toContain('subText(f.optJSONArray("tags"))?.let { setSubText(it) }');
   });
 
+  it("names a notification by its key tag, so a later one replaces it and a clear tag takes it back", async () => {
+    const plain = await prebuild({}, ENV);
+    expect(plain.kotlin).toContain('private const val KEY_TAG_PREFIX = ""');
+    expect(plain.kotlin).toContain('private const val CLEAR_TAG = ""');
+    const keyed = await prebuild({ keyTagPrefix: "key:", clearTag: "clear" }, ENV);
+    expect(keyed.kotlin).toContain('private const val KEY_TAG_PREFIX = "key:"');
+    expect(keyed.kotlin).toContain('private const val CLEAR_TAG = "clear"');
+    const handle = fn(keyed.kotlin, "handle");
+    expect(handle).toContain('val shown = (key ?: id).hashCode()');
+    expect(handle).toContain(".cancel(shown)");
+    expect(handle).toContain(".notify(shown, n)");
+    // the clear is checked before anything is drawn, so a clear message never shows
+    expect(handle.indexOf(".cancel(shown)")).toBeLessThan(handle.indexOf("NotificationCompat.Builder"));
+  });
+
   it("uses the options for the new channels and the priorities, and refuses bad ones", async () => {
     const { kotlin } = await prebuild({
       alarmChannelId: "lab_alarm", alarmChannelName: "Lab alarms",
