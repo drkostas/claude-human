@@ -124,3 +124,33 @@ def test_the_default_all_windows_without_yabai_is_the_screen(monkeypatch):
     mac = Mac("Demo")
     p = Preparer(mac, run=mac.run, clock=Clock())
     assert p.all_windows == mac.windows
+
+
+def test_activate_focuses_the_known_window_by_id_and_not_the_app():
+    mac, p = rig("Browser")
+    p.yabai = "/usr/local/bin/yabai"
+    out = p.run("Browser", ["activate"], window=6505, phase="input")
+    assert succeeded(out)
+    assert ["/usr/local/bin/yabai", "-m", "window", "6505", "--focus"] in mac.argv
+    assert not any(a[0] == "/usr/bin/osascript" for a in mac.argv)
+
+
+def test_activate_falls_back_to_the_app_without_a_window_or_when_yabai_refuses():
+    mac, p = rig("Browser")
+    p.yabai = "/usr/local/bin/yabai"
+    p.run("Browser", ["activate"], phase="input")
+    assert ["/usr/bin/osascript", "-e", 'tell application "Browser" to activate'] in mac.argv
+    mac.argv.clear()
+    refuse = mac.run
+    mac.run = lambda argv, **kw: (subprocess.CompletedProcess(argv, 1, "", "could not locate the window")
+                                  if argv[:2] == ["/usr/local/bin/yabai", "-m"] else refuse(argv, **kw))
+    p.sh = mac.run
+    p.run("Browser", ["activate"], window=7, phase="input")
+    assert ["/usr/bin/osascript", "-e", 'tell application "Browser" to activate'] in mac.argv
+
+
+def test_argv_window():
+    assert prepare.argv_window(["A", "--window", "42", "activate"]) == (42, ["A", "activate"])
+    assert prepare.argv_window(["A", "activate"]) == (None, ["A", "activate"])
+    with pytest.raises(SystemExit):
+        prepare.argv_window(["A", "--window", "x"])

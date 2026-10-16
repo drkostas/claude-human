@@ -5,7 +5,10 @@ would win, and "open the pane" is not "show the item": a long list opens scrolle
 place. A prepare is therefore a recipe, a list of steps run before the person arrives.
 
     activate            raise the app. A keystroke goes to the frontmost app, not to the window
-                        that was captured, so typing without this lands in another app.
+                        that was captured, so typing without this lands in another app. When the
+                        caller names the window (`--window <id>`, or run's `window`), that window is
+                        focused by its id through yabai, so an app with windows on several desktops
+                        does not take the person to another desktop.
     open <url|app>      open a settings pane, an app, a document or a file:// folder, always with
                         `open -g` so nothing is raised. For an http(s) url in a Chromium browser it
                         makes a new window instead, so the url does not become a tab in the window
@@ -87,6 +90,22 @@ def succeeded(log: list[str]) -> bool:
     return bool(log) and log[-1].endswith(": still open")
 
 
+def argv_window(argv: list[str]) -> tuple[Optional[int], list[str]]:
+    """Take ``--window <id>`` out of an argv wherever it is: the id of the window the recipe works
+    on, when the caller knows it. ``activate`` then focuses that window and not the app."""
+    rest, window, i = [], None, 0
+    while i < len(argv):
+        if argv[i] == "--window" and i + 1 < len(argv):
+            if not argv[i + 1].isdigit():
+                raise SystemExit(f"--window must be a window id, not {argv[i + 1]!r}")
+            window = int(argv[i + 1])
+            i += 2
+            continue
+        rest.append(argv[i])
+        i += 1
+    return window, rest
+
+
 def argv_phase(argv: list[str]) -> tuple[str, list[str]]:
     """Take ``--phase place|input|all`` out of an argv wherever it is, and return it with the rest.
 
@@ -146,8 +165,11 @@ class Preparer:
                  browser_timeout: float = BROWSER_TIMEOUT, search_at: Optional[dict] = None,
                  env: Optional[Mapping[str, str]] = None):
         self.screen = screen if screen is not None else default_screen()
+        yabai = shutil.which("yabai") if env is None else shutil.which("yabai", path=env.get("PATH"))
+        self.yabai = yabai
+        #: the window this recipe works on, when the caller knows it (run's ``window``)
+        self.window: Optional[int] = None
         if all_windows is None:
-            yabai = shutil.which("yabai") if env is None else shutil.which("yabai", path=env.get("PATH"))
             all_windows = (lambda: yabai_windows(yabai, env=env)) if yabai else self.screen.windows
         self.all_windows = all_windows
         self.sh = run or (subprocess.run if env is None else functools.partial(subprocess.run, env=env))
@@ -168,6 +190,17 @@ class Preparer:
         return (at[0] / float(win["width"]), at[1] / float(win["height"]))
 
     def activate(self, app: str) -> None:
+        """Bring the recipe's window to the front.
+
+        With a known window (``run(..., window=...)``) and yabai, that window is focused by its id.
+        Activating the app instead raises the app's key window, which may be another window on
+        another desktop: a browser asked to show a sign-in page it had just opened took the person
+        to the desktop where they had last used the browser, and the page was not on it."""
+        if self.window is not None and self.yabai:
+            r = self.sh([self.yabai, "-m", "window", str(self.window), "--focus"], check=False, timeout=10)
+            if getattr(r, "returncode", 1) == 0:
+                self.clock.sleep(0.45)
+                return
         self.sh(["/usr/bin/osascript", "-e", f'tell application "{app}" to activate'],
                 check=False, timeout=10)
         self.clock.sleep(0.45)
@@ -296,7 +329,7 @@ class Preparer:
     # ------------------------------------------------------------------ the recipe
 
     def run(self, app: str, steps: list[str], settle: float = 0.6, _retry: bool = True,
-            phase: str = "all") -> list[str]:
+            phase: str = "all", window: Optional[int] = None) -> list[str]:
         """Run a recipe and return what happened, one line per step.
 
         The window is checked before every step, not once at the top. A window that closed half way
@@ -304,6 +337,7 @@ class Preparer:
         behind it."""
         if phase not in PHASES:
             raise ValueError(f"phase must be one of {PHASES}, not {phase!r}")
+        self.window = window
         log: list[str] = []
         if not self.ensure_running(app, phase=phase):
             return [f"{app}: never started" if phase == "place" else f"{app}: never opened a window"]
@@ -338,7 +372,7 @@ class Preparer:
             return log
         if _retry:
             log.append(f"{app}: window disappeared at the end — starting over once")
-            return log + self.run(app, steps, settle, _retry=False, phase=phase)
+            return log + self.run(app, steps, settle, _retry=False, phase=phase, window=window)
         log.append(f"{app}: WINDOW DISAPPEARED")
         return log
 
