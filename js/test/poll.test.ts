@@ -113,3 +113,19 @@ describe("pollTopicOnce's time limit", () => {
     expect(n).toBe(1);
   });
 });
+
+describe("pollTopicOnce with an access token", () => {
+  it("sends it as a Bearer header, and sends none without one", async () => {
+    const seen: (Record<string, string> | undefined)[] = [];
+    const fetch = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push(init?.headers);
+      return new Response("", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const token = ["tk", "example", "0123"].join("_");
+    const o = { topicUrl: "https://ntfy.example.org/t", readMark: async () => null, announce: async () => {}, fetch };
+    await pollTopicOnce({ ...o, token });
+    await pollTopicOnce(o);
+    expect(seen).toEqual([{ Authorization: `Bearer ${token}` }, undefined]);
+  });
+});
+

@@ -267,3 +267,29 @@ describe("what a message shows", () => {
     expect(() => plugin.resolveOptions(BASE, { url, alarmChannelId: "a b" })).toThrow(/alarmChannelId/);
   });
 });
+
+describe("an access token for a server that requires authentication", () => {
+  // built at run time, so no scanner reads a literal as a real token
+  const token = ["tk", "example", "readonly", "0123"].join("_");
+
+  it("is written to BuildConfig and sent as a Bearer header when the service connects", async () => {
+    const { gradle, kotlin } = await prebuild({ url: "https://n.example.org/a" }, { EXPO_PUBLIC_NTFY_TOKEN: token });
+    expect(gradle).toContain(`buildConfigField("String", "NTFY_TOKEN", "\\"${token}\\"")`);
+    expect(kotlin).toContain("val token = BuildConfig.NTFY_TOKEN");
+    expect(kotlin).toContain('req.header("Authorization", "Bearer $token")');
+    expect(kotlin).not.toContain(token);
+  });
+
+  it("is an empty field without one, so the service connects without a header", async () => {
+    const { gradle } = await prebuild({ url: "https://n.example.org/a" }, { EXPO_PUBLIC_NTFY_TOKEN: undefined });
+    expect(gradle).toContain('buildConfigField("String", "NTFY_TOKEN", "\\"\\"")');
+  });
+
+  it("refuses a token BuildConfig cannot hold, and a field name the URL already uses", () => {
+    const url = "https://n.example.org/a";
+    expect(() => plugin.resolveOptions(BASE, { url, token: 'a"b' })).toThrow(/BuildConfig/);
+    expect(() => plugin.resolveOptions(BASE, { url, tokenBuildConfigField: "NTFY_TOPIC_URL" })).toThrow(/differ/);
+    expect(plugin.resolveOptions(BASE, { url, token }).token).toBe(token);
+  });
+});
+

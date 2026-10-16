@@ -15,6 +15,12 @@
  *   urlEnv            default "EXPO_PUBLIC_NTFY_URL"
  *   package           Kotlin package and manifest namespace (default: expo.android.package)
  *   buildConfigField  name of the BuildConfig field that carries the URL (default "NTFY_TOPIC_URL")
+ *   token             an access token for a server that requires authentication, sent as
+ *                     "Authorization: Bearer <token>" when the service connects (default: the
+ *                     environment variable named by tokenEnv; none when that is unset)
+ *   tokenEnv          default "EXPO_PUBLIC_NTFY_TOKEN"
+ *   tokenBuildConfigField  name of the BuildConfig field that carries the token (default "NTFY_TOKEN").
+ *                     Give the app a token that may only read its topics: it is part of the build.
  *   defaultTitle      title for a message without one (default: expo.name)
  *   linkPrefix        a message's click URL opens the app only when it starts with this
  *                     (default: "<expo.scheme>://", or no links when the app has no scheme)
@@ -85,9 +91,19 @@ function checkTopicUrl(url, source) {
   return url;
 }
 
+/** The access token, checked. Empty when there is none; throws on a character BuildConfig cannot hold. */
+function checkToken(token, source) {
+  const t = token || "";
+  if (t && !/^[A-Za-z0-9_.~+/=-]+$/.test(t)) {
+    throw new Error(`expo-ntfy: the access token from ${source} contains a character that cannot go into BuildConfig`);
+  }
+  return t;
+}
+
 function resolveOptions(config, options = {}, env = process.env) {
   const name = config.name || "App";
   const urlEnv = options.urlEnv || "EXPO_PUBLIC_NTFY_URL";
+  const tokenEnv = options.tokenEnv || "EXPO_PUBLIC_NTFY_TOKEN";
   const pkg = options.package || (config.android && config.android.package);
   if (!pkg || !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(pkg)) {
     throw new Error(`expo-ntfy: set expo.android.package or the "package" option (got ${JSON.stringify(pkg)})`);
@@ -97,6 +113,8 @@ function resolveOptions(config, options = {}, env = process.env) {
     url: checkTopicUrl(options.url || env[urlEnv], options.url ? 'the "url" option' : urlEnv),
     package: pkg,
     buildConfigField: options.buildConfigField || "NTFY_TOPIC_URL",
+    token: checkToken(options.token || env[tokenEnv], options.token ? 'the "token" option' : tokenEnv),
+    tokenBuildConfigField: options.tokenBuildConfigField || "NTFY_TOKEN",
     defaultTitle: options.defaultTitle || name,
     linkPrefix: options.linkPrefix !== undefined ? options.linkPrefix : (scheme ? `${scheme}://` : ""),
     ongoingChannelId: options.ongoingChannelId || "ntfy_connection",
@@ -120,8 +138,13 @@ function resolveOptions(config, options = {}, env = process.env) {
     subTextTagPrefix: options.subTextTagPrefix || "",
     logTag: options.logTag || "NtfyService",
   };
-  if (!/^[A-Z_][A-Z0-9_]*$/.test(o.buildConfigField)) {
-    throw new Error(`expo-ntfy: buildConfigField must be an upper case identifier (got ${o.buildConfigField})`);
+  for (const k of ["buildConfigField", "tokenBuildConfigField"]) {
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(o[k])) {
+      throw new Error(`expo-ntfy: ${k} must be an upper case identifier (got ${o[k]})`);
+    }
+  }
+  if (o.tokenBuildConfigField === o.buildConfigField) {
+    throw new Error("expo-ntfy: tokenBuildConfigField and buildConfigField must differ");
   }
   const channels = ["ongoingChannelId", "alertChannelId", "alarmChannelId", "silentChannelId"];
   for (const k of channels) {
@@ -299,7 +322,11 @@ class NtfyService : Service() {
             .pingInterval(45, TimeUnit.SECONDS)   // keeps NAT mappings and tunnels open
             .build()
         client = c
-        ws = c.newWebSocket(Request.Builder().url(wsUrl()).build(), object : WebSocketListener() {
+        // a server that requires authentication gets the token as a Bearer header, never in the URL
+        val req = Request.Builder().url(wsUrl())
+        val token = BuildConfig.${o.tokenBuildConfigField}
+        if (token.isNotBlank()) req.header("Authorization", "Bearer $token")
+        ws = c.newWebSocket(req.build(), object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "socket failed: " + t.message)
@@ -446,8 +473,16 @@ class BootReceiver : BroadcastReceiver() {
 
 const DEPS_MARKER = "expo-ntfy-deps";
 
-/** app/build.gradle with the dependencies and the BuildConfig field. The field is replaced on every
- *  build, so building again with a different URL corrects it. */
+/** One String BuildConfig field in defaultConfig, written or replaced. */
+function putField(g, name, value) {
+  const field = `buildConfigField("String", "${name}", "\\"${value}\\"")`;
+  const existing = new RegExp(`buildConfigField\\("String", "${name}", "\\\\"[^"\\\\]*\\\\""\\)`);
+  if (existing.test(g)) return g.replace(existing, () => field);
+  return g.replace(/defaultConfig\s*\{/, () => `defaultConfig {\n        ${field}`);
+}
+
+/** app/build.gradle with the dependencies and the BuildConfig fields (the URL and the token, empty
+ *  when there is none). Each field is replaced on every build, so building again corrects it. */
 function patchAppGradle(src, o) {
   let g = src;
   if (!g.includes(DEPS_MARKER)) {
@@ -456,12 +491,9 @@ function patchAppGradle(src, o) {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.core:core-ktx:1.13.1")`);
   }
-  const field = `buildConfigField("String", "${o.buildConfigField}", "\\"${o.url}\\"")`;
-  const existing = new RegExp(`buildConfigField\\("String", "${o.buildConfigField}", "\\\\"[^"\\\\]*\\\\""\\)`);
-  if (existing.test(g)) {
-    g = g.replace(existing, field);
-  } else {
-    g = g.replace(/defaultConfig\s*\{/, `defaultConfig {\n        ${field}`);
+  g = putField(g, o.buildConfigField, o.url);
+  if (o.tokenBuildConfigField) g = putField(g, o.tokenBuildConfigField, o.token || "");
+  if (!/buildConfig\s+true/.test(g)) {
     if (/buildFeatures\s*\{/.test(g)) {
       if (!/buildConfig\s+true/.test(g)) g = g.replace(/buildFeatures\s*\{/, "buildFeatures {\n        buildConfig true");
     } else {
@@ -578,6 +610,7 @@ module.exports = withNtfyForegroundService;
 module.exports.withNtfyForegroundService = withNtfyForegroundService;
 module.exports.resolveOptions = resolveOptions;
 module.exports.checkTopicUrl = checkTopicUrl;
+module.exports.checkToken = checkToken;
 module.exports.isLoopbackHost = isLoopbackHost;
 module.exports.renderKotlin = renderKotlin;
 module.exports.patchAppGradle = patchAppGradle;

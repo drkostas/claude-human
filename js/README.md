@@ -42,6 +42,9 @@ The topic URL comes from `EXPO_PUBLIC_NTFY_URL` at prebuild time, or from the `u
 | `urlEnv` | `EXPO_PUBLIC_NTFY_URL` |
 | `package` | `expo.android.package` |
 | `buildConfigField` | `NTFY_TOPIC_URL` |
+| `token` | the value of `tokenEnv`, or none |
+| `tokenEnv` | `EXPO_PUBLIC_NTFY_TOKEN` |
+| `tokenBuildConfigField` | `NTFY_TOKEN` |
 | `defaultTitle` | `expo.name` |
 | `linkPrefix` | `<expo.scheme>://`, or no links when there is no scheme |
 | `alertChannelId`, `alertChannelName`, `alertChannelDescription` | `ntfy_messages`, `expo.name`, a short text |
@@ -56,9 +59,15 @@ The topic URL comes from `EXPO_PUBLIC_NTFY_URL` at prebuild time, or from the `u
 What it writes at prebuild.
 
 - `NtfyService.kt` and `BootReceiver` next to `MainActivity`, in the app's package.
-- The URL as a BuildConfig field. It is replaced on every build, so building again with a different URL corrects a wrong one.
+- The URL and the access token as BuildConfig fields (the token field is empty when there is none). Both are replaced on every build, so building again corrects a wrong one.
 - A call in `MainActivity.onCreate` that starts the service.
 - The manifest entries for the service (type `specialUse`), the receiver, and the permissions `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK` and `ACCESS_NOTIFICATION_POLICY`.
+
+### A server that requires authentication
+
+An ntfy server started with `--auth-default-access deny-all` answers a subscriber without credentials with 401. Give the app an access token (`ntfy token add <user>` on the server) through `EXPO_PUBLIC_NTFY_TOKEN` at prebuild time, or the `token` option. The service then sends `Authorization: Bearer <token>` when it opens the socket, never the token in the URL. `pollTopicOnce` and `useNtfy` take the same token as their `token` option, so the background poll and the foreground socket authenticate too.
+
+The token is part of the app you ship, so anyone holding the APK can read it. Give the app a user that may only read its topics (`ntfy access <user> <topic> read-only`), and publish with a different token.
 
 A message's click URL opens the app only when it starts with `linkPrefix`. A notification is data from the network, so any other link is shown in the text but never followed.
 
