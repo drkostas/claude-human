@@ -1,0 +1,56 @@
+"""Working in the person's own browser: tab listing, window reuse, and yabai ids at birth."""
+import json
+
+from claude_human import brave
+
+
+def test_tabs_are_parsed_from_the_bulk_listing():
+    raw = "11\t21\thttps://example.org/a\tA\n11\t22\thttps://example.org/b\tB\n\n"
+    assert brave.parse_tabs(raw) == [
+        {"window": "11", "tab": "21", "url": "https://example.org/a", "title": "A"},
+        {"window": "11", "tab": "22", "url": "https://example.org/b", "title": "B"}]
+    assert brave.parse_tabs(None) is None
+
+
+def test_the_listing_asks_by_property_not_tab_by_tab():
+    script = brave._list_script("Brave Browser")
+    assert "set urls to URL of tabs of w" in script and "repeat with t in" not in script
+    assert "{window id 7}" in brave._list_script("Brave Browser", "7")
+
+
+def test_a_new_window_and_its_yabai_id_are_the_ones_listed_after():
+    ids, yids = {"100"}, {7000}
+
+    def make():
+        ids.add("200")
+        yids.add(7041)
+
+    assert brave.new_window(ids=lambda: set(ids), yids=lambda: set(yids), make=make, step=0.01) == ("200", 7041)
+
+
+def test_two_new_yabai_windows_at_once_give_no_yabai_id():
+    ids, yids = {"100"}, {7000}
+
+    def make():
+        ids.add("300")
+        yids.update({7100, 7101})
+
+    assert brave.new_window(ids=lambda: set(ids), yids=lambda: set(yids), make=make, step=0.01) == ("300", None)
+
+
+def test_no_yabai_gives_no_yabai_id():
+    ids = {"100"}
+    assert brave.new_window(ids=lambda: set(ids), yids=lambda: None, make=lambda: ids.add("400"),
+                            step=0.01) == ("400", None)
+
+
+def test_a_kept_window_is_found_while_the_browser_has_it(tmp_path):
+    brave.keep("claude-a", "200", 7041, state=tmp_path)
+    assert json.loads((tmp_path / "claude-a.json").read_text()) == {"window": "200", "yabai": 7041}
+    assert brave.kept("claude-a", state=tmp_path, open_ids={"200"}) == {"window": "200", "yabai": 7041}
+    assert brave.kept("claude-a", state=tmp_path, open_ids={"100"}) is None
+    assert brave.kept("claude-b", state=tmp_path, open_ids={"200"}) is None
+
+
+def test_outside_tmux_there_is_no_default_key():
+    assert brave.default_key(env={}) is None
