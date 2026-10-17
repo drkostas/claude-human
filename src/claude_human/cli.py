@@ -219,12 +219,8 @@ def serve_station(args: argparse.Namespace) -> int:
     port = srv.server_address[1]
     print(f"station on http://127.0.0.1:{port}/view (token from {where}"
           f"{', pinned to ' + args.app if args.app else ''})", flush=True)
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        srv.server_close()
+    from .serving import serve_until_stopped  # noqa: PLC0415
+    serve_until_stopped(srv, log=lambda m: print(m, flush=True))
     return 0
 
 
@@ -306,12 +302,8 @@ def run_task(args: argparse.Namespace) -> int:
             srv, where = server.make_server(engine, token_file=path, port=args.port), str(path)
         print(f"tasks on http://127.0.0.1:{srv.server_address[1]} (token from {where}, "
               f"store {store.path})", flush=True)
-        try:
-            srv.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            srv.server_close()
+        from .serving import serve_until_stopped  # noqa: PLC0415
+        serve_until_stopped(srv, log=lambda m: print(m, flush=True))
         return 0
     return 2
 
