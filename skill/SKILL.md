@@ -1,6 +1,6 @@
 ---
 name: claude-human
-description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes, opening a task for a person with claude_human.tasks that is asked once and closed only when a check says it is done, and reading those tasks from a phone app with @drkostas/claude-human-client. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, when someone asks to be told when something happens, or when an agent needs a person for a step it cannot do itself.
+description: Use when an assistant has to act on a person's Mac or reach that person on an Android phone, through the claude-human package and @drkostas/expo-ntfy. Covers building and signing the sckshot and vhid_type helpers, the macOS grants each needs and what resets them, capturing the screen or one window, typing a password at the lock screen or into a SecurityAgent password panel with the person's consent, locking the Mac again afterwards, handing one window to the person's phone through the station so they can do a step themselves, delivering ntfy notifications to an Android phone that the OS does not stop, sending a notification to a person from Python or the command line with claude_human.notify, writing a scheduled watcher that tells a person or wakes a running Claude chat when a condition changes, opening a task for a person with claude_human.tasks that is asked once and closed only when a check says it is done, reading those tasks from a phone app with @drkostas/claude-human-client, retiring a macOS app so that nothing starts it again and undoing that retire step by step with claude_human.retire, and keeping a password manager CLI such as Bitwarden's bw to one session at a time with claude_human.session_lock. Also use it when a capture is black, white or slow, when a window list has empty titles, when typed keys do nothing, when taps from the station do nothing, when phone notifications stop arriving, when someone asks to be told when something happens, when an agent needs a person for a step it cannot do itself, when a quit app keeps coming back, or when a bw call answers "Vault is locked." in the middle of a run.
 ---
 
 # claude-human
@@ -194,6 +194,50 @@ make_server(TaskAuth(), port=8789).serve_forever()
 7. Confirm the task's result in its own source of truth.
 8. Run `claude-human relock` if you opened the lock, and read its result.
 
+## Retiring an app and undoing the retire
+
+Use `claude_human.retire` when an app must not start again (a sync client that would fight its replacement, for example). Quitting the app is not enough, because its launch daemon, its login item or its extension starts it again.
+
+```python
+from claude_human import retire
+
+steps = [retire.disable_service("daemon_disabled", LABEL, "system"),
+         retire.unload_service("daemon_unloaded", LABEL, PLIST),
+         retire.quit_processes("daemon_quit", retire.under(APP + "/"), restarted_by="daemon_unloaded"),
+         retire.disable_service("launcher_disabled", LAUNCHER, "gui"),
+         retire.hold_app("app_held", APP, HOLD_DIR, "example")]
+print(retire.state(steps))           # read only, show the person what a retire would do
+records = retire.retire(steps)       # keep these, they are the undo
+```
+
+- Ask the person before a retire. It changes what their Mac starts at boot and at login.
+- Keep the records. `retire.undo(records, done_before=...)` needs them, and `done_before` names the steps an earlier retire of yours did, so a launcher the person turned off long ago stays off.
+- Read the outcomes. `failure` on any step means the app may start again. Do the step again or tell the person, and never report the retire as done.
+- Never delete the held copy. It is the undo. The note beside it says until when it is meant to be kept.
+- Never quit an app with AppleScript. Use `quit_processes`, which signals by pid.
+- In a test, pass a `Host` with a stand-in `run`, `kill` and `device`. Never point a test at a real app.
+
+## One password manager CLI session at a time
+
+Bitwarden's `bw` has one session per user account. A second `bw unlock` ends the first session, and `bw lock` ends all of them. When two programs share the account, one of them finds "Vault is locked." halfway through its work.
+
+```python
+from claude_human.session_lock import SessionLock, bw_session, Busy
+
+lock = SessionLock("~/.local/state/<program>/bw-session.lock", label="the vault")
+try:
+    with bw_session(lock, password_from_store, act="export.items", wait_s=60) as env:
+        r = lock.run(["bw", "list", "items"], env=env, timeout=120)
+except Busy as e:
+    print(e)        # names the holder, its pid and since when, so say who to wait for
+```
+
+- Every program that unlocks the same account must use the same lock path. A program that unlocks without the lock can still end a session under a call.
+- Run each call inside the block through `lock.run`, never `subprocess` directly. It refuses a call when the lock file was removed, and it names the running call in the lock so the next holder can end a call a killed holder left behind.
+- Give each act a wait that fits inside its own deadline. A quick question should wait seconds, a long export minutes.
+- The password goes to `bw` through a pipe. Never put it in an argument, an environment variable or a log line, and never print `BW_SESSION`, which opens the vault as long as it lives.
+- `bw lock` runs on every way out of `bw_session`, so the session key is useless once the block ends.
+
 ## Notifications on an Android phone
 
 The config plugin writes a Kotlin foreground service that holds the ntfy WebSocket and posts each message to the tray, a receiver that starts it after a reboot or an app update, and the manifest entries. It runs at prebuild, because `expo prebuild --clean` regenerates `android/` and hand edits there are lost.
@@ -381,3 +425,5 @@ const answer = await tasks.done(id);    // the check decides, and answer.detail 
 | No notifications for weeks, no error | the sender had no topic URL in the process that ran it | the sender said "not configured" from a process whose config file named the URL | read configuration in the module that sends, and record each failure |
 | A comment on a task made the task disappear from the person's list | "open" was read as "no event at all", and a comment is an event | the person asked a question about a task and could no longer find it | only a closing event closes a task |
 | The person opened the app at once and reported "it has no task" | the list was sorted by risk, then oldest first, so the new task was fourth | the task was there, under three that had waited a day | list open tasks newest first |
+| A long bw run stopped halfway with "Vault is locked." | another program ran `bw unlock`, which replaced the session | the vault server's log showed a new sign-in at the minute the failures began | `SessionLock` for every program that unlocks |
+| The undo of a retire could not load the daemon again | launchd does not load a disabled service, and the undo loaded it before it enabled it | the undo failed on a real Mac | enable every service before loading any (`undo_order`) |

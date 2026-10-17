@@ -224,6 +224,57 @@ It covers every route of the server (`pending`, `task`, `open`, `done`, `comment
 
 [examples/expo-tasks](examples/expo-tasks) is a small Expo app built on the client and `@drkostas/expo-ntfy`, with a list of waiting tasks, a task page with the handoff chain and the "I've done it, check" button, and the history.
 
+## Retiring an app so that nothing starts it again
+
+Sometimes an app must stay stopped, for example a sync client that would undo the work of its replacement if it started again. Quitting it is not enough, because its launch daemon, its login item or its Finder extension starts it again. `claude_human.retire` does each step, reads it back, and keeps a record that undoes it.
+
+```python
+from claude_human import retire
+
+app = "/Applications/Example.app"
+steps = [
+    retire.disable_service("daemon_disabled", "org.example.syncd", "system"),
+    retire.unload_service("daemon_unloaded", "org.example.syncd", "/Library/LaunchDaemons/org.example.syncd.plist"),
+    retire.quit_processes("daemon_quit", retire.under(app + "/"), restarted_by="daemon_unloaded"),
+    retire.disable_extension("extension_disabled", "org.example.Sync.FinderExtension"),
+    retire.disable_service("launcher_disabled", "org.example.Launcher", "gui"),
+    retire.hold_app("app_held", app, "/path/to/held", "example"),
+]
+records = retire.retire(steps)       # every step, each read back, as plain JSON
+retire.undo(records)                 # later, from the records you kept
+retire.state(steps)                  # what each step would find now, and nothing changes
+```
+
+What it does for you.
+
+- Every step reads its own result back. A step whose command exits 0 but changes nothing is a failure, and one failed step never stops the others.
+- The app is renamed into a dated folder on the same disk, as `Example.app.held`. It is never copied and never deleted, and a note beside it says until when it is meant to be kept. A hold folder on another disk is refused.
+- Processes are quit by signal, TERM and then KILL after a grace period. KILL goes only to a pid the process list still shows. AppleScript is never used, because an app may refuse to quit and scripting it can raise a consent prompt for the person at the Mac.
+- System domain commands run through `sudo -n`, which refuses instead of asking for a password.
+- The undo brings the app back first, and enables every service before it loads any, because launchd refuses to load a disabled service. A step the retire found already done is left as it was, unless you say an earlier retire of yours did it (`done_before`). The undo never starts the app itself.
+
+Every command goes through a `Host`, so a test passes a stand-in launchctl and process list and no real app is touched.
+
+## One password manager session at a time
+
+Bitwarden's `bw` keeps one session for the whole user account. A second `bw unlock` replaces the key of the first session, and `bw lock` ends every session. Two programs that each unlock, work and lock again break each other halfway. `claude_human.session_lock` lets only one of them hold a session at a time.
+
+```python
+from claude_human.session_lock import SessionLock, bw_session
+
+lock = SessionLock("~/.local/state/example/bw-session.lock", label="the vault")
+with bw_session(lock, read_password, act="nightly export", wait_s=300) as env:
+    items = lock.run(["bw", "list", "items"], env=env, timeout=120).stdout
+```
+
+- The lock is an exclusive `flock` on a state file. The kernel releases it with the last descriptor of its process, so a holder that dies never blocks the next one.
+- While held, the file names the holder with its pid, its act, its program and since when. A wait that runs out is refused with that holder named.
+- Waiters are served in the order they came. A second take in the thread that already holds the lock is refused at once.
+- `run` checks before each call that the lock file is still the one it locked, and names the running call in the lock. When a holder is killed in the middle of a call, the next holder waits for that call until its timeout and then ends it.
+- `bw_session` reads the password only once the lock is held, gives it to `bw` through a pipe (never an argument, an environment variable or a file), sets `BW_NOINTERACTION`, and runs `bw lock` and releases the lock on every way out, an exception included.
+
+The lock path, the queue file, the CLI and the messages are all arguments, so the same lock works for any CLI with one session per account. `lock.hold(act, wait_s)` gives the lock alone, for a program that opens its session in its own way.
+
 ## Phone notifications without Firebase
 
 `js/` is the npm package `@drkostas/expo-ntfy`. It has a config plugin, the ntfy wire logic, and the Expo glue for notifications. See [js/README.md](js/README.md).
@@ -261,7 +312,7 @@ cd client && npm ci && npm test
 cd examples/expo-tasks && npm ci && npm run typecheck && npm test
 ```
 
-The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the task engine and its HTTP server against a temporary task file, the ntfy logic, the config plugin run against a fixture Android project, the task client against a fake `fetch` and against the real task server, and the example app's logic. On macOS one test also compiles `sckshot` without signing it.
+The tests do not need any grant. They cover the argument parsing, the station server (run on a free port with a fake screen and a fake input sink), its input logic and recipe runner with a stand-in for Quartz, the path settings, the window and panel detection on recorded window lists, the typing logic with a fake helper, the notifier against a fake ntfy server in a thread, the task engine and its HTTP server against a temporary task file, the ntfy logic, the config plugin run against a fixture Android project, the task client against a fake `fetch` and against the real task server, the app retire and its undo against a stand-in launchctl, the session lock between threads and between real processes with a stand-in `bw`, and the example app's logic. On macOS one test also compiles `sckshot` without signing it.
 
 ## License
 
