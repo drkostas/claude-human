@@ -129,6 +129,25 @@ ok, detail = unlock.relock()                      # watches the lock bit set
 - Screen Sharing is not a way past the lock. Its high performance mode drives a separate virtual display, never the console. Its classic mode with the dedicated Screen Sharing password shows a live login window that drops every key it is sent, by design, so that this password cannot be used to guess the login password. Signing in to Screen Sharing with the account name and the account password does attach to that account's session, which is the person's own remote route, not the assistant's.
 - To check that the virtual keyboard reaches the system at all without typing a password, read `HIDIdleTime` with `ioreg -c IOHIDSystem` before and after a harmless key. It falls back near zero only when a hardware-class event arrived.
 
+## Working in the person's signed-in browser
+
+```bash
+claude-human brave https://example.org/account read.js          # result on stdout, window closed
+claude-human brave https://example.org/login fill.js --keep-open # WINDOW <id> [YABAI <id>] on stderr
+claude-human brave - next.js --window <id>                      # continue in that window, on its page
+```
+
+The page opens in a new window of the person's own browser, which has their cookies and saved
+passwords, never in one of their windows. The script may be async and assigns its answer to
+`window.__claude_r` as a string.
+
+- A `--keep-open` run inside tmux reuses the window its tmux session kept last time while the browser
+  still has it, so a flow of several steps keeps one window instead of leaving one per step.
+- The YABAI id is taken when the window is made. Move the window with it at once: windows a browser
+  opens at one size and place cannot be told apart by position afterwards.
+- `brave.list_tabs()` lists every tab in under a second. Never list tab by tab: it took about a
+  minute for a thousand tabs, longer than any reasonable time limit.
+
 ## Handing a window to the person
 
 When a step needs the person (a sign in, a setting only they should change, a choice that is theirs), hand them the window instead of describing it. `claude_human.station` streams one window to their phone and turns their taps into clicks on the Mac.
