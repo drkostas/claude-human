@@ -28,6 +28,8 @@ import json
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from ..serving import DrainingMixin
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -283,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, result)
 
 
-class StationServer(ThreadingHTTPServer):
+class StationServer(DrainingMixin, ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, station: Station):

@@ -31,6 +31,8 @@ import ipaddress
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from ..serving import DrainingMixin
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, unquote, urlparse
@@ -178,7 +180,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
 
-class TaskServer(ThreadingHTTPServer):
+class TaskServer(DrainingMixin, ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, engine: TaskEngine, token_fn, actor: Optional[str]):
