@@ -154,3 +154,151 @@ def focus(index: int, *, yabai: str = YABAI, env: Mapping[str, str] | None = Non
     because macOS ignores a focus request during a space animation and yabai still exits 0."""
     _space("--focus", str(index), yabai=yabai, env=env)
     return any(s["visible"] and s["index"] == index for s in spaces(yabai=yabai, env=env))
+
+
+# ----------------------------------------------------------------------------- one window
+
+def all_windows(*, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> list[dict] | None:
+    """yabai's full record of every window (frame, pid, app, title, space, has-ax-reference...), or
+    None when yabai did not answer. `windows()` keeps only the id, space, app and title; this keeps
+    the frame, which every size check needs."""
+    try:
+        return query("--windows", yabai=yabai, env=env)
+    except Exception:  # noqa: BLE001 - not answering is unknown, never "no windows"
+        return None
+
+
+def space_of_window(window_id: int | None, *, yabai: str = YABAI,
+                    env: Mapping[str, str] | None = None) -> str | None:
+    """The uuid of the desktop a window is on, or None when it is unknown."""
+    if window_id is None:
+        return None
+    try:
+        w = next((w for w in windows(yabai=yabai, env=env) if w["id"] == window_id), None)
+        if w is None:
+            return None
+        return next((s["uuid"] for s in spaces(yabai=yabai, env=env) if s["index"] == w["space"]), None)
+    except Exception:  # noqa: BLE001 - not answering is unknown
+        return None
+
+
+def _said(r) -> str:
+    return ((r.stderr or r.stdout or "").strip() if r is not None else "yabai did not answer")[:200]
+
+
+def _window_cmd(window_id: int, *args: str, yabai: str = YABAI, env: Mapping[str, str] | None = None):
+    try:
+        return _run(["window", str(int(window_id)), *args], yabai=yabai, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def move_window(window_id: int, uuid: str, *, yabai: str = YABAI,
+                env: Mapping[str, str] | None = None) -> tuple[str, str]:
+    """Move one window onto the desktop macOS knows as `uuid`: ("success" | "failure" | "unknown",
+    why). Success only when a re-read says so, and a failure carries yabai's own words: on a locked
+    screen yabai answers "could not locate the window to act on!" for every window, and a failure
+    recorded without that reason cannot be told from a real one."""
+    try:
+        label = label_for(uuid, yabai=yabai, env=env)    # by its label, never its number
+    except Exception as e:  # noqa: BLE001
+        return "unknown", f"yabai could not list the desktops: {str(e)[:160]}"
+    if label is None:
+        return "failure", f"no desktop {uuid} exists any more"
+    said = _said(_window_cmd(window_id, "--space", label, yabai=yabai, env=env))
+    where = space_of_window(int(window_id), yabai=yabai, env=env)
+    if where is None:
+        return "unknown", said or "the window could not be found after the move"
+    if where == uuid:
+        return "success", ""
+    return "failure", said or f"the window is still on {where}"
+
+
+def close_window(window_id: int, *, wait: float = 6.0, window_ids=None, yabai: str = YABAI,
+                 env: Mapping[str, str] | None = None) -> tuple[str, str]:
+    """Close one window with its own close button (through yabai), never its app: (outcome, why).
+    Success only when the window server no longer lists the id (`window_ids`, by default
+    claude_human.screenshot.window_ids); an app that asks first (unsaved work) keeps its window, and
+    that is a failure in its own words, never a forced quit."""
+    import time   # noqa: PLC0415
+    if window_ids is None:
+        from claude_human.screenshot import window_ids   # noqa: PLC0415
+    said = _said(_window_cmd(window_id, "--close", yabai=yabai, env=env))
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        ids = window_ids()
+        if ids is not None and int(window_id) not in ids:
+            return "success", ""
+        time.sleep(0.5)
+    return "failure", said or "the window is still open"
+
+
+# ----------------------------------------------------------------------------- window size
+
+def screens() -> list[tuple[tuple, tuple]] | None:
+    """Each screen's (frame, usable area) as (x, y, w, h) in Cocoa's coordinates, origin bottom
+    left. The usable area leaves out the menu bar and the Dock. None when AppKit cannot say."""
+    try:
+        import AppKit   # noqa: PLC0415 - only the size checks need it
+        out = []
+        for s in AppKit.NSScreen.screens():
+            f, v = s.frame(), s.visibleFrame()
+            out.append(((f.origin.x, f.origin.y, f.size.width, f.size.height),
+                        (v.origin.x, v.origin.y, v.size.width, v.size.height)))
+        return out or None
+    except Exception:  # noqa: BLE001 - no answer is unknown
+        return None
+
+
+def fill_frame(window: dict, found: list[tuple[tuple, tuple]] | None = None) -> dict | None:
+    """Pure with `found`. The frame that fills the usable area of the screen this window is on, in
+    yabai's coordinates (origin top left), or None when that is unknown. Terminals open new windows
+    at a small default size in a corner; this is the size a window "filling the screen beside the
+    Dock" has."""
+    found = screens() if found is None else found
+    fr = (window or {}).get("frame") or {}
+    if not found or not fr:
+        return None
+    main_h = found[0][0][3]          # Cocoa measures y up from the bottom of the first screen
+    cx, cy = fr.get("x", 0) + fr.get("w", 0) / 2, fr.get("y", 0) + fr.get("h", 0) / 2
+    for (fx, fy, fw, fh), (vx, vy, vw, vh) in found:
+        top = main_h - (fy + fh)
+        if fx <= cx < fx + fw and top <= cy < top + fh:
+            return {"x": vx, "y": main_h - (vy + vh), "w": vw, "h": vh}
+    return None
+
+
+def fills(window: dict, target: dict | None, slack: float = 2.0) -> bool | None:
+    """Pure. Whether the window already has this frame; None when the target is unknown."""
+    fr = (window or {}).get("frame") or {}
+    if target is None or not fr:
+        return None
+    return all(abs(fr.get(k, -1e9) - target[k]) <= slack for k in ("x", "y", "w", "h"))
+
+
+def frame_window(window_id: int, target: dict, *, fallback=None, yabai: str = YABAI,
+                 env: Mapping[str, str] | None = None) -> tuple[str, str]:
+    """Give one window this frame: (outcome, why). Success only when a re-read says it has it.
+
+    yabai can lose a window: it stays in its list with an empty title while every command answers
+    "could not locate the window". For that case, pass `fallback(window_id, target)`, which sets the
+    frame through the app's own scripting and returns the frame it reads back (or None when the app
+    does not know the window); a terminal's window bounds are the usual one."""
+    said = []
+    for flag, arg in (("--move", f"abs:{int(target['x'])}:{int(target['y'])}"),
+                      ("--resize", f"abs:{int(target['w'])}:{int(target['h'])}")):
+        said.append(_said(_window_cmd(window_id, flag, arg, yabai=yabai, env=env))[:160])
+    ws = all_windows(yabai=yabai, env=env)
+    w = next((w for w in (ws or []) if w.get("id") == int(window_id)), None)
+    if w is not None and fills(w, target):
+        return "success", ""
+    if fallback is not None:
+        got = fallback(int(window_id), target)
+        if got is not None:
+            return (("success", "") if fills({"frame": got}, target) else
+                    ("failure", "; ".join(s for s in said if s) or f"the window is {got}"))
+    if ws is None:
+        return "unknown", "yabai could not list the windows"
+    if w is None:
+        return "unknown", "; ".join(s for s in said if s) or "the window could not be found"
+    return "failure", "; ".join(s for s in said if s) or f"the window is {w.get('frame')}"

@@ -147,6 +147,26 @@ passwords, never in one of their windows. The script may be async and assigns it
   opens at one size and place cannot be told apart by position afterwards.
 - `brave.list_tabs()` lists every tab in under a second. Never list tab by tab: it took about a
   minute for a thousand tabs, longer than any reasonable time limit.
+- `brave.tabs()` is the same listing with the browser's state folded in: `[]` when it is not
+  running (known: nothing is open), `None` when it runs and did not answer (unknown). Never treat
+  `None` as "no tabs", and never close or forget anything on the strength of it.
+- Close a tab with `brave.close_tab(window, tab)`, which reads the tabs back. There is no call that
+  closes a browser window: it goes away by itself when its last tab closes, and every other window
+  is the person's.
+- After making a window in the person's browser while they work, the browser has come to the front.
+  `screenshot.keep_front(was, front_app)` hands them back the app they were in, and
+  `brave.bring_forward(window)` makes one of their own windows the one outside links open in again.
+- A browser's window ids are not yabai's. `brave.join_by_origin` pairs them by corner, then by name,
+  then by elimination, and leaves anything it cannot pair unpaired rather than guessing.
+
+## One window at a time
+
+`desktops.move_window(id, uuid)`, `desktops.close_window(id)` and `desktops.frame_window(id, frame)`
+each read their effect back and answer `(outcome, why)`, with yabai's own words on a failure (on a
+locked screen every window command answers "could not locate the window to act on!").
+`desktops.fill_frame(window)` is the frame that fills the usable part of the window's screen;
+`frame_window(..., fallback=...)` sets it through the app's own scripting when yabai has lost the
+window. `desktops.all_windows()` keeps each window's frame and pid, which `windows()` drops.
 
 ## Handing a window to the person
 
