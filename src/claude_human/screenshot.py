@@ -247,10 +247,11 @@ LOGIN_WINDOW = "com.apple.loginwindow"
 
 
 def keep_front(was: str | None, front_app, *, watch: float = 1.5, step: float = 0.25,
-               env: Mapping[str, str] | None = None) -> str | None:
+               activate_app=None, env: Mapping[str, str] | None = None) -> str | None:
     """Give the person back the app they were in (`was`, a bundle id) when another app takes the
     front within `watch` seconds; returns what was given back, or None. `front_app()` answers the
-    bundle id in front now (claude_ops.update.front_app reads it without an Automation grant).
+    bundle id in front now (claude_ops.update.front_app reads it without an Automation grant), and
+    `activate_app(bundle_id)`, when given, brings the app back instead of `activate`.
 
     For any automation that opens a window in the person's own browser while they work: making a
     browser window, or setting a tab's URL by AppleScript, brings the browser forward, and
@@ -262,7 +263,10 @@ def keep_front(was: str | None, front_app, *, watch: float = 1.5, step: float = 
     while True:
         now = front_app()
         if now and now not in (was, LOGIN_WINDOW):
-            activate(was, env=env)
+            if activate_app is not None:
+                activate_app(was)
+            else:
+                activate(was, env=env)
             return was
         if time.time() >= end:
             return None
