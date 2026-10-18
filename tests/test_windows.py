@@ -159,3 +159,11 @@ def test_keep_front_gives_the_person_their_app_back(monkeypatch):
     assert screenshot.keep_front("com.example.term", lambda: "com.example.term", watch=0) is None
     assert screenshot.keep_front(screenshot.LOGIN_WINDOW, lambda: "x", watch=0) is None
     assert screenshot.keep_front(None, lambda: "x", watch=0) is None
+
+
+def test_keep_front_can_bring_the_app_back_through_the_callers_function(monkeypatch):
+    monkeypatch.setattr(screenshot, "activate", lambda b, env=None: (_ for _ in ()).throw(AssertionError("default used")))
+    mine = []
+    assert screenshot.keep_front("com.example.term", lambda: "com.brave.Browser", watch=0,
+                                 activate_app=mine.append) == "com.example.term"
+    assert mine == ["com.example.term"]
