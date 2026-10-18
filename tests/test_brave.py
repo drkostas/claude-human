@@ -54,3 +54,17 @@ def test_a_kept_window_is_found_while_the_browser_has_it(tmp_path):
 
 def test_outside_tmux_there_is_no_default_key():
     assert brave.default_key(env={}) is None
+
+
+def test_new_window_runs_every_command_with_the_callers_environment(monkeypatch):
+    seen = []
+
+    def fake_run(cmd, **k):
+        seen.append(k.get("env"))
+
+        class R:
+            returncode, stdout, stderr = 0, "", ""
+        return R()
+    monkeypatch.setattr(brave.subprocess, "run", fake_run)
+    brave.new_window(env={"PATH": "/usr/bin"}, wait=0.2, step=0.1)
+    assert seen and all(e == {"PATH": "/usr/bin"} for e in seen)

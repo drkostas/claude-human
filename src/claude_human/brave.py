@@ -87,23 +87,24 @@ def window_ids(app: str = APP, *, env: Mapping[str, str] | None = None) -> set[s
     return {w.strip() for w in out.split(",") if w.strip().isdigit()} if rc == 0 else set()
 
 
-def yabai_ids(app: str = APP, *, yabai: str = YABAI) -> set[int] | None:
+def yabai_ids(app: str = APP, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> set[int] | None:
     """The yabai ids of the app's windows, or None when yabai does not answer (or is not installed)."""
     try:
-        r = subprocess.run([yabai, "-m", "query", "--windows"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run([yabai, "-m", "query", "--windows"], capture_output=True, text=True, timeout=5,
+                           env=env)
         return {w["id"] for w in json.loads(r.stdout) if w.get("app") == app}
     except Exception:  # noqa: BLE001 - no yabai: the id is not known, never guessed
         return None
 
 
 def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 10.0,
-               step: float = 0.2) -> tuple[str | None, int | None]:
+               step: float = 0.2, env: Mapping[str, str] | None = None) -> tuple[str | None, int | None]:
     """Make a new browser window: (its id, its yabai id or None). The new window is the one listed
     after and not before; two new yabai windows at once are not told apart, so no yabai id is guessed.
     `ids`, `yids` and `make` stand in for the browser and yabai in a test."""
-    ids = ids or (lambda: window_ids(app))
-    yids = yids or (lambda: yabai_ids(app))
-    make = make or (lambda: osa(f'tell application "{app}" to make new window'))
+    ids = ids or (lambda: window_ids(app, env=env))
+    yids = yids or (lambda: yabai_ids(app, env=env))
+    make = make or (lambda: osa(f'tell application "{app}" to make new window', env=env))
     before, ybefore = ids(), yids()
     make()
     wid = None
