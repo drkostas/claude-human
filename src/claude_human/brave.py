@@ -128,6 +128,133 @@ def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 
     return wid, yid
 
 
+def running(app: str = APP, *, env: Mapping[str, str] | None = None) -> bool | None:
+    """Whether the browser runs; None when that could not be asked."""
+    try:
+        r = subprocess.run(["/usr/bin/pgrep", "-x", app], capture_output=True, text=True, timeout=10,
+                           env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.returncode == 0
+
+
+def tabs(app: str = APP, *, timeout: float = 30, env: Mapping[str, str] | None = None) -> list[dict] | None:
+    """Every tab. [] when the browser is not running, which is known: nothing is open. None when it
+    runs and could not be asked, which is unknown, never "no tabs"."""
+    up = running(app, env=env)
+    if up is None:
+        return None
+    if not up:
+        return []
+    return list_tabs(app, timeout=timeout, env=env)
+
+
+def close_tab(window: str, tab: str, app: str = APP, *, env: Mapping[str, str] | None = None) -> str:
+    """Close one tab by its id: "success" | "failure" | "unknown". Gone on a re-read is the only
+    success, and a re-read that could not be taken is unknown. There is no function here that
+    closes a window: a window goes away by itself when its last tab closes."""
+    if not (str(window).isdigit() and str(tab).isdigit()):
+        return "failure"
+    osa(f'tell application "{app}" to close (tab id {tab} of window id {window})', 10, env=env)
+    after = tabs(app, env=env)
+    if after is None:
+        return "unknown"
+    return "failure" if any(t["tab"] == str(tab) for t in after) else "success"
+
+
+def active_tab(window: str, app: str = APP, *, env: Mapping[str, str] | None = None) -> str | None:
+    """The id of a window's active tab, or None."""
+    if not str(window).isdigit():
+        return None
+    rc, out = osa(f'tell application "{app}" to return (id of active tab of window id {window}) as text',
+                  10, env=env)
+    return out if rc == 0 and out.isdigit() else None
+
+
+def front_window(app: str = APP, *, env: Mapping[str, str] | None = None) -> str | None:
+    """The id of the browser's front window; None when it does not run or did not answer."""
+    if not running(app, env=env):
+        return None
+    rc, out = osa(f'tell application "{app}" to return (id of window 1) as text', 10, env=env)
+    return out if rc == 0 and out.isdigit() else None
+
+
+def bring_forward(window: str, app: str = APP, *, hold: float = 0.5,
+                  env: Mapping[str, str] | None = None) -> bool:
+    """Make `window` the browser's last active window, the one a link clicked in another app opens
+    in. Setting the window's index alone reorders the windows but is not what the browser counts as
+    last active; the browser also has to come to the front, for about half a second (`hold`). Hand
+    focus back to the app the person was in afterwards (claude_human.screenshot.activate). Nothing
+    of this registers on a locked screen. True when the browser then reports `window` in front."""
+    if not str(window).isdigit():
+        return False
+    osa(f'tell application "{app}" to set index of window id {int(window)} to 1\n'
+        f'tell application "{app}" to activate', 10, env=env)
+    time.sleep(hold)
+    return front_window(app, env=env) == str(window)
+
+
+def window_origin(window: str, app: str = APP, *,
+                  env: Mapping[str, str] | None = None) -> tuple[float, float] | None:
+    """A window's top-left corner, as the browser reports its bounds."""
+    if not str(window).isdigit():
+        return None
+    rc, out = osa(f'tell application "{app}" to get bounds of window id {window}', 10, env=env)
+    try:
+        x, y, *_ = [float(v) for v in out.split(",")]
+        return x, y
+    except ValueError:
+        return None
+
+
+def window_name(window: str, app: str = APP, *, env: Mapping[str, str] | None = None) -> str | None:
+    """The browser's name for its window (its active tab's title); yabai shows "<name> - Brave"."""
+    if not str(window).isdigit():
+        return None
+    rc, out = osa(f'tell application "{app}" to get name of window id {window}', 10, env=env)
+    return out if rc == 0 else None
+
+
+def match_by_origin(origin: tuple[float, float], yabai_windows: list[dict], app: str = APP,
+                    name: str | None = None) -> int | None:
+    """Pure. The one yabai window of `app` at that corner, or None. When several share the corner
+    (every window filled to the screen does), the window's own name tells them apart: yabai titles a
+    Brave window "<name> - Brave". Still several, or none: None, never a guess."""
+    hits = [w for w in yabai_windows if w.get("app") == app
+            and round(w["frame"]["x"]) == round(origin[0])
+            and round(w["frame"]["y"]) == round(origin[1])]
+    if len(hits) > 1 and name:
+        hits = [w for w in hits if (w.get("title") or "") in (name, f"{name} - Brave")
+                or (len(name) >= 12 and (w.get("title") or "").startswith(name[:40]))]
+    return hits[0]["id"] if len(hits) == 1 else None
+
+
+def join_by_origin(items: list[dict], yabai_windows: list[dict], app: str = APP) -> dict[int, dict]:
+    """Pure. {yabai id: item} for an app's own window list (each item has "origin" and "name"),
+    joined to yabai's windows of that app by corner, then name, then elimination. yabai knows a
+    window's title only while its desktop is showing, so two windows at one corner on hidden
+    desktops cannot be told apart by name; once every other window is joined, a corner left with
+    exactly one of each is that pair. Anything else stays unjoined."""
+    joined: dict[int, dict] = {}
+    left = []
+    for it in items:
+        wid = match_by_origin(it["origin"], yabai_windows, app, it.get("name"))
+        if wid is not None and wid not in joined:
+            joined[wid] = it
+        else:
+            left.append(it)
+    free = [w for w in yabai_windows if w.get("app") == app and w.get("id") not in joined]
+
+    def corner(xy) -> tuple[int, int]:
+        return round(xy[0]), round(xy[1])
+    for c in {corner(it["origin"]) for it in left}:
+        mine = [it for it in left if corner(it["origin"]) == c]
+        theirs = [w for w in free if corner((w["frame"]["x"], w["frame"]["y"])) == c]
+        if len(mine) == 1 and len(theirs) == 1:
+            joined[theirs[0]["id"]] = mine[0]
+    return joined
+
+
 def default_key(*, env: Mapping[str, str] | None = None) -> str | None:
     """The tmux session this runs in, which names the caller; None outside tmux."""
     if not (env if env is not None else os.environ).get("TMUX"):

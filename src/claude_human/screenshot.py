@@ -242,6 +242,33 @@ def activate(bundle_id: str | None, *, env: Mapping[str, str] | None = None) -> 
     return r.returncode == 0
 
 
+#: the bundle id in front while the screen is locked
+LOGIN_WINDOW = "com.apple.loginwindow"
+
+
+def keep_front(was: str | None, front_app, *, watch: float = 1.5, step: float = 0.25,
+               env: Mapping[str, str] | None = None) -> str | None:
+    """Give the person back the app they were in (`was`, a bundle id) when another app takes the
+    front within `watch` seconds; returns what was given back, or None. `front_app()` answers the
+    bundle id in front now (claude_ops.update.front_app reads it without an Automation grant).
+
+    For any automation that opens a window in the person's own browser while they work: making a
+    browser window, or setting a tab's URL by AppleScript, brings the browser forward, and
+    ``open -g`` does not stop it. Nothing is done on a locked screen or when `was` is unknown."""
+    import time   # noqa: PLC0415
+    if not was or was == LOGIN_WINDOW:
+        return None
+    end = time.time() + watch
+    while True:
+        now = front_app()
+        if now and now not in (was, LOGIN_WINDOW):
+            activate(was, env=env)
+            return was
+        if time.time() >= end:
+            return None
+        time.sleep(step)
+
+
 def front_window(raw: Iterable[dict] | None = None) -> int | None:
     """The id of the frontmost ordinary window, the one typed text and keys reach.
 
