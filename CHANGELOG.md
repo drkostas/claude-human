@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `brave.has_login(site)` and `claude-human brave has-login SITE`: whether the browser's saved logins hold an entry for a site, in any profile, read from the address column of a copy of each login store (True, False, or None when none could be read). No password is read
+- `android.tap(serial, package, x, y)` and `claude-human android tap`: tap an Android app over adb only once its own window has focus (`mCurrentFocus`), bringing it forward with `am start -n` and refusing on a locked phone; optionally a screenshot after
 - `screenshot.keep_front` takes `activate_app`, for a caller that brings apps back its own way
 - `brave.new_window` and `brave.yabai_ids` take `env` and run every command with it, like every other function here that starts a process
 - One window at a time. `desktops.move_window`, `close_window` and `frame_window` each read their effect back and answer `(outcome, why)` with yabai's own words on a failure, `space_of_window` and `all_windows` (which keeps each window's frame and pid) read where a window is, and `fill_frame`/`fills` give the frame that fills the usable part of the window's screen; `frame_window(..., fallback=...)` sizes a window yabai has lost through the app's own scripting. `brave.tabs` (`[]` when the browser is not running, `None` when it did not answer), `close_tab` (read back), `active_tab`, `front_window`, `bring_forward` (the window outside links open in), `window_origin`, `window_name`, and `match_by_origin`/`join_by_origin`, which pair a browser's window ids with yabai's by corner, then name, then elimination, never by guessing. `screenshot.keep_front` hands the person back the app they were in when automation brought another app forward

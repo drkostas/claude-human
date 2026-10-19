@@ -344,10 +344,50 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
             osa(f'tell application "{app}" to close (first window whose id is {window})')
 
 
+#: where Brave keeps each profile's saved logins
+PROFILES = Path("~/Library/Application Support/BraveSoftware/Brave-Browser").expanduser()
+
+
+def has_login(site: str, *, profiles: Path = PROFILES) -> bool | None:
+    """Whether the browser's saved logins hold an entry for `site` (matched inside the address), in
+    any profile: True, False, or None when no profile's login store could be read.
+
+    Only the address column is read, from a copy of each store (the browser keeps it locked while it
+    runs). The passwords there are encrypted with a key in the login keychain and are never touched,
+    so this asks for no permission and shows nothing on screen."""
+    import shutil   # noqa: PLC0415
+    import sqlite3   # noqa: PLC0415
+    import tempfile   # noqa: PLC0415
+    if not site:
+        raise ValueError("no site to look for")
+    found, read = False, False
+    for store in sorted(profiles.glob("*/Login Data")):
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "logins"
+            try:
+                shutil.copyfile(store, copy)
+                with sqlite3.connect(copy) as db:
+                    n = db.execute("SELECT count(*) FROM logins WHERE origin_url LIKE ?",
+                                   (f"%{site}%",)).fetchone()[0]
+            except (OSError, sqlite3.Error):
+                continue
+        read = True
+        found = found or n > 0
+    return found if read else None
+
+
 def main(argv: list[str]) -> int:
     """`brave URL JS_FILE [--wait-for EXPR] [--timeout S] [--keep-open] [--window ID] [--key KEY]
-    [--app NAME]`: the result on stdout; with --keep-open, "WINDOW <id>[ YABAI <id>]" on stderr."""
+    [--app NAME]`: the result on stdout; with --keep-open, "WINDOW <id>[ YABAI <id>]" on stderr.
+    `brave has-login SITE`: exit 0 when a saved login matches the site, 1 when none, 2 when the
+    login stores could not be read."""
     a = list(argv)
+    if a[:1] == ["has-login"]:
+        if len(a) != 2:
+            print("usage: brave has-login SITE", file=sys.stderr)
+            return 2
+        got = has_login(a[1])
+        return 0 if got else (1 if got is False else 2)
 
     def opt(name, default=None):
         return a[a.index(name) + 1] if name in a else default

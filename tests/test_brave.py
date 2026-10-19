@@ -68,3 +68,38 @@ def test_new_window_runs_every_command_with_the_callers_environment(monkeypatch)
     monkeypatch.setattr(brave.subprocess, "run", fake_run)
     brave.new_window(env={"PATH": "/usr/bin"}, wait=0.2, step=0.1)
     assert seen and all(e == {"PATH": "/usr/bin"} for e in seen)
+
+
+def _store(folder, *origins):
+    import sqlite3
+    folder.mkdir(parents=True)
+    with sqlite3.connect(folder / "Login Data") as db:
+        db.execute("CREATE TABLE logins (origin_url TEXT, password_value BLOB)")
+        db.executemany("INSERT INTO logins VALUES (?, ?)", [(o, b"\x00enc") for o in origins])
+
+
+def test_has_login_reads_every_profile(tmp_path):
+    from claude_human import brave
+    _store(tmp_path / "Default", "https://mail.example.org/")
+    _store(tmp_path / "Profile 1", "https://shop.example.com/login")
+    assert brave.has_login("shop.example.com", profiles=tmp_path) is True
+    assert brave.has_login("example.org", profiles=tmp_path) is True
+    assert brave.has_login("nowhere.example.net", profiles=tmp_path) is False
+
+
+def test_has_login_is_unknown_when_no_store_reads(tmp_path):
+    from claude_human import brave
+    assert brave.has_login("example.org", profiles=tmp_path) is None
+    (tmp_path / "Default").mkdir()
+    (tmp_path / "Default" / "Login Data").write_text("not a database")
+    assert brave.has_login("example.org", profiles=tmp_path) is None
+
+
+def test_has_login_command(tmp_path, monkeypatch):
+    from claude_human import brave
+    _store(tmp_path / "Default", "https://mail.example.org/")
+    monkeypatch.setattr(brave, "PROFILES", tmp_path)
+    monkeypatch.setattr(brave.has_login, "__kwdefaults__", {"profiles": tmp_path})
+    assert brave.main(["has-login", "example.org"]) == 0
+    assert brave.main(["has-login", "example.net"]) == 1
+    assert brave.main(["has-login"]) == 2
