@@ -69,7 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("windows", help="list the ordinary on-screen windows as JSON")
 
     sub.add_parser("brave", help="run JavaScript on a page in the person's signed-in browser "
-                                 "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...)")
+                                 "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...), "
+                                 "or whether it has a saved login (brave has-login SITE)")
+
+    sub.add_parser("android", help="tap an Android app over adb only once its own window has focus "
+                                   "(android tap --serial S --package P X Y [--out PNG])")
 
     s = sub.add_parser("screenshot", help="capture the screen or one window with sckshot")
     s.add_argument("--out", required=True, help="output file (.png, or .jpg/.jpeg for JPEG)")
@@ -322,6 +326,9 @@ def _report(ok: bool, detail: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["android"]:
+        from claude_human import android   # noqa: PLC0415
+        return android.main(argv[1:])
     if argv[:1] == ["brave"]:
         # its own arguments, passed through as brave.main reads them
         from claude_human import brave   # noqa: PLC0415

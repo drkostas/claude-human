@@ -119,6 +119,18 @@ How it keeps a person to the window they were given.
 
 The station needs Screen Recording (for the picture and the window titles) and Accessibility (for the clicks) for the process that runs it.
 
+## A saved login, and a tap on a phone
+
+```bash
+claude-human brave has-login example.org      # exit 0 saved, 1 not, 2 the login stores could not be read
+claude-human android tap --serial 192.0.2.10:5555 --package com.example.app 540 1200 --out /tmp/after.png
+```
+
+`brave has-login` reads only the address column of a copy of each profile's login store, never a
+password, so it asks for nothing and shows nothing. `android tap` taps only when the app's own window
+has focus (`mCurrentFocus`, which names a notification shade, a dialog or the lock screen when one lies
+over the app), brings the app forward with `am start -n` when it is not, and refuses on a locked phone.
+
 ## Typing at the lock screen and into password panels
 
 The lock screen and SecurityAgent panels accept input only from real hardware. Synthetic key events, synthetic clicks and Screen Sharing input are all dropped there. Karabiner's DriverKit virtual HID keyboard is seen by macOS as a physical keyboard, so `vhid_type` can type where nothing else can.
