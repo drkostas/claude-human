@@ -14,6 +14,7 @@ class FakeWindows:
         self.wins = [{"id": 7, "space": 1, "app": "Term", "title": "t",
                       "frame": {"x": 0, "y": 0, "w": 500, "h": 400}}]
         self.locked = False
+        self.lost = set()                             # ids listed but never located
 
     def run(self, cmd, **k):
         class R:
@@ -21,11 +22,17 @@ class FakeWindows:
         r, args = R(), cmd[2:]
         if args[:2] == ["query", "--spaces"]:
             r.stdout = json.dumps(self.spaces)
+        elif args[:2] == ["query", "--windows"] and "--window" in args:
+            w = next((w for w in self.wins if str(w["id"]) == args[3]), None)
+            if self.locked or w is None or w["id"] in self.lost:
+                r.returncode, r.stderr = 1, f"could not locate window with the specified id '{args[3]}'."
+            else:
+                r.stdout = json.dumps(w)
         elif args[:2] == ["query", "--windows"]:
             r.stdout = json.dumps(self.wins)
         elif args[:1] == ["window"]:
             w = next((w for w in self.wins if str(w["id"]) == args[1]), None)
-            if self.locked or w is None:
+            if self.locked or w is None or w["id"] in self.lost:
                 r.returncode, r.stderr = 1, "could not locate the window to act on!"
             elif args[2] == "--space":
                 w["space"] = next(s["index"] for s in self.spaces if s["label"] == args[3])
@@ -55,6 +62,29 @@ def test_a_failed_move_carries_yabais_own_words(monkeypatch):
     f.locked = True
     out, why = desktops.move_window(7, "U2")
     assert out == "failure" and "could not locate" in why
+
+
+def test_a_window_yabai_lost_is_told_apart_from_a_locked_screen(monkeypatch):
+    f = _fake(monkeypatch)
+    f.wins.append({"id": 8, "space": 1, "app": "Term", "title": "",
+                   "frame": {"x": 0, "y": 0, "w": 500, "h": 400}})
+    f.wins.insert(0, {"id": 6, "space": 1, "app": "Term", "title": "",
+                      "frame": {"x": 0, "y": 0, "w": 500, "h": 400}})
+    f.lost |= {6, 8}                                  # two lost at once: 7 is the one found
+    assert desktops.lost(8) is True and desktops.lost(6) is True and desktops.lost(7) is False
+    assert desktops.lost(99) is False                 # not listed at all
+    out, why = desktops.move_window(8, "U2")
+    assert out == "failure" and why.startswith(desktops.LOST) and "could not locate" in why
+    f.locked = True                                   # nothing can be found: cannot be told
+    assert desktops.lost(8) is None
+    out, why = desktops.move_window(7, "U2")
+    assert out == "failure" and not why.startswith(desktops.LOST)
+
+
+def test_a_lone_window_yabai_cannot_find_is_unknown_not_lost(monkeypatch):
+    f = _fake(monkeypatch)
+    f.lost.add(7)
+    assert desktops.lost(7) is None
 
 
 def test_a_move_to_a_desktop_that_is_gone_says_so(monkeypatch):
