@@ -193,12 +193,47 @@ def _window_cmd(window_id: int, *args: str, yabai: str = YABAI, env: Mapping[str
         return None
 
 
+#: how move_window's reason starts when yabai has lost the window (see `lost`)
+LOST = "yabai has lost this window"
+
+
+def _locates(window_id: int, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> bool | None:
+    try:
+        r = _run(["query", "--windows", "--window", str(int(window_id))], yabai=yabai, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def lost(window_id: int, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> bool | None:
+    """True when yabai has lost a window: its full list still holds the id, but a query or command
+    for that one id answers "could not locate", while another window of the list can be found. No
+    command reaches such a window until yabai sees it again (often never), so a caller that must
+    move it needs another route, such as opening the content in a new window. False when it can be
+    found or is not listed; None when that cannot be told (yabai not answering, a locked screen,
+    or no other window that can be found)."""
+    ws = all_windows(yabai=yabai, env=env)
+    if ws is None:
+        return None
+    if not any(w.get("id") == int(window_id) for w in ws):
+        return False
+    one = _locates(window_id, yabai=yabai, env=env)
+    if one is not False:
+        return None if one is None else False
+    # ⭐ several windows can be lost at once, so any other window that can be found will do
+    for w in ws:
+        if w.get("id") != int(window_id) and _locates(w["id"], yabai=yabai, env=env):
+            return True
+    return None
+
+
 def move_window(window_id: int, uuid: str, *, yabai: str = YABAI,
                 env: Mapping[str, str] | None = None) -> tuple[str, str]:
     """Move one window onto the desktop macOS knows as `uuid`: ("success" | "failure" | "unknown",
     why). Success only when a re-read says so, and a failure carries yabai's own words: on a locked
     screen yabai answers "could not locate the window to act on!" for every window, and a failure
-    recorded without that reason cannot be told from a real one."""
+    recorded without that reason cannot be told from a real one. When yabai has lost the window
+    (`lost`), the reason starts with LOST, so a caller can choose another route."""
     try:
         label = label_for(uuid, yabai=yabai, env=env)    # by its label, never its number
     except Exception as e:  # noqa: BLE001
@@ -211,7 +246,10 @@ def move_window(window_id: int, uuid: str, *, yabai: str = YABAI,
         return "unknown", said or "the window could not be found after the move"
     if where == uuid:
         return "success", ""
-    return "failure", said or f"the window is still on {where}"
+    why = said or f"the window is still on {where}"
+    if lost(window_id, yabai=yabai, env=env):
+        why = f"{LOST}: {why}"
+    return "failure", why
 
 
 def close_window(window_id: int, *, wait: float = 6.0, window_ids=None, yabai: str = YABAI,
