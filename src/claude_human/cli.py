@@ -9,6 +9,7 @@
     claude-human relock
     claude-human use-password
     claude-human approve         (password on stdin)
+    claude-human consent [list [--out PNG] | allow | deny]
     claude-human skill [--dir DIR]
     claude-human station [--port N] [--app NAME] [--token-file FILE] [--fps N]
     claude-human prepare [--phase place|input|all] APP STEP...
@@ -89,6 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("relock", help="sleep the display and wait for the session to lock")
     sub.add_parser("use-password", help="switch a Touch ID panel to its password field (presses Return only)")
     sub.add_parser("approve", help="type the password from stdin into the password panel on screen")
+    cs = sub.add_parser("consent", help="list the macOS consent prompts on screen, or answer the front one")
+    cs.add_argument("action", nargs="?", default="list", choices=("list", "allow", "deny"))
+    cs.add_argument("--out", help="with list: save a picture of the first prompt here (PNG)")
 
     st = sub.add_parser("station", help="serve one window (or the display) to a phone, with input")
     st.add_argument("--port", type=int, default=8789, help="port on 127.0.0.1 (default 8789, 0 for a free one)")
@@ -407,6 +411,17 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"{args.out} {w}x{h}")
         return 0
+
+    if cmd == "consent":
+        from . import consent  # noqa: PLC0415
+        if args.action != "list":
+            return _report(*consent.answer(args.action, helper=args.vhid))
+        found = consent.prompts()
+        if found and args.out and consent.capture(found[0], args.out):
+            found[0]["image"] = args.out
+            found[0]["text"] = consent.read_text(args.out)
+        print(json.dumps(found, indent=2))
+        return 0 if found is not None else 1
 
     from . import unlock  # noqa: PLC0415
     if cmd == "unlock":
