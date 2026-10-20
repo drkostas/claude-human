@@ -103,3 +103,71 @@ def test_has_login_command(tmp_path, monkeypatch):
     assert brave.main(["has-login", "example.org"]) == 0
     assert brave.main(["has-login", "example.net"]) == 1
     assert brave.main(["has-login"]) == 2
+
+
+def test_continue_where_left_off_marks_each_profile(tmp_path):
+    import json as _j
+    for prof in ("Default", "Profile 1", "System Profile"):
+        (tmp_path / prof).mkdir()
+        (tmp_path / prof / "Preferences").write_text(_j.dumps({"profile": {"exit_type": "Crashed", "name": prof}, "other": 1}))
+    changed = brave.continue_where_left_off(tmp_path)
+    d = _j.loads((tmp_path / "Default" / "Preferences").read_text())
+    assert changed == ["Default", "Profile 1"]
+    assert d["session"]["restore_on_startup"] == 1 and d["profile"]["exit_type"] == "Normal"
+    assert d["profile"]["exited_cleanly"] is True and d["other"] == 1 and d["profile"]["name"] == "Default"
+    assert _j.loads((tmp_path / "System Profile" / "Preferences").read_text())["profile"]["exit_type"] == "Crashed"
+
+
+class FakeProcs:
+    def __init__(self, pids=(200,), quits=True, answers_after=1, opens=True):
+        self._pids, self.quits, self.answers_after, self.opens = list(pids), quits, answers_after, opens
+        self.signals, self.prepared, self.opened, self.asked, self.dead = [], 0, 0, 0, False
+
+    def pids(self):
+        return self._pids
+
+    def signal(self, pid, sig):
+        import signal as _s
+        self.signals.append(sig)
+        if sig == _s.SIGKILL or self.quits:
+            self.dead = True
+
+    def alive(self, pid):
+        return not self.dead
+
+    def open(self):
+        self.opened += 1
+        return self.opens
+
+    def answers(self):
+        self.asked += 1
+        return self.asked >= self.answers_after
+
+    def prepare(self):
+        self.prepared += 1
+        return ["Default"]
+
+    def sleep(self, s):
+        pass
+
+
+def test_restart_quits_then_reopens_the_last_session():
+    import signal as _s
+    p = FakeProcs(answers_after=2)
+    outcome, detail = brave.restart(procs=p)
+    assert outcome == "success" and detail["how"] == "quit" and p.signals == [_s.SIGTERM]
+    assert p.prepared == 1 and p.opened == 1
+
+
+def test_restart_stops_a_browser_that_will_not_quit():
+    import signal as _s
+    p = FakeProcs(quits=False)
+    outcome, detail = brave.restart(procs=p, quit_wait=5)
+    assert outcome == "success" and detail["how"] == "stopped" and p.signals == [_s.SIGTERM, _s.SIGKILL]
+
+
+def test_restart_refuses_without_exactly_one_process():
+    p = FakeProcs(pids=())
+    assert brave.restart(procs=p)[0] == "failure" and p.signals == []
+    p = FakeProcs(answers_after=10**6)
+    assert brave.restart(procs=p, answer_wait=9)[0] == "failure"

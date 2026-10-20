@@ -139,6 +139,128 @@ def running(app: str = APP, *, env: Mapping[str, str] | None = None) -> bool | N
     return r.returncode == 0
 
 
+#: where the browser keeps its profiles, for continue_where_left_off
+PROFILES_ROOT = Path("~/Library/Application Support/BraveSoftware/Brave-Browser")
+
+
+def continue_where_left_off(root: Path | str = PROFILES_ROOT) -> list[str]:
+    """Make the next start reopen the last session without asking, in every profile under `root`:
+    "continue where you left off" on, and the last exit marked normal. After an unclean exit a
+    Chromium browser asks "Restore pages?" whatever its startup setting, because the profile still
+    says it crashed. Only while the browser is not running: it rewrites these preferences when it
+    quits. Returns the profiles changed."""
+    base = Path(root).expanduser()
+    changed = []
+    try:
+        names = sorted(n.name for n in base.iterdir() if n.name == "Default" or n.name.startswith("Profile "))
+    except OSError:
+        return changed
+    for n in names:
+        path = base / n / "Preferences"
+        try:
+            prefs = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        prefs.setdefault("session", {})["restore_on_startup"] = 1
+        prof = prefs.setdefault("profile", {})
+        prof["exit_type"] = "Normal"
+        prof["exited_cleanly"] = True
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(prefs))
+        os.replace(tmp, path)
+        changed.append(n)
+    return changed
+
+
+class Processes:
+    """What restart touches, replaced by a fake in tests."""
+
+    def __init__(self, app: str = APP, env: Mapping[str, str] | None = None):
+        self.app, self.env = app, env
+
+    def pids(self) -> list[int]:
+        try:
+            r = subprocess.run(["/usr/bin/pgrep", "-x", self.app], capture_output=True, text=True,
+                               timeout=10, env=self.env)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return [int(x) for x in r.stdout.split() if x.isdigit()]
+
+    def signal(self, pid: int, sig: int) -> None:
+        os.kill(pid, sig)
+
+    def alive(self, pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def open(self) -> bool:
+        try:
+            return subprocess.run(["/usr/bin/open", "-a", self.app, "--args", "--restore-last-session"],
+                                  capture_output=True, timeout=30, env=self.env).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def answers(self) -> bool:
+        return list_tabs(self.app, timeout=20, env=self.env) is not None
+
+    def prepare(self) -> list[str]:
+        return continue_where_left_off()
+
+    def sleep(self, s: float) -> None:
+        time.sleep(s)
+
+
+def restart(app: str = APP, *, quit_wait: float = 60.0, answer_wait: float = 90.0,
+            procs: Processes | None = None, env: Mapping[str, str] | None = None) -> tuple[str, dict]:
+    """Restart a browser that stopped answering, with its windows and tabs.
+
+    It is asked to quit (SIGTERM, which a Chromium browser takes as a normal quit that saves the
+    session) and stopped with SIGKILL when it has not quit after `quit_wait` seconds. Then its
+    profiles are set to continue where they left off (continue_where_left_off) and it is opened
+    with --restore-last-session, and the restart counts once it answers a tab listing again. A
+    browser stopped by force reopens the session it saved last, so the pages opened since then can
+    be missing: compare the tabs before and after.
+
+    Returns (outcome, detail): "success" or "failure", with "message" and "how" ("quit" or
+    "stopped")."""
+    import signal   # noqa: PLC0415
+    p = procs or Processes(app, env)
+    pids = p.pids()
+    if len(pids) != 1:
+        return "failure", {"message": f"expected one {app} process, found {len(pids)}; nothing was stopped"}
+    pid = pids[0]
+    p.signal(pid, signal.SIGTERM)
+    how = "quit"
+    waited = 0.0
+    while p.alive(pid):
+        if waited >= quit_wait:
+            p.signal(pid, signal.SIGKILL)
+            how = "stopped"
+            for _ in range(40):
+                if not p.alive(pid):
+                    break
+                p.sleep(0.25)
+            else:
+                return "failure", {"message": f"{app} did not stop", "how": how}
+            break
+        p.sleep(1)
+        waited += 1
+    p.prepare()
+    if not p.open():
+        return "failure", {"message": f"{app} {how}, and could not be opened again", "how": how}
+    waited = 0.0
+    while not p.answers():
+        if waited >= answer_wait:
+            return "failure", {"message": f"{app} opened again but did not answer within {answer_wait:.0f} s",
+                               "how": how}
+        p.sleep(3)
+        waited += 3
+    return "success", {"message": f"{app} {how} and reopened its last session", "how": how}
+
+
 def tabs(app: str = APP, *, timeout: float = 30, env: Mapping[str, str] | None = None) -> list[dict] | None:
     """Every tab. [] when the browser is not running, which is known: nothing is open. None when it
     runs and could not be asked, which is unknown, never "no tabs"."""
