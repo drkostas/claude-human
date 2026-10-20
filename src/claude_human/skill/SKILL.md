@@ -129,6 +129,34 @@ ok, detail = unlock.relock()                      # watches the lock bit set
 - Screen Sharing is not a way past the lock. Its high performance mode drives a separate virtual display, never the console. Its classic mode with the dedicated Screen Sharing password shows a live login window that drops every key it is sent, by design, so that this password cannot be used to guess the login password. Signing in to Screen Sharing with the account name and the account password does attach to that account's session, which is the person's own remote route, not the assistant's.
 - To check that the virtual keyboard reaches the system at all without typing a password, read `HIDIdleTime` with `ioreg -c IOHIDSystem` before and after a harmless key. It falls back near zero only when a hardware-class event arrived.
 
+## Consent prompts ("X wants access to control Y")
+
+The first time a program sends Apple Events to another application, macOS shows a small prompt with
+"Don't Allow" and "Allow", owned by UserNotificationCenter. It waits for a person. Until then every
+Apple Event from that program to that application hangs, and the requests queued behind it hang too,
+with no error anywhere. A scheduled job or a background script that raises one can stop automation
+for hours, and asking the target app for its `name` or `version` still answers, which makes it look
+fine. The tell is a `count windows` that times out.
+
+- After running anything that can raise a prompt (an `osascript` to an app this program has not
+  driven before, a new launchd job, a new background item), check: `claude-human consent`.
+- Never leave one on screen. The answer is the person's, so show them the picture and the words and
+  press what they choose.
+
+```bash
+claude-human consent --out /tmp/prompt.png   # the prompts on screen, with a picture and the words of the first
+claude-human consent allow                   # after the person said allow; observes the prompt close
+claude-human consent deny
+```
+
+- Synthetic clicks are ignored on the prompt, so `allow` and `deny` press keys through the virtual
+  keyboard. "Allow" is the default button (Return). The focus ring sits on "Don't Allow" (Space,
+  with Full Keyboard Access on).
+- The prompt's application must be in front for the keys to reach it. `answer` brings it forward
+  and refuses to press anything when it cannot.
+- On a locked screen the prompt is still listed but cannot be captured or answered. Unlock first
+  (through the person's approval).
+
 ## Working in the person's signed-in browser
 
 ```bash

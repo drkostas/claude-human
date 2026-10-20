@@ -161,6 +161,13 @@ How it behaves.
 
 Please read [SECURITY.md](SECURITY.md) before you use this part. It types a password, and it should only ever do that on your own Mac.
 
+## Answering a consent prompt
+
+macOS asks "X wants access to control Y" the first time one program sends Apple Events to another,
+and every such event hangs until a person answers. `claude-human consent` lists the prompts on
+screen (with `--out` a picture and its words), and `consent allow` or `consent deny` presses the
+button the person chose through the virtual keyboard, since synthetic clicks are ignored there.
+
 ## Telling a person something
 
 ```bash

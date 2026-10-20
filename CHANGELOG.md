@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `consent` and `claude-human consent [list|allow|deny]`: the macOS consent prompts on screen ("X wants access to control Y", owned by UserNotificationCenter), a picture and the words of one (Vision OCR), and the answer a person chose pressed through the virtual keyboard (Return for Allow, Space for Don't Allow), with the prompt brought forward first and observed to close. Until such a prompt is answered every Apple Event from that program to that app hangs without an error
 - `brave.has_login(site)` and `claude-human brave has-login SITE`: whether the browser's saved logins hold an entry for a site, in any profile, read from the address column of a copy of each login store (True, False, or None when none could be read). No password is read
 - `android.tap(serial, package, x, y)` and `claude-human android tap`: tap an Android app over adb only once its own window has focus (`mCurrentFocus`), bringing it forward with `am start -n` and refusing on a locked phone; optionally a screenshot after
 - `screenshot.keep_front` takes `activate_app`, for a caller that brings apps back its own way
