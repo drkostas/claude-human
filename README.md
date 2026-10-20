@@ -13,6 +13,7 @@ There are seven pieces.
 - `claude_human.tasks` asks a person to do a step once, tells them, and closes the task only when a check says it is done. `claude-human task serve` serves the tasks over HTTP for an app.
 - `@drkostas/claude-human-client` (in `client/`) is a typed TypeScript client for that server.
 - `@drkostas/expo-ntfy` (in `js/`) gets messages from a self-hosted ntfy server to an Android phone without Firebase, through a native foreground service that an Expo config plugin adds to the app.
+- `@drkostas/expo-adb-keeper` (in `adb-keeper/`) turns an Android phone's wireless debugging back on after a restart, so a machine that reaches the phone over a VPN can bring adb back without a cable. See [adb-keeper/README.md](adb-keeper/README.md).
 
 The Python parts need macOS, except `claude_human.notify`, which runs anywhere Python does. `@drkostas/expo-ntfy` needs an Expo app, and the client runs anywhere `fetch` does.
 
