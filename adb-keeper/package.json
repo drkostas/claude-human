@@ -1,0 +1,37 @@
+{
+  "name": "@drkostas/expo-adb-keeper",
+  "version": "0.1.0",
+  "description": "An Expo config plugin that turns an Android phone's wireless debugging back on after a restart, so a machine that reaches the phone over a VPN can bring adb back without a cable",
+  "license": "MIT",
+  "author": "Konstantinos Georgiou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drkostas/claude-human.git",
+    "directory": "adb-keeper"
+  },
+  "homepage": "https://github.com/drkostas/claude-human/tree/main/adb-keeper#readme",
+  "keywords": ["expo", "expo-config-plugin", "adb", "wireless-debugging", "android"],
+  "main": "app.plugin.js",
+  "exports": {
+    ".": "./app.plugin.js",
+    "./app.plugin.js": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["plugin", "app.plugin.js", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "vitest run",
+    "compile:kotlin": "bash scripts/compile.sh"
+  },
+  "peerDependencies": {
+    "expo": "*"
+  },
+  "peerDependenciesMeta": {
+    "expo": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@expo/config-plugins": "^57.0.9",
+    "vitest": "^2.1.0"
+  }
+}

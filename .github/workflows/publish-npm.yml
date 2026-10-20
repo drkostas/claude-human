@@ -1,14 +1,15 @@
 name: Publish to npm
 
-# A tag expo-ntfy-v<version> releases @drkostas/expo-ntfy (js/), and client-v<version> releases
-# @drkostas/claude-human-client (client/). The release is the package's npm pack tarball, attached to
+# A tag expo-ntfy-v<version> releases @drkostas/expo-ntfy (js/), client-v<version> releases
+# @drkostas/claude-human-client (client/), and expo-adb-keeper-v<version> releases
+# @drkostas/expo-adb-keeper (adb-keeper/). The release is the package's npm pack tarball, attached to
 # a GitHub release of the tag, so an app can install it by URL and its lock file keeps the checksum.
 # When the repository variable NPM_PUBLISH is "true", the same tarball is also published to npm. npm
 # trusts this workflow (trusted publishing), so the job holds no token: npm checks the GitHub OIDC
 # identity and records provenance. Without that trust on npm's side, leave NPM_PUBLISH unset.
 on:
   push:
-    tags: ["expo-ntfy-v*", "client-v*"]
+    tags: ["expo-ntfy-v*", "client-v*", "expo-adb-keeper-v*"]
 
 permissions:
   contents: write
@@ -29,6 +30,7 @@ jobs:
           case "${GITHUB_REF_NAME}" in
             expo-ntfy-v*) echo "DIR=js" >> "$GITHUB_ENV"; echo "VERSION=${GITHUB_REF_NAME#expo-ntfy-v}" >> "$GITHUB_ENV" ;;
             client-v*) echo "DIR=client" >> "$GITHUB_ENV"; echo "VERSION=${GITHUB_REF_NAME#client-v}" >> "$GITHUB_ENV" ;;
+            expo-adb-keeper-v*) echo "DIR=adb-keeper" >> "$GITHUB_ENV"; echo "VERSION=${GITHUB_REF_NAME#expo-adb-keeper-v}" >> "$GITHUB_ENV" ;;
             *) echo "no package for ${GITHUB_REF_NAME}"; exit 1 ;;
           esac
       - name: The tag matches the package version

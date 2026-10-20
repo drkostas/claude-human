@@ -80,6 +80,28 @@ jobs:
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
       - run: npm run compile:service
 
+  adb-keeper:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: adb-keeper
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: npm ci
+      - run: npm test
+      - name: The Android platform the job is compiled against
+        run: |
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar" || \
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
+      - run: npm run compile:kotlin
+
   client:
     runs-on: ubuntu-latest
     strategy:
