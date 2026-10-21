@@ -47,12 +47,43 @@ def _space(*args: str, yabai: str = YABAI, env: Mapping[str, str] | None = None)
         raise RuntimeError(f"yabai space {' '.join(args)}: {r.stderr.strip()[:200] or 'failed'}")
 
 
+#: the most displays asked one at a time when the all-desktops query cannot be read
+MAX_DISPLAYS = 8
+
+
+def _spaces_by_display(*, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> list[dict]:
+    """The desktops asked one display at a time, until a display does not exist. While the screen is
+    locked, yabai answers `query --spaces` with a cut-off list, but `query --spaces --display N`
+    still answers in full. Raises when no display answered."""
+    out: list[dict] = []
+    for d in range(1, MAX_DISPLAYS + 1):
+        r = _run(["query", "--spaces", "--display", str(d)], yabai=yabai, env=env)
+        if r.returncode != 0:
+            break
+        try:
+            out.extend(json.loads(r.stdout))
+        except json.JSONDecodeError:
+            raise RuntimeError(f"yabai query --spaces --display {d}: unreadable answer "
+                               f"({r.stdout.strip()[:20]!r})") from None
+    if not out:
+        raise RuntimeError("yabai query --spaces: no display answered")
+    return out
+
+
 def spaces(*, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> list[dict]:
     """Every desktop: {"uuid", "index", "label", "visible"}. The uuid survives a renumbering and a
     yabai restart; the label does not, so record the uuid for anything that must find the desktop
-    again later."""
+    again later. When the all-desktops answer cannot be read (a locked screen), the desktops are
+    asked one display at a time; when that fails too, the first error is raised."""
+    try:
+        raw = query("--spaces", yabai=yabai, env=env)
+    except RuntimeError as first:
+        try:
+            raw = _spaces_by_display(yabai=yabai, env=env)
+        except RuntimeError:
+            raise first from None
     return [{"uuid": s["uuid"], "index": s["index"], "label": s.get("label") or "",
-             "visible": bool(s.get("is-visible"))} for s in query("--spaces", yabai=yabai, env=env)]
+             "visible": bool(s.get("is-visible"))} for s in raw]
 
 
 def windows(*, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> list[dict]:

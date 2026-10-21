@@ -96,3 +96,42 @@ def test_an_unreadable_answer_raises_instead_of_reading_empty(monkeypatch):
     monkeypatch.setattr(desktops.subprocess, "run", lambda *a, **k: R())
     with pytest.raises(RuntimeError, match="unreadable"):
         desktops.query("--spaces")
+
+
+class LockedYabai(FakeYabai):
+    """A locked screen: the all-desktops answer is cut off, the per-display one is whole."""
+
+    def __init__(self, displays):
+        super().__init__()
+        self.displays = displays
+
+    def run(self, cmd, **k):
+        class R:
+            returncode, stdout, stderr = 0, "", ""
+        r = R()
+        args = cmd[2:]
+        self.commands.append(args)
+        if args == ["query", "--spaces"]:
+            r.stdout = "[\n"
+        elif args[:3] == ["query", "--spaces", "--display"]:
+            n = int(args[3])
+            if n > len(self.displays):
+                r.returncode, r.stderr = 1, f"could not locate display with arrangement index '{n}'."
+            else:
+                r.stdout = json.dumps(self.displays[n - 1])
+        return r
+
+
+def test_a_locked_screen_is_read_one_display_at_a_time(monkeypatch):
+    f = LockedYabai([[{"uuid": "U1", "index": 1, "label": "one", "is-visible": True}],
+                     [{"uuid": "U2", "index": 2, "label": "two", "is-visible": True}]])
+    monkeypatch.setattr(desktops.subprocess, "run", f.run)
+    assert [s["uuid"] for s in desktops.spaces()] == ["U1", "U2"]
+    assert ["query", "--spaces", "--display", "3"] in f.commands      # stopped at the first missing one
+
+
+def test_when_no_display_answers_the_first_error_is_raised(monkeypatch):
+    f = LockedYabai([])
+    monkeypatch.setattr(desktops.subprocess, "run", f.run)
+    with pytest.raises(RuntimeError, match="unreadable"):
+        desktops.spaces()
