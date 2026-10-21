@@ -299,6 +299,16 @@ The lock path, the queue file, the CLI and the messages are all arguments, so th
 
 `js/` is the npm package `@drkostas/expo-ntfy`. It has a config plugin, the ntfy wire logic, and the Expo glue for notifications. See [js/README.md](js/README.md).
 
+## What the Mac exposes
+
+Two facts a settings change can quietly undo. `process.listening()` lists every TCP socket a process listens on, with the process and the address (`*` is every interface), so a receiver that came back on after an update shows up. Without `sudo=True` it lists only the user's own processes, since lsof cannot see another user's sockets. `wifi.known_networks()` reads the saved Wi-Fi networks (root only, through `sudo -n`) with how each is secured, and marks the ones anyone can join (`open`), which the Mac would join again by itself.
+
+```python
+from claude_human import process, wifi
+exposed = [s for s in process.listening() or [] if s["address"] == "*" and s["port"] in (5000, 7000)]
+open_networks = [n["ssid"] for n in wifi.known_networks() or [] if n["open"]]
+```
+
 ## What macOS needs
 
 - Screen Recording for `sckshot.app` (fast capture), and for the process that lists windows (window titles and the fallback capture).
