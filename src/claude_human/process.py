@@ -4,6 +4,10 @@
   answers True (the signal is refused, so the process exists).
 - `peer_pid(host, port)`: the process at the other end of a local TCP connection whose far end is
   host:port, such as the client of a request a server is answering.
+- `listening(sudo=False)`: every TCP port a process listens on, with the process and the address it
+  listens on (`*` is every interface). None when lsof cannot run. Without `sudo` only the user's own
+  processes are listed, because lsof cannot see another user's sockets, so an empty list is not
+  proof that nothing listens.
 - `ancestors(pid, procs)`: `pid` and every parent above it, from a process table.
 - `footprint_gb(pid)`: a process's memory footprint, the figure Activity Monitor and `top` show as
   memory (phys_footprint, which counts compressed pages), from proc_pid_rusage in about a
@@ -45,6 +49,44 @@ def peer_pid(host: str, port: int, *, run=subprocess.run) -> int | None:
             if line.startswith("p") and line[1:].isdigit()}
     pids.discard(os.getpid())
     return pids.pop() if len(pids) == 1 else None
+
+
+def parse_listening(text: str) -> list[dict]:
+    """lsof's field output (-F pcLn) as {pid, command, user, address, port}, one per socket."""
+    out: list[dict] = []
+    pid = command = user = None
+    for line in text.splitlines():
+        tag, value = line[:1], line[1:]
+        if tag == "p":
+            pid, command, user = (int(value) if value.isdigit() else None), None, None
+        elif tag == "c":
+            command = value
+        elif tag == "L":
+            user = value
+        elif tag == "n" and ":" in value:
+            address, _, port = value.rpartition(":")
+            if port.isdigit():
+                out.append({"pid": pid, "command": command, "user": user,
+                            "address": address.strip("[]"), "port": int(port)})
+    return out
+
+
+def listening(*, sudo: bool = False, run=subprocess.run) -> list[dict] | None:
+    """Every listening TCP socket: {pid, command, user, address, port}, address "*" for every
+    interface. None when lsof (or `sudo -n`) cannot run. Without `sudo`, only this user's processes:
+    lsof does not see another user's sockets, so a port missing from the list may still be open."""
+    argv = ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FpcLn"]
+    if sudo:
+        argv = ["/usr/bin/sudo", "-n", *argv]
+    try:
+        r = run(argv, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = getattr(r, "stdout", "") or ""
+    # lsof exits 1 when it lists nothing; sudo -n exits 1 when it would ask for a password
+    if getattr(r, "returncode", 0) not in (0, 1) or (sudo and r.returncode == 1 and not text):
+        return None
+    return parse_listening(text)
 
 
 def ancestors(pid: int, procs: dict[int, dict]) -> list[int]:
