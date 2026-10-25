@@ -278,3 +278,34 @@ def test_bw_session_never_reads_the_password_while_another_act_holds_the_lock(tm
     finally:
         p.kill()
         p.wait()
+
+
+def test_a_start_time_in_the_hour_the_clocks_repeat_matches_either_reading(monkeypatch, tmp_path):
+    """On the night the clocks go back, a local time between the two changes happens twice.
+    `ps -o lstart` prints a local time, and mktime picks one of its two readings, an hour off for a
+    process started in the other, so a dead holder's running call read as some other process and the
+    next act did not wait for it. Both readings are matched now."""
+    lock = SessionLock(tmp_path / "x.lock", poll_s=0.01)
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Berlin"
+    time.tzset()
+    try:
+        tm = time.strptime("Sun Oct 25 02:30:00 2026", "%a %b %d %H:%M:%S %Y")
+        summer = time.mktime(time.struct_time(tm[:8] + (1,)))      # 00:30 UTC, before the change
+        winter = time.mktime(time.struct_time(tm[:8] + (0,)))      # 01:30 UTC, after it
+        assert winter - summer == 3600
+        monkeypatch.setattr(session_lock.subprocess, "run",
+                            lambda *a, **k: subprocess.CompletedProcess(a, 0, "Sun Oct 25 02:30:00 2026\n", ""))
+        monkeypatch.setattr(session_lock, "process_alive", lambda pid: True)
+        assert set(lock._started_at(4242)) == {summer, winter}
+        assert lock._still_running(4242, summer) and lock._still_running(4242, winter)
+        assert not lock._still_running(4242, summer - 10) and not lock._still_running(4242, winter + 10)
+        monkeypatch.setattr(session_lock.subprocess, "run",
+                            lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "no such process"))
+        assert lock._started_at(4242) == () and not lock._still_running(4242, summer)
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
