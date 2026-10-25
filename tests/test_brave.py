@@ -171,3 +171,19 @@ def test_restart_refuses_without_exactly_one_process():
     assert brave.restart(procs=p)[0] == "failure" and p.signals == []
     p = FakeProcs(answers_after=10**6)
     assert brave.restart(procs=p, answer_wait=9)[0] == "failure"
+
+
+def test_a_wait_for_on_the_result_is_refused_before_any_window_opens(monkeypatch, capsys):
+    # wait_for is checked before the script runs and only the script sets the result, so waiting
+    # for the result can never hold; it used to wait out the whole timeout
+    opened = []
+    monkeypatch.setattr(brave, "new_window", lambda *a, **k: opened.append(1) or ("1", None))
+    try:
+        brave.run("https://example.org/", "window.__claude_r = 'x'", wait_for="window.__claude_r")
+    except ValueError as e:
+        assert "before the script runs" in str(e)
+    else:
+        raise AssertionError("a wait on the result was not refused")
+    assert opened == []
+    assert brave.main(["https://example.org/", __file__, "--wait-for", "window.__claude_r !== undefined"]) == 2
+    assert "can never hold" in capsys.readouterr().err and opened == []
