@@ -247,23 +247,33 @@ class SessionLock:
 
     # ------------------------------------------------------------------ a dead holder's CLI call
 
-    def _started_at(self, pid: int) -> float | None:
-        """When the process `pid` started, to the second, or None."""
+    def _started_at(self, pid: int) -> tuple[float, ...]:
+        """When the process `pid` started, to the second, as every epoch its local start time can
+        mean: `ps -o lstart` prints a local time, and on the night the clocks go back the hour
+        between the two changes happens twice. mktime picks one of the two, an hour off for a
+        process started in the other, so both are returned and the caller matches either. Empty
+        when ps did not answer."""
         env = dict(self.env if self.env is not None else os.environ, LC_ALL="C")
         try:
             r = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
                                text=True, env=env, timeout=5)
-            return time.mktime(time.strptime(r.stdout.strip(), "%a %b %d %H:%M:%S %Y"))
-        except (OSError, subprocess.SubprocessError, ValueError, OverflowError):
-            return None
+            tm = time.strptime(r.stdout.strip(), "%a %b %d %H:%M:%S %Y")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return ()
+        out: list[float] = []
+        for isdst in (1, 0):
+            try:
+                out.append(time.mktime(time.struct_time(tm[:8] + (isdst,))))
+            except (OverflowError, ValueError):
+                continue
+        return tuple(dict.fromkeys(out))
 
     def _still_running(self, pid: int, started: float) -> bool:
         """Whether `pid` is the process that started at `started` and has not ended. A pid used
         again by another process is not it."""
         if process_alive(pid) is not True:
             return False
-        at = self._started_at(pid)
-        return at is not None and abs(at - started) <= 2
+        return any(abs(at - started) <= 2 for at in self._started_at(pid))
 
     def _orphan(self, prev: dict | None) -> None:
         """Wait for, and at its timeout end, a CLI call the lock's last holder left running."""
