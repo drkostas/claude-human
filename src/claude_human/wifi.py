@@ -50,3 +50,32 @@ def known_networks(*, run=subprocess.run) -> list[dict] | None:
         return parse_known(r.stdout)
     except (plistlib.InvalidFileException, ValueError):
         return None
+
+
+def forget(ssid: str, *, interface: str = "en0", run=subprocess.run) -> bool:
+    """Remove one saved network, so the Mac no longer joins it by itself. True when networksetup
+    removed it (through `sudo -n`)."""
+    try:
+        r = run(["/usr/bin/sudo", "-n", "/usr/sbin/networksetup", "-removepreferredwirelessnetwork",
+                 interface, ssid], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return getattr(r, "returncode", 1) == 0
+
+
+def forget_open(*, interface: str = "en0", run=subprocess.run) -> dict:
+    """Remove every saved network anyone can join, then read the list again.
+
+    {"forgot": [ssid, ...], "failed": [ssid, ...], "left": the open networks still saved, or None
+    when the list could not be read}. Read the list again rather than trust the removals: the count
+    afterwards is the fact."""
+    nets = known_networks(run=run)
+    if nets is None:
+        return {"forgot": [], "failed": [], "left": None}
+    forgot, failed = [], []
+    for n in nets:
+        if n["open"]:
+            (forgot if forget(n["ssid"], interface=interface, run=run) else failed).append(n["ssid"])
+    after = known_networks(run=run)
+    return {"forgot": forgot, "failed": failed,
+            "left": None if after is None else sum(1 for n in after if n["open"])}

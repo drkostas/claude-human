@@ -26,3 +26,31 @@ def test_known_networks_reads_through_sudo_and_none_when_refused():
     class Refused:
         returncode, stdout = 1, b""
     assert wifi.known_networks(run=lambda *a, **k: Refused()) is None
+
+
+def test_forget_open_removes_each_open_network_and_reads_the_count_again():
+    seen, removed = [], set()
+
+    def run(argv, **k):
+        seen.append(argv)
+        class R:
+            returncode, stdout = 0, b""
+        if "export" in argv:
+            nets = {k_: v for k_, v in plistlib.loads(PLIST).items() if v["SSID"].decode() not in removed}
+            R.stdout = plistlib.dumps(nets)
+        elif "-removepreferredwirelessnetwork" in argv:
+            removed.add(argv[-1])
+            R.returncode = 0 if argv[-1] == "Cafe" else 1
+            if argv[-1] != "Cafe":
+                removed.discard(argv[-1])
+        return R()
+    out = wifi.forget_open(run=run)
+    assert out == {"forgot": ["Cafe"], "failed": ["Airport"], "left": 1}
+    assert all(a[:3] == ["/usr/bin/sudo", "-n", "/usr/sbin/networksetup"] for a in seen
+               if "-removepreferredwirelessnetwork" in a)
+
+
+def test_forget_open_with_no_readable_list_removes_nothing():
+    class Refused:
+        returncode, stdout = 1, b""
+    assert wifi.forget_open(run=lambda *a, **k: Refused()) == {"forgot": [], "failed": [], "left": None}
