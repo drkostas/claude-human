@@ -24,6 +24,8 @@ The pieces, each replaceable.
 - ``HandoffResolver`` orders the ways to reach the task for one touchpoint (``filter_chain``) and
   readies the chosen one. Plain steps are the floor.
 - ``Authorizer`` says whether an actor may ask. A refusal is recorded, then raised as ``Refused``.
+- ``by_hand(text)`` finds a sentence that tells the person to do something by hand (open a page,
+  sign in, tap a button), so a tool can refuse to send it and ask for a decision instead.
 
 ``claude_human.tasks.server`` serves the same engine over HTTP on 127.0.0.1 with a bearer token,
 and ``claude-human task ...`` drives it from a shell.
@@ -33,9 +35,10 @@ from .engine import (Allow, CommandVerifier, DefaultResolver, Refused, TaskEngin
 from .model import (FLOOR_KINDS, FLOOR_PREFERENCE, OUTCOMES, Authorizer, Handoff, HandoffResolver,
                     Task, TaskStore, Verifier, check_answer, entry_json, head, kind_of)
 from .sqlite import SqliteTaskStore
+from .wording import HAND_VERBS, by_hand
 
 __all__ = [
-    "Allow", "Authorizer", "CommandVerifier", "DefaultResolver", "FLOOR_KINDS", "FLOOR_PREFERENCE",
+    "Allow", "Authorizer", "HAND_VERBS", "by_hand", "CommandVerifier", "DefaultResolver", "FLOOR_KINDS", "FLOOR_PREFERENCE",
     "Handoff", "HandoffResolver", "OUTCOMES", "Refused", "SqliteTaskStore", "Task", "TaskEngine", "TaskStore",
     "Verifier", "check_answer", "decision", "entry_json", "filter_chain", "head", "kind_of",
 ]
