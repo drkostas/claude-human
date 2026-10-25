@@ -30,6 +30,8 @@ STATE = Path(os.environ.get("CLAUDE_HUMAN_STATE", "~/.local/state/claude-human")
 YABAI = "/opt/homebrew/bin/yabai"
 SEP = "\t"
 READY = '!/^(chrome|about|brave):/.test(location.href) && document.readyState==="complete"'
+#: where a script leaves its answer
+RESULT = "__claude_r"
 
 
 def osa(script: str, timeout: float = 30, *, env: Mapping[str, str] | None = None) -> tuple[int, str]:
@@ -423,7 +425,17 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
     "reused"}. The script may be async: it assigns its answer to window.__claude_r (a string); when it
     does not, the value of its last expression is the result. A window this opened is closed unless
     `keep_open`; one passed as `window` is never closed. Raises TimeoutError when the page or the
-    script does not answer in `timeout` seconds."""
+    script does not answer in `timeout` seconds.
+
+    `wait_for` is a condition on the page, checked BEFORE the script runs (the default waits for the
+    page to finish loading). The script's answer is waited for by itself. So a `wait_for` that names
+    window.__claude_r can never hold, since only the script sets it: that is refused with ValueError
+    rather than left to time out. Wait for something on the page instead, such as
+    `document.querySelector(".comments")`."""
+    if RESULT in (wait_for or ""):
+        raise ValueError(f"wait_for is checked before the script runs, and only the script sets "
+                         f"window.{RESULT}, so {wait_for!r} can never hold. Leave wait_for out (the "
+                         f"answer is waited for by itself) or wait for something on the page")
     owned, yid, reused = window is None, None, False
     if owned:
         mine = kept(key, state=state, app=app) if (keep_open and key) else None
@@ -523,6 +535,9 @@ def main(argv: list[str]) -> int:
         out = run(a[0], Path(a[1]).read_text(), wait_for=opt("--wait-for", READY),
                   timeout=float(opt("--timeout", 40)), keep_open=keep_open, window=opt("--window"),
                   key=key, app=opt("--app", APP))
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     except (TimeoutError, RuntimeError) as e:
         print(str(e), file=sys.stderr)
         return 1

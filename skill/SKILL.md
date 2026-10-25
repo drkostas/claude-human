@@ -169,6 +169,11 @@ The page opens in a new window of the person's own browser, which has their cook
 passwords, never in one of their windows. The script may be async and assigns its answer to
 `window.__claude_r` as a string.
 
+- `--wait-for` is a condition on the page checked before the script runs, not a wait for the
+  answer, which is waited for by itself. A `--wait-for` that names `window.__claude_r` is refused,
+  since only the script sets it. Wait for something on the page (`document.querySelector(".comments")`),
+  or leave it out.
+
 - A `--keep-open` run inside tmux reuses the window its tmux session kept last time while the browser
   still has it, so a flow of several steps keeps one window instead of leaving one per step.
 - The YABAI id is taken when the window is made. Move the window with it at once: windows a browser
