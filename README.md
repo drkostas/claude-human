@@ -309,6 +309,17 @@ exposed = [s for s in process.listening() or [] if s["address"] == "*" and s["po
 open_networks = [n["ssid"] for n in wifi.known_networks() or [] if n["open"]]
 ```
 
+## Whether a restart needs a person
+
+A Mac that an agent reaches remotely must come back from a crash or an update with nobody at it. Two settings decide that. With FileVault on, a restart stops at the pre-boot unlock screen, with no network, until a person types the disk password at the keyboard. Without automatic login, it stops at the login window, with the user's launch agents not started and the login keychain closed. Both settings take the person's password to change, so `unattended` only reads them: `filevault_on()` from `fdesetup status`, `autologin_user()` from the login window's settings (world-readable, no sudo), `password_stored()` as the presence of the file macOS keeps the automatic login password in, and `read()` with the verdict `unattended`, which is `None` while any part is unknown, never `False`. `claude-human unattended` prints the same dict, so a planned restart can wait until it says yes.
+
+```python
+from claude_human import unattended
+state = unattended.read()
+if state["unattended"] is not True:
+    print("a restart would wait for a person:", state["words"])
+```
+
 ## What macOS needs
 
 - Screen Recording for `sckshot.app` (fast capture), and for the process that lists windows (window titles and the fallback capture).
