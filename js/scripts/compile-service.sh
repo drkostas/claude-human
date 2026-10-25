@@ -3,7 +3,8 @@
 # as text, which shows what it says but not that it compiles, and a published version can never be
 # replaced. CI runs this on every pull request.
 #
-#   scripts/compile-service.sh            render the service with example options and compile it
+#   scripts/compile-service.sh            render the ntfy service and the notification relay with
+#                                         example options and compile both
 #   scripts/compile-service.sh FILE.kt    compile a service that a prebuild wrote
 #
 # Needs Java 17 or later, curl, unzip and node (with `npm ci` done here, for the plugin's own
@@ -68,18 +69,26 @@ else
     const o = p.resolveOptions({ name: "Example", scheme: "example", android: { package: "org.example.app" } },
                                { url: "https://ntfy.example.org/alerts", subTextTagPrefix: "area:" });
     process.stdout.write(p.renderKotlin(o));') > "$W/src/NtfyService.kt"
+  (cd "$HERE" && node -e '
+    const r = require("./plugin/withNotificationRelay.js");
+    const o = r.resolveOptions({ name: "Example", android: { package: "org.example.app" } },
+                               { url: "https://relay.example.org/messages", packages: ["com.example.chat"] }, {});
+    process.stdout.write(r.renderKotlin(o));') > "$W/src/NotificationRelayService.kt"
 fi
 # The service reads its topic from the app's BuildConfig, which only an app build generates.
 PKG=$(sed -n 's/^package \([A-Za-z0-9_.]*\).*/\1/p' "$W/src/NtfyService.kt" | head -1)
 # Every field the service reads (the topic URL and the access token) gets a stand-in value.
-FIELDS=$(grep -o 'BuildConfig\.[A-Z_][A-Z0-9_]*' "$W/src/NtfyService.kt" | cut -d. -f2 | sort -u)
+FIELDS=$(cat "$W"/src/*Service.kt | grep -o 'BuildConfig\.[A-Z_][A-Z0-9_]*' | cut -d. -f2 | sort -u)
 { printf 'package %s\nobject BuildConfig {\n' "$PKG"
   for f in $FIELDS; do printf '    const val %s = "https://ntfy.example.org/alerts"\n' "$f"; done
   printf '}\n'; } > "$W/src/BuildConfig.kt"
 unzip -q -o "$CORE" classes.jar -d "$W/core"
 CP="$ANDROID_JAR:$W/core/classes.jar:$ANNOTATION:$OKHTTP:$OKIO"
-"$KOTLINC" -nowarn -jvm-target 17 -cp "$CP" -d "$W/out" "$W/src/NtfyService.kt" "$W/src/BuildConfig.kt" 2>&1 \
+"$KOTLINC" -nowarn -jvm-target 17 -cp "$CP" -d "$W/out" "$W"/src/*Service.kt "$W/src/BuildConfig.kt" 2>&1 \
   | grep -v '^warning:' || true
 OUT="$W/out/$(echo "$PKG" | tr . /)"
-[ -f "$OUT/NtfyService.class" ] || { echo "not compiled"; exit 1; }
+for f in "$W"/src/*Service.kt; do
+  c=$(basename "$f" .kt)
+  [ -f "$OUT/$c.class" ] || { echo "not compiled: $c"; exit 1; }
+done
 echo "compiled: $(ls "$OUT" | tr '\n' ' ')"
