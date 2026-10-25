@@ -80,6 +80,25 @@ A message's click URL opens the app only when it starts with `linkPrefix`. A not
 - With `subTextTagPrefix` set (for example `"area:"`), the first tag that starts with it is shown, without the prefix, next to the app's name in the notification's header.
 - Android fixes a channel's sound when the channel is created. The person can still change each channel's sound in the app's notification settings.
 
+## Forwarding other apps' notifications
+
+A second config plugin, `@drkostas/expo-ntfy/notification-relay`, adds an Android notification listener that sends each new notification of the apps you name to an HTTPS endpoint as JSON. An assistant can then read messages from apps that offer no API, as they arrive, while the phone is locked and asleep.
+
+```json
+{
+  "expo": {
+    "plugins": [
+      ["@drkostas/expo-ntfy/notification-relay", { "packages": ["com.example.chat"] }]
+    ]
+  }
+}
+```
+
+- The endpoint comes from `EXPO_PUBLIC_NOTIFICATION_RELAY_URL` (or the `url` option) and must be https, never the build machine. A token from `EXPO_PUBLIC_NOTIFICATION_RELAY_TOKEN` (or `token`) is sent as `Authorization: Bearer <token>`.
+- Each payload has `app`, `key`, `posted_at`, `conversation`, `conversation_id`, `sender`, `text`, `is_group`, and `messages` (each `sender`, `text`, `at`) for a MessagingStyle notification.
+- Only the listed packages are forwarded, never the app's own notifications and never a group summary. Each notification is sent once. What the endpoint does not take waits in a file queue of at most `queueMax` payloads (200) and is sent again with a backoff. The service logs counts, never a notification's text.
+- Android asks the person to grant notification access once. Over adb it needs no taps, `adb shell cmd notification allow_listener <app package>/<package>.NotificationRelayService`.
+
 ## The glue
 
 ```ts
