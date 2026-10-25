@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-width", type=int, default=0, help="scale down to this width (0 keeps the size)")
 
     sub.add_parser("state", help="print whether the session is locked and whether a password panel is up")
+    sub.add_parser("unattended", help="print whether the Mac comes back to the desktop by itself after a restart: FileVault, automatic login, the stored password")
 
     u = sub.add_parser("unlock", help="type the password from stdin at the lock screen")
     u.add_argument("--attempts", type=int, default=2, choices=(1, 2), help="tries before giving up (default 2)")
@@ -390,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
         return 0 if prepare.succeeded(log) else 1
 
+    if cmd == "unattended":
+        from . import unattended  # noqa: PLC0415
+        print(json.dumps(unattended.read(), indent=2))
+        return 0
     if cmd in ("windows", "screenshot", "state"):
         from . import screenshot  # noqa: PLC0415 - needs Quartz
         if cmd == "windows":

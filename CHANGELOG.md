@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `unattended` and `claude-human unattended`: whether a Mac comes back to the desktop by itself after a restart. `filevault_on()` reads `fdesetup status`, `autologin_user()` the login window's settings and `password_stored()` the presence of the automatic login password file; `read()` gives all three with the verdict `unattended`, None while any part is unknown. A Mac that an agent reaches remotely needs FileVault off and automatic login set to come back from a crash with nobody at it, and both take the person's password to change, so this only reads them
 - `session_lock`: a dead holder's running CLI call is matched by either reading of its start time. `ps -o lstart` prints a local time, and in the hour the clocks repeat on the night they go back, `mktime` read it an hour off for a process started in the other half, so the call looked like another process and the next act did not wait for it
 - `process.listening(sudo=False)`: every listening TCP socket with its process and address, None when lsof cannot run (only the user's own processes without `sudo`). `wifi.known_networks()`: the Mac's saved Wi-Fi networks and how each is secured, with the ones anyone can join marked `open` (Open, OWE), read through `sudo -n`
 - `desktops.spaces()` reads a locked screen: yabai answers the all-desktops query with a cut-off list then, so the desktops are asked one display at a time (`query --spaces --display N`), which still answers in full. When that fails too, the first error is raised as before
