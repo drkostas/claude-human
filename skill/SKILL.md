@@ -110,6 +110,27 @@ claude-human android files --serial HOST:PORT --since <the time you asked, ISO 8
 - Exit 0 means a settled burst is there, 2 the wait ran out (it says what it saw), 1 the phone did not
   answer.
 
+## Testing a gesture on a phone yourself
+
+When a page or an app must be checked with a touch gesture (a pinch, two fingers), run it on the
+phone yourself and measure it. Never send the person a page to try. "Only their fingers can say how it
+feels" is rarely true: one step per gesture, the content staying in place, the browser's zoom and the
+frame times can all be read.
+
+```bash
+claude-human android browser --serial HOST:PORT --package com.android.chrome --open http://127.0.0.1:PORT/page.html
+claude-human android pinch --serial HOST:PORT --package com.android.chrome X Y --in
+claude-human android browser --serial HOST:PORT --package com.android.chrome --url http://127.0.0.1:PORT/ --eval "<js>"
+```
+
+- Serve the page from the computer and reach it with `adb reverse tcp:PORT tcp:PORT`, so it is
+  open on the phone's own localhost only, never on the network.
+- The pinch waits for the same checks as a tap and refuses on a locked phone. Never type a PIN or
+  unlock the phone for the person. Wait until they unlock it, and the pinch then waits until they have
+  not touched it for `--idle` seconds.
+- Read the result after each gesture with `--eval`, and record the screen with `adb shell
+  screenrecord` as evidence. Change the code and run it again until every reading passes.
+
 ## Typing at the lock screen and into password panels
 
 The lock screen and SecurityAgent panels take input only from hardware. Synthetic key events, synthetic clicks and Screen Sharing input are all dropped there. The Karabiner virtual keyboard is seen as a physical keyboard, so `vhid_type` can type where nothing else can.
