@@ -274,17 +274,29 @@ def tabs(app: str = APP, *, timeout: float = 30, env: Mapping[str, str] | None =
     return list_tabs(app, timeout=timeout, env=env)
 
 
-def close_tab(window: str, tab: str, app: str = APP, *, env: Mapping[str, str] | None = None) -> str:
+#: how many times close_tab reads the tabs back, and the pause between reads (the browser may list a
+#: tab it was just told to close for a moment, most often when it was the window's last one)
+CLOSE_READS, CLOSE_GAP = 4, 0.5
+
+
+def close_tab(window: str, tab: str, app: str = APP, *, env: Mapping[str, str] | None = None,
+              reads: int = CLOSE_READS, gap: float = CLOSE_GAP, sleep=time.sleep) -> str:
     """Close one tab by its id: "success" | "failure" | "unknown". Gone on a re-read is the only
-    success, and a re-read that could not be taken is unknown. There is no function here that
-    closes a window: a window goes away by itself when its last tab closes."""
+    success, and a re-read that could not be taken is unknown. The tabs are read back up to `reads`
+    times, `gap` seconds apart, before a tab still listed counts as a failure. There is no function
+    here that closes a window: a window goes away by itself when its last tab closes."""
     if not (str(window).isdigit() and str(tab).isdigit()):
         return "failure"
     osa(f'tell application "{app}" to close (tab id {tab} of window id {window})', 10, env=env)
-    after = tabs(app, env=env)
-    if after is None:
-        return "unknown"
-    return "failure" if any(t["tab"] == str(tab) for t in after) else "success"
+    for i in range(max(1, reads)):
+        if i:
+            sleep(gap)
+        after = tabs(app, env=env)
+        if after is None:
+            return "unknown"
+        if not any(t["tab"] == str(tab) for t in after):
+            return "success"
+    return "failure"
 
 
 def active_tab(window: str, app: str = APP, *, env: Mapping[str, str] | None = None) -> str | None:
