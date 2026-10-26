@@ -120,6 +120,19 @@ How it keeps a person to the window they were given.
 
 The station needs Screen Recording (for the picture and the window titles) and Accessibility (for the clicks) for the process that runs it.
 
+To press keys in one window yourself (to check a keyboard setting, or to answer a dialog an agent may
+answer), ask the running station rather than posting events, since it already holds the Accessibility
+grant.
+
+```bash
+claude-human key --window 1234 cmd+ctrl+left cmd+ctrl+right --json
+```
+
+It waits until nobody has used the keyboard, mouse or trackpad for `--idle` seconds (120 by default),
+brings the window forward with yabai when another one is in front, presses each combination in turn,
+stops at the first one the station refuses, and puts the window that was in front back. The token comes
+from `--token-file`, `$CLAUDE_HUMAN_STATION_TOKEN` or the station's own token file.
+
 ## A saved login, and a tap on a phone
 
 ```bash
