@@ -151,6 +151,27 @@ for what comes after it). It refuses with the reason when one does not hold. Aft
 view tree back with `uiautomator dump` and reports the focused window and the texts that appeared and
 went (`--json` for the whole report, `--out` for a screenshot).
 
+## A pinch on a phone, and reading the page it changed
+
+```bash
+claude-human android browser --serial 192.0.2.10:5555 --package com.android.chrome --open http://127.0.0.1:8000/page.html
+claude-human android pinch --serial 192.0.2.10:5555 --package com.android.chrome 540 1200 --in --slow
+claude-human android browser --serial 192.0.2.10:5555 --package com.android.chrome \
+    --url http://127.0.0.1:8000/page.html --eval "visualViewport.scale"
+```
+
+`adb shell input` has one finger, so it cannot pinch. `android pinch` writes two fingers as the touch
+screen's own multi-touch events (`/dev/input/event*`, which the adb shell user may usually write), so the
+gesture goes through Android's touch handling into the app as real fingers do. It waits for the same
+checks as `android tap`, refuses on a locked phone or a turned screen, and always lifts both fingers at
+the end, also when it is stopped half way. `--span` is the fingers' distance at the wide end in pixels,
+and `--slow` takes four times as long.
+
+`android browser` opens an address in a Chromium browser on the phone (`am start`), and runs a script in
+the tab that shows an address through the browser's debugging socket, forwarded over adb, then prints
+its value as JSON. It needs USB debugging on, as every adb command does. A test that pinches a page reads
+the result this way: the page's own state, where an element sits, the browser's zoom.
+
 ## New photos on a phone
 
 ```bash

@@ -82,7 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
                                    "point is still, then read the screen back "
                                    "(android tap --serial S --package P X Y [--json] [--out PNG]); or list, "
                                    "pull and lay out the new files in a phone folder, read only "
-                                   "(android files --serial S --since TIME [--pull DIR] [--sheet PNG])")
+                                   "(android files --serial S --since TIME [--pull DIR] [--sheet PNG]); "
+                                   "pinch with two fingers behind the same checks "
+                                   "(android pinch --serial S --package P X Y --in|--out [--slow]); or open "
+                                   "a page in the phone's Chromium browser and run a script in it "
+                                   "(android browser --serial S --package P [--open URL] [--url U --eval JS])")
 
     s = sub.add_parser("screenshot", help="capture the screen or one window with sckshot")
     s.add_argument("--out", required=True, help="output file (.png, or .jpg/.jpeg for JPEG)")

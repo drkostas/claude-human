@@ -24,6 +24,9 @@ rotation event turns auto-rotate back on). After the tap it reads the screen bac
 went. It can also save a screenshot.
 
     claude-human android tap --serial HOST:PORT --package com.example.app X Y [--json] [--out shot.png]
+
+Two fingers (a pinch) are `android pinch`, in android_touch, behind the same checks. Reading a page
+in the phone's Chromium browser is `android browser`, in android_browser.
 """
 from __future__ import annotations
 
@@ -309,6 +312,9 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["files"]:
         from claude_human import android_files   # noqa: PLC0415
         return android_files.main(argv[1:])
+    if argv[:1] == ["browser"]:
+        from claude_human import android_browser   # noqa: PLC0415
+        return android_browser.main(argv[1:])
     p = argparse.ArgumentParser(prog="claude-human android")
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tap", help="tap an app only once its window has focus, no banner or call is "
@@ -325,7 +331,34 @@ def main(argv: list[str]) -> int:
     t.add_argument("--out", help="save a screenshot here after the tap")
     t.add_argument("--json", action="store_true", help="print the whole report as JSON")
     t.add_argument("--adb", default=ADB)
+    g = sub.add_parser("pinch", help="pinch with two fingers around a point, behind the same checks as tap")
+    g.add_argument("--serial", required=True, help="the device, as adb names it (HOST:PORT or a serial)")
+    g.add_argument("--package", required=True, help="the app's package name")
+    g.add_argument("x", type=int)
+    g.add_argument("y", type=int)
+    way = g.add_mutually_exclusive_group(required=True)
+    way.add_argument("--in", dest="direction", action="store_const", const="in", help="fingers together")
+    way.add_argument("--out", dest="direction", action="store_const", const="out", help="fingers apart")
+    g.add_argument("--span", type=int, default=600, help="the fingers' distance at the wide end, in pixels")
+    g.add_argument("--steps", type=int, default=12, help="frames of movement, about 16 ms each")
+    g.add_argument("--slow", action="store_true", help="four times the frames")
+    g.add_argument("--idle", type=float, default=3.0, help="seconds without input before the pinch (0: do not wait)")
+    g.add_argument("--wait", type=float, default=10.0, help="seconds to wait for every check before refusing")
+    g.add_argument("--no-still", action="store_true", help="do not wait for the screen around the point to keep still")
+    g.add_argument("--settle", type=float, default=1.0, help="seconds after the pinch before reading the focus")
+    g.add_argument("--json", action="store_true", help="print the whole report as JSON")
+    g.add_argument("--adb", default=ADB)
     a = p.parse_args(argv)
+    if a.cmd == "pinch":
+        from claude_human import android_touch   # noqa: PLC0415
+        report = android_touch.checked_pinch(a.serial, a.package, a.x, a.y, a.direction, span=a.span,
+                                             steps=a.steps, slow=a.slow, idle=a.idle, still=not a.no_still,
+                                             wait=a.wait, settle=a.settle, adb=a.adb)
+        if a.json:
+            print(json.dumps(report, ensure_ascii=False, indent=1))
+        else:
+            print(android_touch.summary(report) if report["outcome"] == "success" else f"REFUSED: {report['why']}")
+        return 0 if report["outcome"] == "success" else 2
     report = checked_tap(a.serial, a.package, a.x, a.y, idle=a.idle, still=not a.no_still,
                          read=not a.no_read, wait=a.wait, settle=a.settle, out=a.out, adb=a.adb)
     if a.json:

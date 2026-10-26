@@ -10,7 +10,8 @@ such a sentence so a tool can refuse the text before it is sent, and say how to 
     by_hand("Which account should I use?")               # None
 
 A sentence counts when it starts with one of the verbs (after "please", "then", "now", "first", a
-list number or a bullet), or when the verb follows "you need to", "you should", "you must", "you
+list number or a bullet, and after a place set off by a comma, as in "In the app on your phone, open
+the page"), or when the verb follows "you need to", "you should", "you must", "you
 have to", "can you", "could you" or "please". Text in quotation marks is a quote, never an ask, so a
 message that reports a refusal word for word passes. A sentence where someone else acts ("Should I
 open a pull request?") passes too.
@@ -21,7 +22,11 @@ import re
 
 #: what a person is asked to do by hand, as the words of an instruction
 HAND_VERBS = ("open", "sign in", "sign into", "log in", "log into", "install", "plug", "unplug", "go to",
-              "click", "press", "tap", "type", "enter your", "paste", "restart", "reboot", "unlock", "run")
+              "click", "press", "tap", "type", "enter your", "paste", "restart", "reboot", "unlock", "run",
+              # gestures on a touch screen
+              "pinch", "spread your fingers", "swipe", "scroll", "drag", "long-press", "long press")
+#: a place set off by a comma before an instruction ("In the app on your phone, open ...")
+_PLACE = r"(?:(?:in|on|at|from|inside|within)\s+[^,.!?\n]{1,80},\s*)?"
 #: words that may come before the verb at the start of an instruction
 _LEAD = r"(?:(?:please|then|now|first|next|and|also|just)\s+|(?:\d+[.)]|[-*•])\s+)*"
 #: words that turn the verb that follows into an ask of the reader
@@ -32,7 +37,7 @@ _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 
 def _pattern(verbs: tuple[str, ...]) -> re.Pattern:
     words = "|".join(sorted((re.escape(v).replace(r"\ ", r"\s+") for v in verbs), key=len, reverse=True))
-    return re.compile(rf"^\s*{_LEAD}(?:{words})\b|\b{_ASKING}(?:{words})\b", re.I)
+    return re.compile(rf"^\s*{_PLACE}{_LEAD}(?:{words})\b|\b{_ASKING}(?:{words})\b", re.I)
 
 
 def by_hand(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> str | None:
