@@ -19,7 +19,8 @@ WhatsApp on their own phone, which asks for their fingerprint or PIN.
   8-character code, which `STATE` reads.
 - `CHATS` lists the chat list's rows, `open_chat_js(title)` opens the chat with that exact title (WhatsApp
   opens a chat only on a click, so this presses that one row and nothing else), and `MESSAGES` reads the
-  messages the open chat has loaded. `SCROLL_UP` asks for older ones.
+  messages the open chat has loaded. `SCROLL_UP` asks for older ones. `CLOSE_CHAT` closes the open chat
+  again, so the messages that arrive later are not shown in it.
 - `parse_messages` turns them into rows: WhatsApp's own message id, the chat's id, whether the account
   sent it, the sender, the text and the time. The time comes from the line WhatsApp puts before each
   message that can be copied ("[21:03, 25/10/2026] Alice: "), whose order of day and month follows the
@@ -168,6 +169,16 @@ DAY_FIRST = r"""(function(){try{var p=new Intl.DateTimeFormat(undefined,{day:'nu
 .formatToParts(new Date(2026,9,5));var order=p.filter(function(x){return x.type==='day'||x.type==='month'||x.type==='year';})
 .map(function(x){return x.type;});if(order[0]==='year')return JSON.stringify(null);
 return JSON.stringify(order.indexOf('day')<order.indexOf('month'));}catch(e){return JSON.stringify(null);}})()"""
+
+#: close the open chat, as JSON: {"closed": bool, "pressed": bool}. "closed" is true when no chat was
+#: open. Otherwise it presses Escape, which closes the open chat in WhatsApp Web, and reloads the page
+#: when a chat still shows a second and a half later, since a page that has just loaded has none open.
+#: A chat left open shows each message that arrives, and an open chat is how WhatsApp marks messages read
+CLOSE_CHAT = r"""(function(){if(!document.querySelector('#main'))return JSON.stringify({closed:true,pressed:false});
+var t=document.activeElement||document.body;['keydown','keyup'].forEach(function(k){
+t.dispatchEvent(new KeyboardEvent(k,{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));});
+setTimeout(function(){if(document.querySelector('#main'))location.reload();},1500);
+return JSON.stringify({closed:false,pressed:true});})()"""
 
 #: scroll the open chat to its top, so WhatsApp loads older messages, as JSON: {"scrolled": bool}
 SCROLL_UP = r"""(function(){var main=document.querySelector('#main');if(!main)return JSON.stringify({scrolled:false});

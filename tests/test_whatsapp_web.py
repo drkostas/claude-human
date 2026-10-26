@@ -99,7 +99,7 @@ def test_the_scripts_carry_their_values_as_json_and_refuse_a_number_that_is_not_
         with pytest.raises(ValueError):
             wa.fill_number_js(bad)
     for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP,
-                   wa.DAY_FIRST, wa.open_chat_js("A"), wa.fill_number_js("+15550000000")):
+                   wa.DAY_FIRST, wa.CLOSE_CHAT, wa.open_chat_js("A"), wa.fill_number_js("+15550000000")):
         assert script.startswith("(function(){") and script.rstrip().endswith("})()"), \
             "each is one expression, so it runs wherever an expression's value can be read back"
 
@@ -108,3 +108,14 @@ def test_nothing_here_types_a_code_or_sends():
     for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.USE_HERE, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP):
         low = script.lower()
         assert "send" not in low and "keydown" not in low and "keypress" not in low
+
+
+def test_closing_the_open_chat_presses_only_escape_and_reloads_when_a_chat_stays_open():
+    js = wa.CLOSE_CHAT
+    assert js.index("if(!document.querySelector('#main'))") < js.index("Escape"), \
+        "with no chat open it presses nothing"
+    assert js.count("new KeyboardEvent(") == 1 and "key:'Escape'" in js and "keyCode:27" in js, \
+        "one key, Escape, sent down and up"
+    assert "setTimeout(" in js and "location.reload()" in js, "a chat still open is closed by a reload"
+    low = js.lower()
+    assert "send" not in low and "click" not in low and "keypress" not in low
