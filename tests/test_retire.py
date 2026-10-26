@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from claude_human import retire
 
@@ -331,3 +332,46 @@ def test_a_stand_in_launchctl_on_disk(tmp_path):
     out = retire.undo(records, host)
     assert outcomes(out) == {"agent_disabled": "success", "agent_unloaded": "success"}
     assert json.loads(state.read_text()) == {"disabled": {f"gui/{UID}": []}, "loaded": [f"gui/{UID}/{AGENT}"]}
+
+
+def test_a_root_file_is_held_and_put_back_through_sudo_mv(tmp_path):
+    plist = tmp_path / "LaunchDaemons" / "org.example.helper.plist"
+    plist.parent.mkdir()
+    plist.write_text("<plist/>")
+    hold, seen = tmp_path / "held", []
+
+    def run(argv):
+        seen.append(list(argv))
+        if argv[:3] == ["/usr/bin/sudo", "-n", "/bin/mv"]:
+            os.rename(argv[3], argv[4])
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 1, "", "")
+    host = retire.Host(run=run, uid=UID)
+    step = retire.hold_app("helper_held", plist, hold, "example", root=True)
+    rec = retire.retire([step], host, NOW)[0]
+    assert rec["outcome"] == "success" and not plist.exists() and Path(rec["held"]).exists()
+    assert rec["undo"]["root"] is True and seen[0][:3] == ["/usr/bin/sudo", "-n", "/bin/mv"]
+    out = retire.undo([rec], host)
+    assert out[0]["outcome"] == "success" and plist.exists() and seen[-1][3] == rec["held"]
+
+
+def test_a_root_hold_that_sudo_refuses_moves_nothing(tmp_path):
+    f = tmp_path / "PrivilegedHelperTools" / "org.example.helper"
+    f.parent.mkdir()
+    f.write_text("x")
+    host = retire.Host(run=lambda argv: subprocess.CompletedProcess(argv, 1, "", "sudo: a password is required"),
+                       uid=UID)
+    rec = retire.retire([retire.hold_app("helper_held", f, tmp_path / "held", "example", root=True)],
+                        host, NOW)[0]
+    assert rec["outcome"] == "failure" and "password is required" in rec["why"] and f.exists()
+    assert rec["undo"] is None
+
+
+def test_a_plain_file_is_held_like_an_app(tmp_path):
+    plist = tmp_path / "LaunchAgents" / "org.example.agent.plist"
+    plist.parent.mkdir()
+    plist.write_text("<plist/>")
+    rec = retire.retire([retire.hold_app("agent_plist_held", plist, tmp_path / "held", "example")],
+                        FakeMac().host(), NOW)[0]
+    assert rec["outcome"] == "success" and not plist.exists() and "root" not in rec["undo"]
+    assert retire.undo([rec], FakeMac().host())[0]["outcome"] == "success" and plist.exists()

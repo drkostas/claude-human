@@ -13,7 +13,10 @@ them and undo the retire later, even from another process.
   grace period, read back from the process list.
 - `hold_app(name, app, hold, label)`: the app renamed into a dated folder on the same disk as
   `<Name>.app.held`, so neither Finder nor a launcher can start it. It is never copied and never
-  deleted. A note beside it says until when it is meant to be kept.
+  deleted. A note beside it says until when it is meant to be kept. Any other file or folder an app
+  left (a launch agent's plist, a support folder) is held the same way, and one that root owns (a
+  daemon's plist in /Library/LaunchDaemons, a privileged helper tool) with `root=True`, through
+  `sudo -n /bin/mv`.
 
 `retire(steps, host)` runs every step in order, each in its own `try`, so one failed step never
 stops the rest. An outcome is `success`, `already` (nothing to do) or `failure`.
@@ -288,11 +291,13 @@ def quit_processes(name: str, find: Callable[[Host], list[dict] | None], *,
 
 
 def hold_app(name: str, app: str | Path, hold: str | Path, label: str, *,
-             hold_days: int = HOLD_DAYS, note_file: str | None = "HELD.txt") -> Step:
+             hold_days: int = HOLD_DAYS, note_file: str | None = "HELD.txt", root: bool = False) -> Step:
     """Rename `app` into `<hold>/<label>-<local date>/<Name>.app.held`. A rename on the same disk,
     never a copy and a delete, so the app is whole until the undo renames it back. A hold folder on
     another disk is refused. `note_file` (None for none) is written beside it and says until when
-    the copy is meant to be kept. An app that is gone while a held copy exists is `already`."""
+    the copy is meant to be kept. An app that is gone while a held copy exists is `already`.
+    `app` may be any file or folder. With `root` the rename (and its undo) goes through
+    `sudo -n /bin/mv`, for a path only root may move; the moved file keeps its owner."""
     app, hold = Path(app), Path(hold)
 
     def do(host: Host, now: datetime) -> dict:
@@ -316,11 +321,17 @@ def hold_app(name: str, app: str | Path, hold: str | Path, label: str, *,
                 f"{app.name}, held aside on {day} and meant to be kept until "
                 f"{until.astimezone().date().isoformat()}. The undo of the retire renames it back to "
                 f"{app}.\n")
-        os.rename(app, place)
+        undo = {"move_back": str(place), "to": str(app), **({"root": True} if root else {})}
+        if root:
+            r = host.as_root(["/bin/mv", str(app), str(place)])
+            if r.returncode != 0:
+                return {"outcome": FAILURE, "why": f"sudo mv refused: {(r.stderr or r.stdout).strip()[:160]}",
+                        "undo": None}
+        else:
+            os.rename(app, place)
         ok = place.exists() and not app.exists()
         return {"outcome": SUCCESS if ok else FAILURE, "held": str(place),
-                "held_until": until.isoformat(),
-                "undo": {"move_back": str(place), "to": str(app)}}
+                "held_until": until.isoformat(), "undo": undo}
 
     def state(_host: Host):
         return {"app_present": app.exists(), "held": [str(p) for p in held_copies(hold, label, app.name)]}
@@ -399,7 +410,12 @@ def _undo_one(u: dict, host: Host) -> dict:
             return {"outcome": FAILURE, "why": f"{dst} is there already"}
         if not src.exists():
             return {"outcome": FAILURE, "why": f"{src} is not there"}
-        os.rename(src, dst)
+        if u.get("root"):
+            r = host.as_root(["/bin/mv", str(src), str(dst)])
+            if r.returncode != 0:
+                return {"outcome": FAILURE, "why": f"sudo mv refused: {(r.stderr or r.stdout).strip()[:160]}"}
+        else:
+            os.rename(src, dst)
         return {"outcome": SUCCESS if dst.exists() else FAILURE}
     if "enable" in u:
         domain, label = u["enable"].rsplit("/", 1)
