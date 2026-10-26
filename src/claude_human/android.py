@@ -306,6 +306,9 @@ def tap(serial: str, package: str, x: int, y: int, *, out: str | None = None, wa
 
 def main(argv: list[str]) -> int:
     import argparse   # noqa: PLC0415
+    if argv[:1] == ["files"]:
+        from claude_human import android_files   # noqa: PLC0415
+        return android_files.main(argv[1:])
     p = argparse.ArgumentParser(prog="claude-human android")
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tap", help="tap an app only once its window has focus, no banner or call is "
