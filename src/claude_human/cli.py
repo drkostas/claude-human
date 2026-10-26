@@ -12,6 +12,7 @@
     claude-human consent [list [--out PNG] | allow | deny]
     claude-human skill [--dir DIR]
     claude-human station [--port N] [--app NAME] [--token-file FILE] [--fps N]
+    claude-human key --window ID COMBO... [--idle S] [--wait S] [--no-bring] [--no-restore] [--json]
     claude-human prepare [--phase place|input|all] APP STEP...
     claude-human notify [--url URL] [--title T] [--priority P] [--tag T] [--link URL] [--file F] MESSAGE
     claude-human task open CAPABILITY SUBJECT --reason R [--steps S] [--handoff KIND=TARGET] [-- VERIFY ARGS...]
@@ -72,6 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("brave", help="run JavaScript on a page in the person's signed-in browser "
                                  "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...), "
                                  "or whether it has a saved login (brave has-login SITE)")
+
+    sub.add_parser("key", help="press key combinations in one window through the station, once the "
+                               "Mac has been idle (key --window ID COMBO... [--idle S] [--json])")
 
     sub.add_parser("android", help="tap an Android app over adb only once its window has focus, no "
                                    "banner or call shows, the phone is idle and the screen around the "
@@ -336,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["android"]:
         from claude_human import android   # noqa: PLC0415
         return android.main(argv[1:])
+    if argv[:1] == ["key"]:
+        from claude_human import keys   # noqa: PLC0415
+        return keys.main(argv[1:])
     if argv[:1] == ["brave"]:
         # its own arguments, passed through as brave.main reads them
         from claude_human import brave   # noqa: PLC0415

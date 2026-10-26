@@ -235,6 +235,7 @@ make_server(TaskAuth(), port=8789).serve_forever()
 - While the Mac is locked, the picture is withheld and every tap is refused with `locked`. While a system dialog holds focus, taps are refused with `blocked`. Both are shown on the page. Ask the person, or follow the lock screen section above with their approval.
 - The station needs Screen Recording (picture and titles) and Accessibility (clicks) for the process that runs it. Check Accessibility with `/health`, whose `trusted` field is the answer from macOS. A test click proves nothing, because a click lands at a point and a window behind another never rises.
 - Test the station with a pinned grant for a harmless app and with fake input before you trust it with a real one. The package tests run the server on a free port with a fake screen and a fake input sink.
+- To press keys in a window yourself, use `claude-human key --window ID COMBO...` (or `claude_human.keys.press`), never a synthetic key from your own process, which has no Accessibility grant. It waits for an idle Mac (`--idle`, 120 s by default) so no key of the person's lands in a window it moved, brings the window forward, stops at the first key the station refuses, and puts the front window back. The station's own key events count as input, so only the first press waits.
 
 ## A GUI task from start to end
 
