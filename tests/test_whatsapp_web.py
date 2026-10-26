@@ -20,6 +20,15 @@ def test_the_state_is_read_and_a_code_is_shown_in_two_halves():
         assert wa.parse_state(bad)["state"] == "unknown"
 
 
+def test_whatsapp_open_in_another_window_is_its_own_state_and_use_here_takes_it():
+    assert wa.parse_state('{"state":"elsewhere","code":null,"by_number":false,"qr":false}')["state"] == "elsewhere"
+    body = wa.STATE[wa.STATE.index("if(chatList())"):]
+    assert body.index("if(chatList())") < body.index("byWords(['Use here'])") < body.index("linkCode()"), \
+        "the chat list first, then the page another window took over, then the link screens"
+    assert "byWords(['Use here'])" in wa.USE_HERE and ".click()" in wa.USE_HERE
+    assert wa.USE_HERE.startswith("(function(){") and wa.USE_HERE.rstrip().endswith("})()")
+
+
 def test_the_line_before_a_message_gives_its_time_and_sender():
     assert wa.parse_prefix("[21:03, 25/10/2026] Alice Example: ") == (dt.datetime(2026, 10, 25, 21, 3), "Alice Example")
     assert wa.parse_prefix("[9:03 PM, 10/25/2026] Bob: ") == (dt.datetime(2026, 10, 25, 21, 3), "Bob")
@@ -96,6 +105,6 @@ def test_the_scripts_carry_their_values_as_json_and_refuse_a_number_that_is_not_
 
 
 def test_nothing_here_types_a_code_or_sends():
-    for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP):
+    for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.USE_HERE, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP):
         low = script.lower()
         assert "send" not in low and "keydown" not in low and "keypress" not in low

@@ -8,8 +8,12 @@ types a login code: linking with a phone number puts a code on the page, and the
 WhatsApp on their own phone, which asks for their fingerprint or PIN.
 
 - `STATE` says what the page shows: the chat list (`signed_in`), the QR code (`signed_out`), the form
-  that takes the phone number (`number`), a link code (`code`, with the code), or nothing yet
-  (`loading`). Signed out is also how an ended link shows.
+  that takes the phone number (`number`), a link code (`code`, with the code), WhatsApp open in
+  another window of the same browser (`elsewhere`), or nothing yet (`loading`). Signed out is also how
+  an ended link shows.
+- `USE_HERE` presses "Use here" when the page is `elsewhere`, which takes the session from the other
+  window. WhatsApp Web runs in one window of a browser at a time, and shows that page in every other
+  one; it shows it only while the browser is linked.
 - `LINK_BY_NUMBER` presses "Log in with phone number" (older pages say "Link with phone number"), and
   `fill_number_js(number)` puts the number in the form and presses Next. The page then shows an
   8-character code, which `STATE` reads.
@@ -59,12 +63,13 @@ if(near.indexOf('code')>=0||document.body.innerText.toLowerCase().indexOf('enter
 return null;}
 """
 
-#: what the page shows now, as JSON: {"state": "signed_in"|"code"|"number"|"signed_out"|"loading", "code",
+#: what the page shows now, as JSON: {"state": "signed_in"|"code"|"number"|"signed_out"|"elsewhere"|"loading", "code",
 #: "by_number", "qr"}; "number" is the form that takes the phone number, and "qr" says the QR code has
 #: loaded. Press "Log in with phone number" only after it has: pressed while the QR still loads, the
 #: page stayed as it was (measured on the live page, 2026-10-25, where the QR took 13 seconds)
 STATE = "(function(){" + _HELPERS + r"""
 if(chatList())return JSON.stringify({state:'signed_in',code:null,by_number:false,qr:false});
+if(byWords(['Use here']))return JSON.stringify({state:'elsewhere',code:null,by_number:false,qr:false});
 var code=linkCode();if(code)return JSON.stringify({state:'code',code:code,by_number:true,qr:false});
 if(phoneInput())return JSON.stringify({state:'number',code:null,by_number:true,qr:false});
 var link=byWords(['Log in with phone number','Link with phone number']);
@@ -76,6 +81,14 @@ return JSON.stringify({state:'loading',code:null,by_number:false,qr:false});
 #: press "Log in with phone number" on the signed-out page, as JSON: {"pressed": bool}
 LINK_BY_NUMBER = "(function(){" + _HELPERS + r"""
 var e=byWords(['Log in with phone number','Link with phone number']);if(!e)return JSON.stringify({pressed:false});
+e.click();return JSON.stringify({pressed:true});
+})()"""
+
+#: press "Use here" when WhatsApp is open in another window of this browser, as JSON: {"pressed": bool}.
+#: The page said "WhatsApp is open in another window. Click "Use here" to use WhatsApp in this window"
+#: (measured on the live page, 2026-10-26), and the chat list showed 26 seconds after the press
+USE_HERE = "(function(){" + _HELPERS + r"""
+var e=byWords(['Use here']);if(!e)return JSON.stringify({pressed:false});
 e.click();return JSON.stringify({pressed:true});
 })()"""
 
@@ -182,7 +195,8 @@ def _load(raw: str | None):
 def parse_state(raw: str | None) -> dict:
     """`STATE`'s answer as a dict; {"state": "unknown"} for an answer that is not one."""
     got = _load(raw)
-    if not isinstance(got, dict) or got.get("state") not in ("signed_in", "code", "number", "signed_out", "loading"):
+    if not isinstance(got, dict) or got.get("state") not in ("signed_in", "code", "number", "signed_out",
+                                                              "elsewhere", "loading"):
         return {"state": "unknown", "code": None, "by_number": False, "qr": False}
     code = got.get("code")
     if isinstance(code, str) and len(code) == 8:
