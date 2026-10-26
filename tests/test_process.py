@@ -71,3 +71,23 @@ def test_listening_none_when_it_cannot_tell_and_empty_when_nothing():
         returncode, stdout = 0, ""
     process.listening(sudo=True, run=lambda argv, **k: seen.append(argv) or R())
     assert seen[0][:2] == ["/usr/bin/sudo", "-n"]
+
+
+def test_environment_of_reads_named_variables_from_ps():
+    class R:
+        stdout = "/bin/bash /tmp/job.sh --flag=yes TERM=xterm TMUX_PANE=%7 TMUX=/tmp/tmux-1/default,1,7 HOME=/Users/u\n"
+    got = process.environment_of(4242, ["TMUX_PANE", "TMUX", "MISSING"], run=lambda *a, **k: R())
+    assert got == {"TMUX_PANE": "%7", "TMUX": "/tmp/tmux-1/default,1,7"}
+
+
+def test_environment_of_ignores_arguments_and_takes_the_last_value():
+    class R:
+        stdout = "python3 -m thing --x=TMUX_PANE=%1 TMUX_PANE=%2 TMUX_PANE=%3\n"
+    assert process.environment_of(1, ["TMUX_PANE"], run=lambda *a, **k: R()) == {"TMUX_PANE": "%3"}
+
+
+def test_environment_of_is_empty_when_ps_cannot_read_it():
+    def boom(*a, **k):
+        raise OSError("no ps")
+    assert process.environment_of(1, ["TMUX_PANE"], run=boom) == {}
+    assert process.environment_of(1, [], run=lambda *a, **k: None) == {}

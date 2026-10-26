@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import re
 import subprocess
 
 
@@ -110,6 +111,32 @@ class _RusageInfoV2(ctypes.Structure):
 
 
 _libproc = None
+
+
+def environment_of(pid: int, names, *, run=subprocess.run) -> dict[str, str]:
+    """The values of the environment variables `names` in process `pid`'s own environment, as
+    one `ps -E` lists them, for the ones it has; {} when the process cannot be read.
+
+    macOS has no /proc, so a process's environment is read from `ps -Eww`, which prints it after
+    the command line. The variables are picked out by name, so a command argument that happens to
+    hold an equals sign is not mistaken for one, and the last value wins when a name repeats.
+    What it is for: a process started in a new session (detached) keeps the environment of the
+    terminal that started it, so the pane or window it came from can still be told."""
+    wanted = [str(n) for n in names if str(n)]
+    if not wanted or pid is None:
+        return {}
+    try:
+        r = run(["/bin/ps", "-Eww", "-o", "command=", "-p", str(int(pid))], capture_output=True,
+                text=True, timeout=5)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    text = getattr(r, "stdout", "") or ""
+    out: dict[str, str] = {}
+    for name in wanted:
+        hits = re.findall(r"(?:^|\s)" + re.escape(name) + r"=(\S*)", text)
+        if hits:
+            out[name] = hits[-1]
+    return out
 
 
 def footprint_gb(pid: int) -> float | None:
