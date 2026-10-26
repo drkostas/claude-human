@@ -91,6 +91,25 @@ shot = screenshot.frame(wid, max_width=1100)   # (jpeg, width, height), or None
 - macOS 15 and later ask again, every month, whether an app that records the screen without the system picker may keep doing so ("... is requesting to bypass the system private window picker", answered with "Allow For One Month"). The dialog comes up the first time the app captures after the month runs out, so an app that captures only for a remote viewer brings it up when nobody is at the Mac, and from then on every remote click is refused. `capture_approvals()` reads when macOS last asked each app and when it asks again, and `capture_approval_of(approvals, app)` finds one app by bundle id or bundle path. The station's refusal carries the dialog's app as `blocker`, and `QuartzInput(blocked_detail=...)` takes a function of that name, so a caller can say which question is waiting.
 - Read the image you captured. A file of the right size can still be black or white.
 
+## New photos on a phone
+
+When a person is about to take photos for you (a receipt, a label, a part), do not poll the camera
+folder yourself and do not act on the first new file. Ask the phone once the burst is done.
+
+```bash
+claude-human android files --serial HOST:PORT --since <the time you asked, ISO 8601 with its zone> \
+    --wait 3600 --pull <folder> --sheet <folder>/sheet.jpg
+```
+
+- `--since` is the time you asked, not the time you start waiting, so photos taken before the
+  command runs still count. A time without a zone is refused.
+- A burst counts as done once its newest file is `--quiet` seconds old (90) on the phone's own clock.
+  Other photos taken after `--since` are listed too, so read the contact sheet and pick the right
+  file yourself; never assume the last one is it.
+- It only reads, with `find`, `stat` and `adb pull`. Never add a tap or a delete after it.
+- Exit 0 means a settled burst is there, 2 the wait ran out (it says what it saw), 1 the phone did not
+  answer.
+
 ## Typing at the lock screen and into password panels
 
 The lock screen and SecurityAgent panels take input only from hardware. Synthetic key events, synthetic clicks and Screen Sharing input are all dropped there. The Karabiner virtual keyboard is seen as a physical keyboard, so `vhid_type` can type where nothing else can.

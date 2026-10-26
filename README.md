@@ -151,6 +151,26 @@ for what comes after it). It refuses with the reason when one does not hold. Aft
 view tree back with `uiautomator dump` and reports the focused window and the texts that appeared and
 went (`--json` for the whole report, `--out` for a screenshot).
 
+## New photos on a phone
+
+```bash
+claude-human android files --serial 192.0.2.10:5555 --since 2026-01-31T15:00:00+02:00 \
+    --wait 3600 --pull ./photos --sheet ./photos/sheet.jpg
+```
+
+`android files` waits until the person has taken their photos and gives them to you. It lists the
+files in a phone folder (`/sdcard/DCIM/Camera` by default, `--folder` for another) changed after
+`--since`, leaving out hidden files (a camera writes `.pending-*` while it saves) and anything that is
+not an image (`--all` keeps every file). A camera writes a burst over seconds or minutes, so it waits
+until the newest file is `--quiet` seconds old (90 by default) by the phone's own clock, listing every
+`--every` seconds for up to `--wait` seconds (0 lists once). `--pull` copies the files into a folder,
+and `--sheet` arranges them on one picture with each file's name under it (it needs Pillow,
+`pip install 'claude-human[sheet]'`), so an agent can pick the right photo from one look. It only
+reads the phone (`find`, `stat` and `adb pull`). Nothing is tapped, moved or deleted. Exit 0 once a
+settled burst is there, 2 when the wait ran out, 1 when the phone did not answer. In Python,
+`android_files.newer` and `settled` answer the same question in one listing with no state kept
+between calls, `wait_new` waits, `pull` copies and `contact_sheet` makes the picture.
+
 ## Typing at the lock screen and into password panels
 
 The lock screen and SecurityAgent panels accept input only from real hardware. Synthetic key events, synthetic clicks and Screen Sharing input are all dropped there. Karabiner's DriverKit virtual HID keyboard is seen by macOS as a physical keyboard, so `vhid_type` can type where nothing else can.

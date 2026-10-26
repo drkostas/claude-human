@@ -22,6 +22,7 @@ claude-human = "claude_human.cli:main"
 
 [project.optional-dependencies]
 macos = ["pyobjc-framework-Quartz>=10; sys_platform == 'darwin'"]
+sheet = ["Pillow>=10"]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
