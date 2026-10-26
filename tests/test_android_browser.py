@@ -104,7 +104,8 @@ class FakeBrowser:
                     op, data = ab._read_frame(self.connection)
                     msg = json.loads(data)
                     outer.asked.append(msg)
-                    self.connection.sendall(_server_frame(json.dumps({"id": msg["id"], "result": outer.answer})))
+                    answer = {} if msg["method"] == "Input.synthesizePinchGesture" else outer.answer
+                    self.connection.sendall(_server_frame(json.dumps({"id": msg["id"], "result": answer})))
                     return
                 self.send_error(404)
 
@@ -186,5 +187,20 @@ def test_the_command_line_prints_the_value_as_json(capsys):
         rc = ab.main(["--serial", "dev", "--package", "com.android.chrome", "--eval", "[1,'two']"],
                      run=AdbFake(b.port))
         assert rc == 0 and json.loads(capsys.readouterr().out) == [1, "two"]
+    finally:
+        b.close()
+
+
+def test_pinch_asks_the_browser_for_its_own_two_finger_gesture():
+    b = FakeBrowser({"result": {"value": 1}})
+    try:
+        ab.pinch(b.port, "http://127.0.0.1:1/page", 200, 340, 0.4, speed=600)
+        sent = b.asked[-1]
+        assert sent["method"] == "Input.synthesizePinchGesture"
+        assert sent["params"] == {"x": 200, "y": 340, "scaleFactor": 0.4, "relativeSpeed": 600, "gestureSourceType": "touch"}
+        with pytest.raises(ValueError):
+            ab.pinch(b.port, "", 1, 1, 0)
+        with pytest.raises(ab.BrowserError, match="no tab"):
+            ab.pinch(b.port, "https://elsewhere", 1, 1, 2.0)
     finally:
         b.close()

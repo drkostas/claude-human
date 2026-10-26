@@ -125,6 +125,10 @@ claude-human android browser --serial HOST:PORT --package com.android.chrome --u
 
 - Serve the page from the computer and reach it with `adb reverse tcp:PORT tcp:PORT`, so it is
   open on the phone's own localhost only, never on the network.
+- On many phones the security policy refuses the shell a write to the touch screen, though the
+  shell is in the `input` group. `android pinch` then refuses at once. For a page in the phone's
+  browser, `android_browser.pinch` makes the gesture through the browser instead, and the page and
+  the browser's zoom both see two fingers. Keep the tap's checks before it (`android.why_not`).
 - The pinch waits for the same checks as a tap and refuses on a locked phone. Never type a PIN or
   unlock the phone for the person. Wait until they unlock it, and the pinch then waits until they have
   not touched it for `--idle` seconds.

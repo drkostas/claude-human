@@ -8,6 +8,8 @@ the browser's own zoom. A test that acts on the phone (a tap, a pinch) reads its
 
 `open_url` opens an address in the browser in front, with `am start` (never `monkey`, which also
 injects a random event). `evaluate` runs a script in the tab showing an address and returns its value.
+`pinch` makes a two-finger pinch in that tab with the browser's own synthetic gesture, which works on
+a phone whose security policy refuses the shell a write to the touch screen (see android_touch).
 The package has no dependencies, so the websocket the protocol needs is a small client of its own.
 
     claude-human android browser --serial HOST:PORT --package com.android.chrome --open https://example.org
@@ -204,6 +206,21 @@ def evaluate(port: int, url: str, js: str):
         d = result["exceptionDetails"]
         raise BrowserError(f"the script threw: {(d.get('exception') or {}).get('description') or d.get('text')}")
     return (result.get("result") or {}).get("value")
+
+
+def pinch(port: int, url: str, x: float, y: float, scale: float, *, speed: float = 800.0) -> None:
+    """A two-finger pinch around (x, y), in the page's CSS pixels, in the tab showing `url`: the
+    fingers end at `scale` times their distance (below 1 together, above 1 apart), moving `speed`
+    pixels a second. It is the browser's own synthetic gesture (Input.synthesizePinchGesture), which on
+    Android feeds touch events into the browser's view, so the page's touch handlers and the browser's
+    own zoom both see two fingers. It returns once the gesture has finished."""
+    if scale <= 0:
+        raise ValueError(f"a pinch scales by a positive factor, not {scale!r}")
+    tab = tab_for(tabs(port), url)
+    if tab is None:
+        raise BrowserError(f"no tab shows {url or 'a page'}")
+    call(port, tab["webSocketDebuggerUrl"], "Input.synthesizePinchGesture",
+         {"x": x, "y": y, "scaleFactor": scale, "relativeSpeed": int(speed), "gestureSourceType": "touch"})
 
 
 def main(argv: list[str], *, run: android.Runner | None = None,
