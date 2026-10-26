@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # a repository whose jobs run on a runner of its own sets the RUNS_ON variable to its label
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
         with:
