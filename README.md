@@ -228,6 +228,8 @@ Every part can be replaced. A program with its own records implements `TaskStore
 
 The server answers `GET /pending`, `GET /task/<id>`, `GET /history`, `GET /comments`, `POST /done/<id>`, `POST /open/<id>`, `POST /comment/<id>` and `POST /withdraw/<id>`, and refuses to listen on anything but a loopback address. Its token is `CLAUDE_HUMAN_TASKS_TOKEN`, or the file `~/.config/claude-human/tasks-token`, made with mode 0600 on first use.
 
+A question about how something looks needs the picture beside it, and a path on the computer means nothing on a phone. `claude_human.tasks.pictures` copies a picture into a folder of its own, named by the SHA-256 of its content (`~/.local/share/claude-human/pictures`, or `CLAUDE_HUMAN_PICTURES`), and gives it back by that id as a `data:` URI a page can show as it is. `store(path)` reads the type from the file's first bytes (PNG, JPEG, GIF, WebP or HEIC), refuses anything else or anything over 25 MB, and on macOS shrinks a picture whose longer side is over 1600 pixels with `sips` (HEIC becomes JPEG). `data_uri(id)` takes only an id of that form, so a request cannot name a path outside the folder. `paths_in(text)` finds the existing pictures a text names by path, for a question that says "the picture is at ...".
+
 ## Reading tasks from an app
 
 `client/` is the npm package `@drkostas/claude-human-client`, a typed client for `claude-human task serve`. The base URL and the token are passed in, and the app says what it can show and where it runs.
