@@ -199,6 +199,14 @@ def checked_pinch(serial: str, package: str, x: int, y: int, direction: str, *, 
     frames = pinch_frames(x, y, direction, panel=panel, screen=screen, span=span,
                           steps=steps * (4 if slow else 1), wide=wide)
     report.update(device=panel.path, frames=len(frames))
+    # a phone whose security policy (SELinux) refuses the shell a write to the touch screen says so,
+    # though the file's mode allows the `input` group: try the lift frame alone, which touches nothing
+    code, said = run(["-s", serial, "shell", f"printf '' > {panel.path} && echo writable"])
+    if code != 0 or "writable" not in said:
+        report["why"] = (f"the touch screen ({panel.path}) is not writable from the shell here "
+                         f"({said.strip()[:120] or 'refused'}); a browser page can be pinched with "
+                         f"android_browser.pinch instead")
+        return report
     with tempfile.TemporaryDirectory(prefix="claude-human-pinch-") as tmp:
         folder = Path(tmp)
         for i, f in enumerate(frames[:-1]):

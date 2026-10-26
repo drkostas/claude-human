@@ -108,8 +108,9 @@ class PhoneFake(Fake):
     """adb for a pinch: the tap's answers, plus the touch screen, the screen size, the ABI and the
     rotation, and a push and a play that can be made to fail."""
 
-    def __init__(self, focuses, *, rotation="mRotation=ROTATION_0", play_code=0, **kw):
+    def __init__(self, focuses, *, rotation="mRotation=ROTATION_0", play_code=0, writable=True, **kw):
         super().__init__(focuses, **kw)
+        self.writable = writable
         self.answers.update({touch.GETEVENT: lambda: GETEVENT, touch.WM_SIZE: lambda: "Physical size: 1080x2400\n",
                              touch.ABI: lambda: "arm64-v8a\n", touch.ROTATION: lambda: rotation})
         self.play_code, self.pushed = play_code, []
@@ -120,6 +121,9 @@ class PhoneFake(Fake):
             from pathlib import Path
             self.pushed = sorted(p.name for p in Path(argv[3].rstrip(".")).iterdir())
             return 0, "pushed\n"
+        if argv[2:3] == ["shell"] and argv[3].startswith("printf ''"):
+            self.calls.append(list(argv))
+            return (0, "writable\n") if self.writable else (1, "/system/bin/sh: can't create /dev/input/event4: Permission denied\n")
         if argv[2:3] == ["shell"] and argv[3].startswith("sh "):
             self.calls.append(list(argv))
             return self.play_code, "" if self.play_code == 0 else "write error"
@@ -166,3 +170,10 @@ def test_a_gesture_that_fails_half_way_still_lifts_both_fingers():
 
 def test_the_checks_are_the_taps_own():
     assert touch.android.why_not is android.why_not
+
+
+def test_a_touch_screen_the_shell_may_not_write_is_refused_before_anything_moves():
+    f = PhoneFake([APP_FOCUS], writable=False)
+    report = pinch(f)
+    assert report["outcome"] == "refused" and "not writable" in report["why"] and "android_browser.pinch" in report["why"]
+    assert not f.pushed and not f.shell("sh ")
