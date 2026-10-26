@@ -187,3 +187,22 @@ def test_a_wait_for_on_the_result_is_refused_before_any_window_opens(monkeypatch
     assert opened == []
     assert brave.main(["https://example.org/", __file__, "--wait-for", "window.__claude_r !== undefined"]) == 2
     assert "can never hold" in capsys.readouterr().err and opened == []
+
+
+def test_close_tab_reads_back_until_the_tab_is_gone(monkeypatch):
+    listings = [[{"window": "1", "tab": "7", "url": "u", "title": "t"}], []]
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(brave, "tabs", lambda *a, **k: listings.pop(0) if len(listings) > 1 else listings[0])
+    slept = []
+    assert brave.close_tab("1", "7", sleep=slept.append) == "success" and slept == [brave.CLOSE_GAP]
+
+
+def test_close_tab_fails_only_when_every_read_still_lists_it(monkeypatch):
+    still = [{"window": "1", "tab": "7", "url": "u", "title": "t"}]
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(brave, "tabs", lambda *a, **k: still)
+    slept = []
+    assert brave.close_tab("1", "7", sleep=slept.append) == "failure" and len(slept) == brave.CLOSE_READS - 1
+    monkeypatch.setattr(brave, "tabs", lambda *a, **k: None)
+    assert brave.close_tab("1", "7", sleep=lambda s: None) == "unknown"
+    assert brave.close_tab("1", "x7", sleep=lambda s: None) == "failure"
