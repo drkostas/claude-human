@@ -72,7 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("brave", help="run JavaScript on a page in the person's signed-in browser "
                                  "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...), "
-                                 "or whether it has a saved login (brave has-login SITE)")
+                                 "whether it has a saved login (brave has-login SITE), or put files into a page's "
+                                 "file input (brave upload WINDOW SELECTOR FILE...)")
 
     sub.add_parser("key", help="press key combinations in one window through the station, once the "
                                "Mac has been idle (key --window ID COMBO... [--idle S] [--json])")

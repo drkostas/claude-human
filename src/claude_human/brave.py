@@ -34,10 +34,17 @@ READY = '!/^(chrome|about|brave):/.test(location.href) && document.readyState===
 RESULT = "__claude_r"
 
 
+#: a script longer than this goes to osascript on its standard input rather than as an argument:
+#: macOS holds all of a program's arguments to about 1 MB, and standard input has no such limit
+ARG_MAX_SCRIPT = 100_000
+
+
 def osa(script: str, timeout: float = 30, *, env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """(exit code, output or error text) of an AppleScript. A timeout is (-1, "")."""
+    long = len(script) > ARG_MAX_SCRIPT
     try:
-        r = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True,
+        r = subprocess.run(["/usr/bin/osascript", "-"] if long else ["/usr/bin/osascript", "-e", script],
+                           input=script if long else None, capture_output=True, text=True,
                            timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return -1, ""
@@ -421,13 +428,214 @@ def keep(key: str, window: str, yabai: int | None, *, state: Path = STATE) -> No
     os.replace(tmp, state / f"{key}.json")
 
 
-def js_in(window: str, code: str, app: str = APP) -> str:
-    esc = code.replace("\\", "\\\\").replace('"', '\\"')
+#: the most JavaScript one AppleScript call carries. A longer script (or a file for `upload`) is
+#: sent in parts of at most this many characters, each checked as it lands, and put together in
+#: the page. One call of this size takes about half a second
+CHUNK = 4_000_000
+#: the largest file `upload` sends unless the caller says otherwise
+MAX_UPLOAD = 25 * 1024 * 1024
+#: where sent text waits in the page until it is used
+INBOX = "__claude_in"
+#: CRC-32 of a string's UTF-16 code units, in the page (the same as zlib.crc32 of its UTF-16LE bytes)
+_CRC_JS = ("function(s){var t=window.__claude_crc;if(!t){t=[];for(var n=0;n<256;n++){var c=n;"
+           "for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}window.__claude_crc=t;}"
+           "var c=0xFFFFFFFF;for(var i=0;i<s.length;i++){var u=s.charCodeAt(i);"
+           "c=t[(c^u)&255]^(c>>>8);c=t[(c^(u>>>8))&255]^(c>>>8);}return ((c^0xFFFFFFFF)>>>0);}")
+
+
+def _escape(code: str) -> str:
+    return code.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _js_once(window: str, code: str, app: str) -> str:
     rc, out = osa(f'tell application "{app}" to execute active tab of (first window whose id is '
-                  f'{window}) javascript "{esc}"')
+                  f'{window}) javascript "{_escape(code)}"')
     if rc != 0:
         raise RuntimeError(out)
     return out
+
+
+def _units(text: str) -> bytes:
+    return text.encode("utf-16-le", "surrogatepass")
+
+
+def _parts(text: str, chunk: int) -> list[str]:
+    """Pure. `text` cut into parts whose escaped JSON literal is at most `chunk` characters."""
+    out, i = [], 0
+    while i < len(text):
+        n = chunk
+        while True:
+            part = text[i:i + n]
+            if len(_escape(json.dumps(part))) <= chunk or n == 1:
+                break
+            n = max(1, n // 2)
+        out.append(part)
+        i += len(part)
+    return out
+
+
+def _short(out: str) -> str:
+    """An error text with any long run that could be sent data cut out, so no part of a file or a
+    script reaches an exception or a log."""
+    import re   # noqa: PLC0415
+    return re.sub(r'[A-Za-z0-9+/=\\"]{40,}', "...", out)[:300]
+
+
+def send(window: str, text: str, app: str = APP, *, chunk: int = CHUNK) -> str:
+    """Put `text` into the page in parts, each small enough for one AppleScript call, and return
+    the key it waits under: `window.__claude_in[key]`. Each part's arrival is checked by the length
+    the page then holds, and the whole by its CRC-32, so a part that is lost, repeated or put in the
+    wrong place raises RuntimeError rather than leaving a different text in the page. The caller
+    uses the text and deletes it; a page that navigates away loses it."""
+    import secrets   # noqa: PLC0415
+    import zlib   # noqa: PLC0415
+    key = secrets.token_hex(6)
+    slot = f'window.{INBOX}["{key}"]'
+    parts = _parts(text, chunk)
+    _js_once(window, f'(window.{INBOX}=window.{INBOX}||{{}})["{key}"]="";"0"', app)
+    held = 0
+    try:
+        for i, part in enumerate(parts):
+            held += len(_units(part)) // 2
+            try:
+                got = _js_once(window, f"{slot}+={json.dumps(part)};String({slot}.length)", app)
+            except RuntimeError as e:
+                raise RuntimeError(f"part {i + 1} of {len(parts)} did not reach the page: "
+                                   f"{_short(str(e))}") from None
+            if got != str(held):
+                raise RuntimeError(f"part {i + 1} of {len(parts)} did not arrive whole: the page holds "
+                                   f"{_short(got)} characters, {held} were sent")
+        want = zlib.crc32(_units(text))
+        got = _js_once(window, f"String(({_CRC_JS})({slot}))", app)
+        if got != str(want):
+            raise RuntimeError(f"the {len(parts)} parts arrived but differ from what was sent "
+                               f"(CRC-32 {_short(got)} in the page, {want} sent)")
+    except BaseException:
+        drop(window, key, app)
+        raise
+    return key
+
+
+def drop(window: str, key: str, app: str = APP) -> None:
+    """Delete what `send` left in the page under `key`. Never raises."""
+    try:
+        _js_once(window, f'window.{INBOX}&&delete window.{INBOX}["{key}"];"ok"', app)
+    except RuntimeError:
+        pass
+
+
+def js_in(window: str, code: str, app: str = APP, *, chunk: int = CHUNK) -> str:
+    """Run `code` in the active tab of `window` and return the value of its last expression, as
+    text. A script longer than one AppleScript call can carry is sent in parts (`send`), checked,
+    and then run with an indirect eval, which gives it the same global scope and the same result.
+
+    The script runs in the browser's isolated world for AppleScript: it shares the page's DOM but
+    not its JavaScript. The page's own functions and libraries are not visible from it; reach them
+    by adding a `<script>` element to the page."""
+    if len(_escape(code)) <= chunk:
+        return _js_once(window, code, app)
+    key = send(window, code, app, chunk=chunk)
+    return _js_once(window, f'(function(k){{var s=window.{INBOX}[k];delete window.{INBOX}[k];'
+                            f'return (0,eval)(s);}})("{key}")', app)
+
+
+def _settled(read, *, settle: float, timeout: float, step: float = 0.5, clock=None, sleep=None) -> str:
+    """The value `read()` gives once it is not empty and has stayed the same for `settle` seconds.
+    TimeoutError after `timeout` seconds, naming the last value."""
+    clock, sleep = clock or time.monotonic, sleep or time.sleep
+    end = clock() + timeout
+    last, since = None, clock()
+    while True:
+        now = read()
+        if now != last:
+            last, since = now, clock()
+        elif now and clock() - since >= settle:
+            return now
+        if clock() > end:
+            raise TimeoutError(f"the upload did not settle within {timeout:.0f} s "
+                               f"(last value {_short(last or '')!r})")
+        sleep(step)
+
+
+def upload(window: str, selector: str, paths, *, app: str = APP, done: str | None = None,
+           settle: float = 4.0, timeout: float = 120, max_bytes: int = MAX_UPLOAD,
+           names: list[str] | None = None, types: list[str] | None = None,
+           chunk: int = CHUNK) -> dict:
+    """Put one file or several into the page's file input, as if the person had chosen them.
+
+    `selector` is a CSS selector for an `<input type=file>` in the active tab of `window`. `paths`
+    is one path or a list. Each file is sent into the page in checked parts (`send`), becomes a
+    File there (named `names[i]` or the file's own name, of type `types[i]` or the type its
+    extension suggests), and the files are set on the input together through a DataTransfer. Then
+    the input fires `input` and `change`, as it does for a person's choice, and the page's own
+    upload starts.
+
+    `done` is a JavaScript expression the page fills when its upload has finished (a file name
+    field, an uploaded-list entry). When given, this waits until its value is not empty and has
+    stayed the same for `settle` seconds: some pages upload more than once per change. TimeoutError
+    after `timeout` seconds.
+
+    Refused with ValueError before anything is sent: a missing file, a file larger than
+    `max_bytes`, several files for an input without `multiple`, a selector that names no file input
+    or a disabled one. File contents are never logged and never put in an error.
+
+    Returns {"files": [names], "bytes": [sizes], "done": the settled value or None}."""
+    import base64   # noqa: PLC0415
+    import mimetypes   # noqa: PLC0415
+    files = [Path(paths)] if isinstance(paths, (str, os.PathLike)) else [Path(p) for p in paths]
+    if not files:
+        raise ValueError("no file to upload")
+    names = list(names) if names else [f.name for f in files]
+    types = list(types) if types else [mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+                                       for f in files]
+    if len(names) != len(files) or len(types) != len(files):
+        raise ValueError("give one name and one type per file")
+    sizes = []
+    for f in files:
+        if not f.is_file():
+            raise ValueError(f"{f} is not a file")
+        size = f.stat().st_size
+        if size > max_bytes:
+            raise ValueError(f"{f.name} is {size} bytes, over the {max_bytes}-byte limit; pass a larger "
+                             f"max_bytes if the page takes it")
+        sizes.append(size)
+    sel = json.dumps(selector)
+    state = _js_once(window, f"(function(){{var e=document.querySelector({sel});"
+                             "if(!e)return 'missing';if(e.tagName!=='INPUT'||e.type!=='file')return 'not-file';"
+                             "if(e.disabled)return 'disabled';return e.multiple?'multiple':'single';})()", app)
+    why = {"missing": f"no element matches {selector!r}",
+           "not-file": f"{selector!r} is not an <input type=file>",
+           "disabled": f"the file input {selector!r} is disabled"}.get(state)
+    if why:
+        raise ValueError(why)
+    if state != "multiple" and len(files) > 1:
+        raise ValueError(f"the file input {selector!r} takes one file (it has no multiple attribute), "
+                         f"{len(files)} were given")
+    if state not in ("single", "multiple"):
+        raise RuntimeError(f"could not read the file input: {_short(state)}")
+    keys: list[str] = []
+    try:
+        for f in files:
+            keys.append(send(window, base64.b64encode(f.read_bytes()).decode("ascii"), app, chunk=chunk))
+        spec = json.dumps([{"key": k, "name": n, "type": t} for k, n, t in zip(keys, names, types)])
+        got = _js_once(window, f"(function(sel,spec){{var e=document.querySelector(sel);"
+                               "if(!e||e.type!=='file')return 'missing';var dt=new DataTransfer();"
+                               f"spec.forEach(function(s){{var raw=atob(window.{INBOX}[s.key]);"
+                               "var b=new Uint8Array(raw.length);for(var i=0;i<raw.length;i++)b[i]=raw.charCodeAt(i);"
+                               "dt.items.add(new File([b],s.name,{type:s.type}));});"
+                               "e.files=dt.files;e.dispatchEvent(new Event('input',{bubbles:true}));"
+                               "e.dispatchEvent(new Event('change',{bubbles:true}));"
+                               f"return String(e.files.length);}})({sel},{spec})", app)
+    finally:
+        for k in keys:
+            drop(window, k, app)
+    if got != str(len(files)):
+        raise RuntimeError(f"the files were sent but the input holds {_short(got)} of {len(files)}")
+    value = None
+    if done:
+        probe = (f"(function(){{var v=({done});return v===undefined||v===null||v===false?'':String(v);}})()")
+        value = _settled(lambda: _js_once(window, probe, app), settle=settle, timeout=timeout)
+    return {"files": names, "bytes": sizes, "done": value}
 
 
 def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep_open: bool = False,
@@ -526,8 +734,13 @@ def main(argv: list[str]) -> int:
     """`brave URL JS_FILE [--wait-for EXPR] [--timeout S] [--keep-open] [--window ID] [--key KEY]
     [--app NAME]`: the result on stdout; with --keep-open, "WINDOW <id>[ YABAI <id>]" on stderr.
     `brave has-login SITE`: exit 0 when a saved login matches the site, 1 when none, 2 when the
-    login stores could not be read."""
+    login stores could not be read.
+    `brave upload WINDOW SELECTOR FILE... [--done EXPR] [--settle S] [--timeout S] [--max-bytes N]
+    [--app NAME]`: put the files into that file input; the result as JSON on stdout, exit 2 when
+    refused before sending, 1 when the upload failed or did not settle."""
     a = list(argv)
+    if a[:1] == ["upload"]:
+        return _upload_main(a[1:])
     if a[:1] == ["has-login"]:
         if len(a) != 2:
             print("usage: brave has-login SITE", file=sys.stderr)
@@ -556,4 +769,31 @@ def main(argv: list[str]) -> int:
     if keep_open:
         print(f"WINDOW {out['window']}" + (f" YABAI {out['yabai']}" if out["yabai"] else ""), file=sys.stderr)
     print(out["result"])
+    return 0
+
+
+def _upload_main(a: list[str]) -> int:
+    opts, rest, i = {}, [], 0
+    while i < len(a):
+        if a[i] in ("--done", "--settle", "--timeout", "--max-bytes", "--app") and i + 1 < len(a):
+            opts[a[i]] = a[i + 1]
+            i += 2
+        else:
+            rest.append(a[i])
+            i += 1
+    if len(rest) < 3:
+        print("usage: brave upload WINDOW SELECTOR FILE... [--done EXPR] [--settle S] [--timeout S] "
+              "[--max-bytes N] [--app NAME]", file=sys.stderr)
+        return 2
+    try:
+        out = upload(rest[0], rest[1], rest[2:], app=opts.get("--app", APP), done=opts.get("--done"),
+                     settle=float(opts.get("--settle", 4)), timeout=float(opts.get("--timeout", 120)),
+                     max_bytes=int(opts.get("--max-bytes", MAX_UPLOAD)))
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except (TimeoutError, RuntimeError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(json.dumps(out))
     return 0
