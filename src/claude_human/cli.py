@@ -73,8 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
                                  "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...), "
                                  "or whether it has a saved login (brave has-login SITE)")
 
-    sub.add_parser("android", help="tap an Android app over adb only once its own window has focus "
-                                   "(android tap --serial S --package P X Y [--out PNG])")
+    sub.add_parser("android", help="tap an Android app over adb only once its window has focus, no "
+                                   "banner or call shows, the phone is idle and the screen around the "
+                                   "point is still, then read the screen back "
+                                   "(android tap --serial S --package P X Y [--json] [--out PNG])")
 
     s = sub.add_parser("screenshot", help="capture the screen or one window with sckshot")
     s.add_argument("--out", required=True, help="output file (.png, or .jpg/.jpeg for JPEG)")

@@ -124,13 +124,19 @@ The station needs Screen Recording (for the picture and the window titles) and A
 
 ```bash
 claude-human brave has-login example.org      # exit 0 saved, 1 not, 2 the login stores could not be read
-claude-human android tap --serial 192.0.2.10:5555 --package com.example.app 540 1200 --out /tmp/after.png
+claude-human android tap --serial 192.0.2.10:5555 --package com.example.app 540 1200 --json
 ```
 
 `brave has-login` reads only the address column of a copy of each profile's login store, never a
 password, so it asks for nothing and shows nothing. `android tap` taps only when the app's own window
 has focus (`mCurrentFocus`, which names a notification shade, a dialog or the lock screen when one lies
 over the app), brings the app forward with `am start -n` when it is not, and refuses on a locked phone.
+It also waits, up to `--wait` seconds, until no heads-up notification shows (a banner takes no focus,
+so `mCurrentFocus` misses it), no call rings or runs, nobody has used the phone for `--idle` seconds,
+and a band of the screen around the point hashes the same twice (an animating drawer takes a tap meant
+for what comes after it). It refuses with the reason when one does not hold. After the tap it reads the
+view tree back with `uiautomator dump` and reports the focused window and the texts that appeared and
+went (`--json` for the whole report, `--out` for a screenshot).
 
 ## Typing at the lock screen and into password panels
 
