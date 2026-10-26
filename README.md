@@ -133,6 +133,35 @@ brings the window forward with yabai when another one is in front, presses each 
 stops at the first one the station refuses, and puts the window that was in front back. The token comes
 from `--token-file`, `$CLAUDE_HUMAN_STATION_TOKEN` or the station's own token file.
 
+## Putting a file into a page in the browser
+
+```bash
+claude-human brave https://example.org/expenses/new form.js --keep-open   # WINDOW 1234 on stderr
+claude-human brave upload 1234 'input[type=file]#receipt' /path/to/receipt.pdf \
+    --done "document.querySelector('#receipt-name').value"
+```
+
+`brave upload` puts one file or several into a page's `<input type=file>` in a window the browser
+already shows, as if the person had chosen them, and prints the result as JSON. Each file is sent into
+the page in parts, each part checked as it lands and the whole checked by its CRC-32, so a part that is
+lost or out of place stops the upload instead of giving the page a different file. In the page the
+files are set on the input together and the input fires `input` and `change`, so the page's own upload
+starts. `--done` names a value the page fills once its upload has finished, and the command waits until
+that value is not empty and has stayed the same for `--settle` seconds (4 by default), because some
+pages upload more than once for one change. It refuses before it sends anything when a file is larger
+than `--max-bytes` (25 MB by default), when several files go to an input without `multiple`, or when
+the selector names no file input. File contents never appear in an error or a log.
+
+The same parts carry long scripts. `brave.js_in` and `brave.run` send a script longer than one call can
+carry (4 MB) in checked parts and run it in the page with an indirect eval, which gives it the same
+global scope and the same result. AppleScript passes a long script to `osascript` on its standard
+input, since macOS holds a program's arguments to about 1 MB in all.
+
+Two facts for scripts sent this way. They run in the browser's isolated world for AppleScript, which
+shares the page's DOM and not its JavaScript, so the page's own functions and libraries are not visible
+there (add a `<script>` element to the page to reach them). And a window that is not on screen captures
+blank with `screencapture -l`, so bring it on screen before taking a picture of it.
+
 ## A saved login, and a tap on a phone
 
 ```bash

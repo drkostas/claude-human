@@ -206,3 +206,224 @@ def test_close_tab_fails_only_when_every_read_still_lists_it(monkeypatch):
     monkeypatch.setattr(brave, "tabs", lambda *a, **k: None)
     assert brave.close_tab("1", "7", sleep=lambda s: None) == "unknown"
     assert brave.close_tab("1", "x7", sleep=lambda s: None) == "failure"
+
+
+# Sending long scripts and files into a page, against a fake page that keeps what it is sent the way
+# the browser does and runs the checks the page would run.
+import base64
+import re
+import zlib
+
+
+class FakePage:
+    """Stands in for osascript and the page. `lose` drops that append (0-based) and `swap` holds that
+    append back until the next one has landed, while the lengths it reports stay true."""
+
+    def __init__(self, lose=None, swap=None, state="single", done=(), fail_append=None):
+        self.store, self.calls, self.ran, self.files = {}, [], [], []
+        self.lose, self.swap, self.state, self.done = lose, swap, state, list(done)
+        self.fail_append, self.appends, self.held = fail_append, 0, None
+
+    @staticmethod
+    def js(script):
+        body = script.split(' javascript "', 1)[1][:-1]
+        return re.sub(r'\\(.)', r'\1', body)
+
+    def __call__(self, script, timeout=30, *, env=None):
+        self.calls.append(script)
+        js = self.js(script)
+        m = re.fullmatch(r'\(window\.__claude_in=window\.__claude_in\|\|\{\}\)\["(\w+)"\]="";"0"', js)
+        if m:
+            self.store[m[1]] = ""
+            return 0, "0"
+        m = re.fullmatch(r'window\.__claude_in\["(\w+)"\]\+=(.*);String\(window\.__claude_in\["\w+"\]\.length\)',
+                         js, re.S)
+        if m:
+            n, self.appends = self.appends, self.appends + 1
+            if n == self.fail_append:
+                return 1, f"execution error: bad script near {m[2][:120]} (-2741)"
+            part = json.loads(m[2])
+            if n != self.lose:
+                if n == self.swap:
+                    self.held = part
+                else:
+                    self.store[m[1]] += part
+                    if self.held is not None:
+                        self.store[m[1]] += self.held
+                        self.held = None
+            units = len(self.store[m[1]].encode("utf-16-le", "surrogatepass")) // 2
+            held = len(self.held.encode("utf-16-le", "surrogatepass")) // 2 if self.held else 0
+            return 0, str(units + held)
+        m = re.search(r'\)\(window\.__claude_in\["(\w+)"\]\)\)$', js)
+        if m and js.startswith("String((function(s){"):
+            return 0, str(zlib.crc32(self.store[m[1]].encode("utf-16-le", "surrogatepass")))
+        m = re.fullmatch(r'window\.__claude_in&&delete window\.__claude_in\["(\w+)"\];"ok"', js)
+        if m:
+            self.store.pop(m[1], None)
+            return 0, "ok"
+        m = re.search(r'return \(0,eval\)\(s\);\}\)\("(\w+)"\)$', js)
+        if m:
+            self.ran.append(self.store.pop(m[1]))
+            return 0, "ran"
+        if "return e.multiple?" in js:
+            return 0, self.state
+        if "new DataTransfer()" in js:
+            spec = json.loads(re.search(r'\}\)\(".*?",(\[.*\])\)$', js, re.S)[1])
+            self.files = [(s["name"], s["type"], base64.b64decode(self.store[s["key"]])) for s in spec]
+            return 0, str(len(spec))
+        if js.startswith("(function(){var v=("):
+            return 0, self.done.pop(0) if len(self.done) > 1 else self.done[0]
+        self.ran.append(js)
+        return 0, "direct"
+
+
+def _text(n):
+    # quotes, backslashes, newlines, accents and a character outside the BMP, so an escape or a
+    # surrogate pair cut in half shows; numbered, so no two parts are alike and an order change shows
+    out, size, i = [], 0, 0
+    while size < n:
+        out.append(f'{i}a"b\\c\nδ€😀 ')
+        size, i = size + len(out[-1]), i + 1
+    return "".join(out)[:n]
+
+
+def test_a_short_script_still_goes_in_one_call(monkeypatch):
+    page = FakePage()
+    monkeypatch.setattr(brave, "osa", page)
+    assert brave.js_in("7", 'document.title + "x"') == "direct"
+    assert page.ran == ['document.title + "x"'] and len(page.calls) == 1
+    assert page.calls[0] == ('tell application "Brave Browser" to execute active tab of (first window '
+                             'whose id is 7) javascript "document.title + \\"x\\""')
+
+
+def test_a_long_script_reaches_the_page_whole_and_in_order(monkeypatch):
+    page = FakePage()
+    monkeypatch.setattr(brave, "osa", page)
+    code = _text(1_500_000)
+    assert brave.js_in("7", code, chunk=200_000) == "ran"
+    assert page.ran == [code] and page.store == {}
+    assert len(page.calls) > 9 and max(len(c) for c in page.calls) < 200_000 + 300
+
+
+def test_a_long_applescript_goes_to_osascript_on_standard_input(monkeypatch):
+    # an argument list is held to about 1 MB, standard input is not
+    seen = []
+
+    def fake_run(cmd, **k):
+        seen.append((cmd, k.get("input")))
+
+        class R:
+            returncode, stdout, stderr = 0, "ok\n", ""
+        return R()
+    monkeypatch.setattr(brave.subprocess, "run", fake_run)
+    long = 'return "' + "A" * 2_000_000 + '"'
+    assert brave.osa("return 1") == (0, "ok") and brave.osa(long) == (0, "ok")
+    assert seen == [(["/usr/bin/osascript", "-e", "return 1"], None), (["/usr/bin/osascript", "-"], long)]
+
+
+def test_parts_cut_small_keep_every_character(monkeypatch):
+    page = FakePage()
+    monkeypatch.setattr(brave, "osa", page)
+    code = _text(5_000)
+    assert brave.js_in("7", code, chunk=64) == "ran" and page.ran == [code]
+    parts = brave._parts(code, 64)
+    assert "".join(parts) == code and all(len(brave._escape(json.dumps(p))) <= 64 for p in parts)
+
+
+def test_a_lost_part_raises_and_nothing_runs(monkeypatch):
+    page = FakePage(lose=2)
+    monkeypatch.setattr(brave, "osa", page)
+    try:
+        brave.js_in("7", _text(5_000), chunk=500)
+    except RuntimeError as e:
+        assert "part 3 of" in str(e) and "did not arrive whole" in str(e)
+    else:
+        raise AssertionError("a lost part was not noticed")
+    assert page.ran == [] and page.store == {}
+
+
+def test_parts_out_of_order_raise_and_nothing_runs(monkeypatch):
+    page = FakePage(swap=1)
+    monkeypatch.setattr(brave, "osa", page)
+    try:
+        brave.js_in("7", _text(5_000), chunk=500)
+    except RuntimeError as e:
+        assert "differ from what was sent" in str(e)
+    else:
+        raise AssertionError("parts out of order were not noticed")
+    assert page.ran == [] and page.store == {}
+
+
+def test_upload_sets_the_files_and_waits_until_done_holds_still(monkeypatch, tmp_path):
+    a, b = tmp_path / "a.pdf", tmp_path / "b.bin"
+    a.write_bytes(b"%PDF-1.4 " + bytes(range(256)) * 3000)
+    b.write_bytes(b"\x00\x01\x02")
+    page = FakePage(state="multiple", done=["", "a", "a.pdf", "a.pdf", "a.pdf"])
+    monkeypatch.setattr(brave, "osa", page)
+    monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    got = brave.upload("7", "#receipt", [a, b], done="document.querySelector('#name').value", settle=0,
+                       chunk=10_000)
+    assert got == {"files": ["a.pdf", "b.bin"], "bytes": [a.stat().st_size, 3], "done": "a.pdf"}
+    assert page.files == [("a.pdf", "application/pdf", a.read_bytes()),
+                          ("b.bin", "application/octet-stream", b"\x00\x01\x02")]
+    assert page.store == {}
+
+
+def test_upload_refuses_before_sending_anything(monkeypatch, tmp_path):
+    f = tmp_path / "r.pdf"
+    f.write_bytes(b"x" * 100)
+    for page, kwargs, why in [
+            (FakePage(), {"paths": f, "max_bytes": 99}, "over the 99-byte limit"),
+            (FakePage(), {"paths": [f, f]}, "takes one file"),
+            (FakePage(state="missing"), {"paths": f}, "no element matches"),
+            (FakePage(state="not-file"), {"paths": f}, "is not an <input type=file>"),
+            (FakePage(), {"paths": tmp_path / "gone.pdf"}, "is not a file")]:
+        monkeypatch.setattr(brave, "osa", page)
+        try:
+            brave.upload("7", "#receipt", **kwargs)
+        except ValueError as e:
+            assert why in str(e), (why, str(e))
+        else:
+            raise AssertionError(f"not refused: {why}")
+        assert page.appends == 0 and page.files == []
+
+
+def test_an_upload_error_carries_no_file_contents(monkeypatch, tmp_path):
+    f = tmp_path / "r.pdf"
+    f.write_bytes(b"secret-receipt-number-0123456789" * 50)
+    page = FakePage(fail_append=0)
+    monkeypatch.setattr(brave, "osa", page)
+    try:
+        brave.upload("7", "#receipt", f)
+    except RuntimeError as e:
+        encoded = base64.b64encode(f.read_bytes()).decode()
+        assert "did not reach the page" in str(e) and encoded[:24] not in str(e)
+    else:
+        raise AssertionError("a failed part was not reported")
+    assert page.store == {}
+
+
+def test_settled_needs_the_value_to_hold_for_the_whole_settle_time():
+    now = [0.0]
+    seq = iter(["", "a", "ab", "ab", "ab", "ab", "ab"])
+    got = brave._settled(lambda: next(seq), settle=1.0, timeout=60, step=0.5, clock=lambda: now[0],
+                         sleep=lambda s: now.__setitem__(0, now[0] + s))
+    assert got == "ab" and now[0] == 2.0   # "ab" first read at 1.0
+    try:
+        brave._settled(lambda: "", settle=1, timeout=3, clock=lambda: now[0],
+                       sleep=lambda s: now.__setitem__(0, now[0] + s))
+    except TimeoutError as e:
+        assert "did not settle" in str(e)
+    else:
+        raise AssertionError("an empty value settled")
+
+
+def test_upload_command(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "r.pdf"
+    f.write_bytes(b"pdf")
+    page = FakePage()
+    monkeypatch.setattr(brave, "osa", page)
+    assert brave.main(["upload", "7", "#receipt", str(f)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"files": ["r.pdf"], "bytes": [3], "done": None}
+    assert brave.main(["upload", "7", "#receipt", str(f), "--max-bytes", "2"]) == 2
+    assert brave.main(["upload", "7"]) == 2

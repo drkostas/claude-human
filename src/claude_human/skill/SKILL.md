@@ -236,6 +236,22 @@ passwords, never in one of their windows. The script may be async and assigns it
 - A browser's window ids are not yabai's. `brave.join_by_origin` pairs them by corner, then by name,
   then by elimination, and leaves anything it cannot pair unpaired rather than guessing.
 
+- Put a file into a page's `<input type=file>` with `brave.upload(window, selector, path_or_paths,
+  done=...)` or `claude-human brave upload WINDOW SELECTOR FILE... --done EXPR`. It sends each file in
+  checked parts (`brave.send`), sets the files on the input through a DataTransfer and fires `input`
+  and `change`. Give `done` an expression the page fills after its upload (a file name field): the call
+  waits until it is not empty and has stayed the same for `settle` seconds, since some pages upload
+  twice for one change. A file over `max_bytes` (25 MB), several files for an input without
+  `multiple`, or a selector that names no file input is refused before anything is sent.
+- A script longer than one call carries (4 MB) works in `brave.js_in` and `brave.run` as it is: it is
+  sent in checked parts and run with an indirect eval, with the same global scope and result. Long
+  AppleScript goes to `osascript` on standard input, because the argument list is held to about 1 MB.
+- Scripts run in the browser's isolated world for AppleScript: the page's DOM is shared, its
+  JavaScript is not. jQuery or any page function is invisible from the script; add a `<script>`
+  element to the page to reach it. Events the script fires do reach the page's own listeners.
+- A browser window that is not on screen captures blank with `screencapture -l`. Bring it on screen
+  before a picture.
+
 ## One window at a time
 
 `desktops.move_window(id, uuid)`, `desktops.close_window(id)` and `desktops.frame_window(id, frame)`
