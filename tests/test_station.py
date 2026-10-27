@@ -405,3 +405,11 @@ def test_without_window_for_a_pin_is_the_app_as_before(station):
     port, screen, _sink, _auth, _logs = station
     code, _h, _b = req(port, "GET", "/shot", token="pinned-Safari")
     assert code == 200 and screen.framed[-1] == 22
+
+
+def test_a_consent_answer_is_for_a_master_grant_only_and_goes_through_perform(station):
+    port, _screen, sink, auth, _l = station
+    code, _h, body = req(port, "POST", "/input", token="pinned-Notes", body={"type": "consent", "choice": "allow"})
+    assert code == 403 and not json.loads(body)["ok"] and not any(m.get("type") == "consent" for m in sink.got)
+    code, _h, body = req(port, "POST", "/input", token="master-token", body={"type": "consent", "choice": "deny"})
+    assert code == 200 and auth.performed[-1][1] == "consent" and sink.got[-1]["type"] == "consent"

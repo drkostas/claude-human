@@ -8,6 +8,11 @@ Every refusal is returned, never raised and never hidden: ``{"ok": False, ...}``
 session, for a system dialog that holds focus, and for a named window that is not on the visible
 desktop. A caller that reads only "no exception" would report success for input the Mac dropped.
 
+One input answers such a dialog instead: ``{"type": "consent", "choice": "allow" | "deny"}`` presses
+the front consent prompt's own button by its title (``claude_human.consent``), for the prompts that
+take a press through the Accessibility API, which this process holds. Gatekeeper's "Open" and
+"Cancel" are those. The server accepts it only from a master grant.
+
 Quartz is imported when the first event is posted, so this module loads on any platform and its
 logic can be tested with a stand-in for Quartz.
 """
@@ -21,6 +26,11 @@ BLOCKED_DETAIL = ("A macOS permission dialog is open on the Mac and is taking ev
                   "Answer it on the Mac, then try again.")
 FOCUS_DETAIL = ("That window is not in front on the Mac, so typing would go to another window. "
                 "Tap it first, then type.")
+COVERED_DETAIL = ("Another window ({owner}) is in front of that window at that point on the Mac, so the "
+                  "click would land on it.")
+#: the inputs that press a button. A release ("up") or a drag after an accepted press is never
+#: refused, since refusing it would leave the button held down.
+PRESSES = frozenset({"down", "click", "dblclick"})
 
 #: The input types that only move the pointer. They are allowed while the Mac is locked or a dialog
 #: is up, because they cannot press anything.
@@ -45,7 +55,7 @@ class QuartzInput:
                  quartz: Any = None, pasteboard: Any = None,
                  locked_detail: str = LOCKED_DETAIL,
                  blocked_detail: str | Callable[[str], str] = BLOCKED_DETAIL,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, consent: Any = None):
         if screen is None:
             from .. import screenshot as screen  # noqa: PLC0415
         self.screen = screen
@@ -55,6 +65,7 @@ class QuartzInput:
         self.locked_detail = locked_detail
         self.blocked_detail = blocked_detail
         self.sleep = sleep
+        self._consent = consent
 
     # ------------------------------------------------------------------ plumbing
 
@@ -134,12 +145,55 @@ class QuartzInput:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "detail": f"could not type: {e}"}
 
+    def _covered(self, wid: int, pt) -> dict | None:
+        """The refusal when another window lies in front of `wid` at `pt`, else None. The screen's
+        ``on_top_at`` answers, or ``claude_human.screenshot``'s for a screen without one."""
+        on_top = getattr(self.screen, "on_top_at", None)
+        if not callable(on_top):
+            from ..screenshot import on_top_at as on_top  # noqa: PLC0415
+        x, y = (pt.x, pt.y) if hasattr(pt, "x") else pt
+        try:
+            owner = on_top(wid, x, y)
+        except Exception:  # noqa: BLE001 - a list that cannot be read cannot say the click is safe
+            return {"ok": False, "detail": "the window list could not be read, so nothing was clicked"}
+        if owner is None:
+            return None
+        if owner == "":
+            return {"ok": False, "covered": True, "on_top": "",
+                    "detail": "that window does not hold that point on the Mac, so nothing was clicked"}
+        return {"ok": False, "covered": True, "on_top": owner, "detail": COVERED_DETAIL.format(owner=owner)}
+
+    def answer_prompt(self, choice: str) -> dict:
+        """Press `choice` ("allow" or "deny") on the front consent prompt, by its button's title.
+        Only a prompt of an owner in ``consent.AX_OWNERS`` is pressed here; the others take the
+        keyboard helper (``claude-human consent``), which this refuses rather than tries."""
+        consent = self._consent
+        if consent is None:
+            from .. import consent  # noqa: PLC0415
+        if choice not in ("allow", "deny"):
+            return {"ok": False, "detail": f"unknown answer {choice!r}: allow or deny"}
+        found = consent.prompts()
+        if found is None:
+            return {"ok": False, "detail": "the window list cannot be read"}
+        if not found:
+            return {"ok": False, "detail": "No consent prompt is open on the Mac right now."}
+        front = found[0]
+        if front.get("owner") not in consent.AX_OWNERS:
+            return {"ok": False, "owner": front.get("owner"), "window": front.get("wid"),
+                    "detail": f"the prompt in front ({front.get('owner')}) is answered with the keyboard "
+                              "helper (claude-human consent), not through the station"}
+        ok, said = consent.answer(choice, find=consent.prompts)
+        return {"ok": ok, "detail": said, "owner": front.get("owner"), "window": front.get("wid")}
+
     # ------------------------------------------------------------------ the one entry point
 
     def do_input(self, msg: dict) -> dict:
         kind = msg.get("type")
         if kind not in HARMLESS and self.screen.screen_locked():
             return {"ok": False, "locked": True, "detail": self.locked_detail}
+        if kind == "consent":
+            # it answers the very dialog that refuses every other input, so it comes before that check
+            return self.answer_prompt(str(msg.get("choice", "")))
         blocker = self.screen.blocked_by() if kind not in HARMLESS else None
         if blocker:
             # the caller may word it from the blocking app's name, which is also returned
@@ -160,6 +214,12 @@ class QuartzInput:
             pt = self.to_screen(wid, float(msg.get("x", 0)), float(msg.get("y", 0)))
             if pt is None:
                 return {"ok": False, "detail": "that window is gone"}
+            if kind in PRESSES and wid is not None:
+                # ⛔ A CLICK LANDS ON WHATEVER IS TOPMOST AT THE POINT, NOT ON THE WINDOW NAMED. A
+                # click meant for a window behind another reached the window in front, and was
+                # answered ok. Like text and keys, it is refused unless the named window is on top.
+                if (refused := self._covered(wid, pt)) is not None:
+                    return refused
             if kind == "move":
                 self.post(q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, pt, which))
             elif kind == "drag":

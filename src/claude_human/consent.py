@@ -12,6 +12,14 @@ HID keyboard (the same ``vhid_type`` helper ``claude_human.unlock`` uses). On th
 the default button, which Return presses, and the keyboard focus ring sits on "Don't Allow", which
 Space presses (Full Keyboard Access must be on, as for ``unlock.approve``).
 
+Gatekeeper asks too, the first time an app downloaded from the Internet opens: '"X" is an app
+downloaded from the Internet. Are you sure you want to open it?', with "Open" and "Cancel". That
+prompt is owned by CoreServicesUIAgent, and the app it is about waits stopped, with no window, until
+someone answers (so does an ``open -a`` that started it). Its buttons are pressed by their own titles
+through the Accessibility API (``press_button``), which needs a process with the Accessibility grant,
+such as the station (``claude_human.station``'s ``consent`` input). Each owner's buttons are in
+``BUTTONS``.
+
 Rules every function here keeps:
 
 * Nothing is pressed unless a prompt is on screen and its owner is the frontmost application.
@@ -28,8 +36,14 @@ from typing import Callable, Optional
 
 from . import paths
 
-#: who shows consent prompts
-CONSENT_OWNERS = {"UserNotificationCenter"}
+#: who shows consent prompts, and the titles of the buttons that allow and that deny
+BUTTONS = {"UserNotificationCenter": ("Allow", "Don't Allow"),
+           "CoreServicesUIAgent": ("Open", "Cancel")}
+CONSENT_OWNERS = set(BUTTONS)
+#: the owners whose prompts are pressed by a button's title through the Accessibility API
+AX_OWNERS = {"CoreServicesUIAgent"}
+#: how deep under a prompt window its buttons are looked for
+AX_DEPTH = 8
 #: a prompt is a small floating panel: larger than a menu bar item, smaller than this share of the
 #: display (a full-screen surface of the same owner is not a prompt)
 MIN_SIDE = 120
@@ -49,7 +63,8 @@ Result = tuple[bool, str]
 def find_prompts(raw: Iterable[dict], display: tuple[float, float],
                  owners: set[str] = CONSENT_OWNERS) -> list[dict]:
     """Pure. The consent prompts among on-screen windows (front to back), as
-    ``{wid, pid, owner, x, y, w, h}``."""
+    ``{wid, pid, owner, x, y, w, h, allow, deny}``; ``allow`` and ``deny`` are the titles of the
+    owner's two buttons (``BUTTONS``)."""
     cap_w, cap_h = display[0] * MAX_FRACTION, display[1] * MAX_FRACTION
     out = []
     for w in raw:
@@ -61,9 +76,11 @@ def find_prompts(raw: Iterable[dict], display: tuple[float, float],
         ww, hh = float(b.get("Width", 0)), float(b.get("Height", 0))
         if ww < MIN_SIDE or hh < MIN_SIDE or ww > cap_w or hh > cap_h:
             continue
+        owner = str(w.get("kCGWindowOwnerName") or "")
+        allow, deny = BUTTONS.get(owner, ("Allow", "Don't Allow"))
         out.append({"wid": int(w.get("kCGWindowNumber") or 0), "pid": int(w.get("kCGWindowOwnerPID") or 0),
-                    "owner": str(w.get("kCGWindowOwnerName") or ""), "x": float(b.get("X", 0)),
-                    "y": float(b.get("Y", 0)), "w": ww, "h": hh})
+                    "owner": owner, "x": float(b.get("X", 0)),
+                    "y": float(b.get("Y", 0)), "w": ww, "h": hh, "allow": allow, "deny": deny})
     return out
 
 
@@ -81,7 +98,7 @@ def prompts() -> list[dict] | None:
 
 def join_lines(lines: Iterable[str]) -> str:
     """Pure. OCR lines of a prompt as one sentence: the button labels and the help mark dropped."""
-    skip = {"allow", "don't allow", "don’t allow", "ok", "?", "deny"}
+    skip = {"allow", "don't allow", "don’t allow", "ok", "?", "deny", "open", "cancel", "show web page"}
     kept = [s.strip() for s in lines if s.strip() and s.strip().lower() not in skip]
     return " ".join(kept).replace("“", '"').replace("”", '"').replace("’", "'")
 
@@ -134,13 +151,86 @@ def bring_forward(pid: int) -> bool:
         return False
 
 
+def _title(text) -> str:
+    return str(text or "").replace("’", "'").strip()
+
+
+def _window_id(element, ax) -> int | None:
+    """The window server's id of an accessibility window, through the private call every window
+    manager uses (``_AXUIElementGetWindow``), or None when it cannot be asked."""
+    get = getattr(ax, "window_id", None)
+    if get is None:
+        try:
+            import objc   # noqa: PLC0415
+            from Foundation import NSBundle   # noqa: PLC0415
+            found: dict = {}
+            objc.loadBundleFunctions(
+                NSBundle.bundleWithPath_("/System/Library/Frameworks/ApplicationServices.framework"),
+                found, [("_AXUIElementGetWindow", b"i^{__AXUIElement=}o^I")])
+            get = found.get("_AXUIElementGetWindow")
+        except Exception:  # noqa: BLE001
+            return None
+        if get is None:
+            return None
+        err, wid = get(element, None)
+        return int(wid) if err == 0 else None
+    return get(element)
+
+
+def press_button(pid: int, wid: int, title: str, *, ax=None) -> Result:
+    """Press the button titled ``title`` in the window ``wid`` of the process ``pid``, through the
+    Accessibility API (``AXPress``). Nothing is pressed when this process has no Accessibility
+    grant, the window is not among the process's accessibility windows, or no button has that
+    title. ``ax`` is the ApplicationServices module or a stand-in."""
+    if ax is None:
+        try:
+            import ApplicationServices as ax   # noqa: PLC0415, N813
+        except ImportError:
+            return False, "the Accessibility API is not available here"
+    if not ax.AXIsProcessTrusted():
+        return False, "this process has no Accessibility grant (the station has one)"
+
+    def attr(element, name):
+        err, value = ax.AXUIElementCopyAttributeValue(element, name, None)
+        return value if err == 0 else None
+
+    app = ax.AXUIElementCreateApplication(int(pid))
+    windows = [w for w in (attr(app, "AXWindows") or []) if attr(w, "AXRole") == "AXWindow"]
+    mine = [w for w in windows if _window_id(w, ax) == int(wid)]
+    if not mine:
+        return False, f"window {wid} is not among the accessibility windows of its process"
+    want, level = _title(title), [mine[0]]
+    for _ in range(AX_DEPTH):
+        for element in level:
+            if attr(element, "AXRole") == "AXButton" and _title(attr(element, "AXTitle")) == want:
+                err = ax.AXUIElementPerformAction(element, "AXPress")
+                return (True, f"pressed {title}") if err == 0 else (False, f"{title} did not take the press ({err})")
+        level = [child for element in level for child in (attr(element, "AXChildren") or [])]
+    return False, f"the prompt has no button titled {title!r}"
+
+
+def _closed(find: Callable[[], Optional[list]], target: dict, poll_seconds: float, said: str) -> Result:
+    deadline = _now() + poll_seconds
+    while _now() < deadline:
+        _sleep(0.3)
+        left = find()
+        if left is not None and all(p["wid"] != target["wid"] for p in left):
+            return True, said
+    return False, "pressed the key, but the prompt is still open"
+
+
 def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds: float = 5.0,
            find: Callable[[], Optional[list]] | None = None,
            forward: Callable[[int], bool] | None = None, sudo: bool = True,
-           env: Mapping[str, str] | None = None) -> Result:
+           env: Mapping[str, str] | None = None,
+           press: Callable[[int, int, str], Result] | None = None) -> Result:
     """Press "Allow" (``choice="allow"``) or "Don't Allow" (``"deny"``) on the frontmost consent
     prompt, and observe it close. ``find`` lists the prompts (default ``prompts``), ``forward``
-    brings a pid's application to the front (default ``bring_forward``)."""
+    brings a pid's application to the front (default ``bring_forward``).
+
+    A prompt of an owner in ``AX_OWNERS`` (Gatekeeper's "Open" and "Cancel") is pressed by its
+    button's title with ``press`` (default ``press_button``) instead of the keyboard, and needs no
+    helper and no bringing forward."""
     if choice not in KEYS:
         return False, f"unknown answer {choice!r}: allow or deny"
     find = find or prompts
@@ -151,6 +241,14 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
     if not now:
         return False, "No consent prompt is open on the Mac right now."
     target = now[0]
+    owner = target.get("owner") or "UserNotificationCenter"
+    if owner in AX_OWNERS:
+        title = BUTTONS[owner][0 if choice == "allow" else 1]
+        ok, said = (press or press_button)(target["pid"], target["wid"], title)
+        if not ok:
+            return False, f"nothing was pressed: {said}"
+        ok, said = _closed(find, target, poll_seconds, f"Pressed {title}.")
+        return (ok, said) if ok else (False, f"pressed {title}, but the prompt is still open")
     if not forward(target["pid"]):
         return False, "could not bring the prompt to the front, so nothing was pressed"
     helper = str(paths.vhid_path(helper))
@@ -164,10 +262,4 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
         return False, f"could not run the virtual HID helper: {str(e)[:60]}"
     if r.returncode != 0:
         return False, f"virtual HID helper failed: {(r.stderr or r.stdout or '').strip()[:80]}"
-    deadline = _now() + poll_seconds
-    while _now() < deadline:
-        _sleep(0.3)
-        left = find()
-        if left is not None and all(p["wid"] != target["wid"] for p in left):
-            return True, "Allowed." if choice == "allow" else "Not allowed."
-    return False, "pressed the key, but the prompt is still open"
+    return _closed(find, target, poll_seconds, "Allowed." if choice == "allow" else "Not allowed.")

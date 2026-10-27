@@ -43,8 +43,13 @@ class FakeQuartz:
 
 
 class Screen:
-    def __init__(self, locked=False, blocker=None, apps=("Notes",), front=7):
+    def __init__(self, locked=False, blocker=None, apps=("Notes",), front=7, on_top=None):
         self.locked, self.blocker, self.apps, self.front = locked, blocker, apps, front
+        self.on_top, self.asked_at = on_top, []
+
+    def on_top_at(self, wid, x, y):
+        self.asked_at.append((wid, x, y))
+        return self.on_top
 
     def front_window(self):
         return self.front
@@ -183,3 +188,77 @@ def test_scroll_in_a_named_window_lands_inside_it():
     assert s.do_input({"type": "scroll", "app": "Notes", "dy": -40, "x": 0.5, "y": 0.5})["ok"]
     assert posted[0] == {"kind": "move", "pt": (200.0, 100.0), "button": 0}
     assert posted[1] == {"kind": "scroll", "dy": -40, "dx": 0, "pt": (200.0, 100.0)}
+
+
+class Consent:
+    """claude_human.consent as the station uses it: the prompts on screen and what answer pressed."""
+    AX_OWNERS = {"CoreServicesUIAgent"}
+
+    def __init__(self, found):
+        self.found, self.answered = found, []
+
+    def prompts(self):
+        return self.found
+
+    def answer(self, choice, find):
+        self.answered.append(choice)
+        return True, "Pressed Cancel."
+
+
+GATE = {"wid": 14369, "pid": 58901, "owner": "CoreServicesUIAgent"}
+
+
+def test_a_consent_answer_reaches_the_dialog_that_blocks_every_other_input():
+    consent = Consent([GATE])
+    s = QuartzInput(Screen(blocker="CoreServicesUIAgent"), post=[].append, quartz=FakeQuartz(),
+                    sleep=lambda s: None, consent=consent)
+    assert s.do_input({"type": "click", "x": 0.5, "y": 0.5})["blocked"]
+    got = s.do_input({"type": "consent", "choice": "deny"})
+    assert got == {"ok": True, "detail": "Pressed Cancel.", "owner": "CoreServicesUIAgent", "window": 14369}
+    assert consent.answered == ["deny"]
+
+
+def test_a_consent_answer_is_refused_locked_unknown_or_for_a_keyboard_prompt():
+    consent = Consent([GATE])
+    s = QuartzInput(Screen(locked=True), quartz=FakeQuartz(), consent=consent)
+    assert s.do_input({"type": "consent", "choice": "allow"})["locked"] and consent.answered == []
+    s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=consent)
+    assert not s.do_input({"type": "consent", "choice": "open it"})["ok"] and consent.answered == []
+    consent = Consent([{"wid": 5, "pid": 42, "owner": "UserNotificationCenter"}])
+    s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=consent)
+    got = s.do_input({"type": "consent", "choice": "allow"})
+    assert not got["ok"] and "keyboard helper" in got["detail"] and consent.answered == []
+    for found, words in (([], "No consent prompt"), (None, "cannot be read")):
+        s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=Consent(found))
+        assert words in s.do_input({"type": "consent", "choice": "deny"})["detail"]
+
+
+def test_a_click_on_a_window_covered_at_that_point_is_refused_and_says_what_is_on_top():
+    screen = Screen(on_top="iTerm2")
+    posted = []
+    s = QuartzInput(screen, post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    got = s.do_input({"type": "click", "app": "Notes", "x": 0.5, "y": 0.5})
+    assert not got["ok"] and got["covered"] and got["on_top"] == "iTerm2" and "iTerm2" in got["detail"]
+    assert posted == [] and screen.asked_at == [(7, 200.0, 100.0)]
+    for kind in ("down", "dblclick"):
+        assert not s.do_input({"type": kind, "app": "Notes", "x": 0.5, "y": 0.5})["ok"]
+    assert posted == []
+
+
+def test_a_release_or_a_move_is_never_refused_for_cover():
+    s = QuartzInput(Screen(on_top="iTerm2"), post=(posted := []).append, quartz=FakeQuartz(), sleep=lambda s: None)
+    for kind in ("up", "drag", "move"):
+        assert s.do_input({"type": kind, "app": "Notes", "x": 0.5, "y": 0.5})["ok"], kind
+    assert len(posted) == 3
+
+
+def test_a_click_on_the_whole_display_or_an_unreadable_list():
+    s = QuartzInput(Screen(on_top="iTerm2"), post=(posted := []).append, quartz=FakeQuartz(), sleep=lambda s: None)
+    assert s.do_input({"type": "click", "x": 0.5, "y": 0.5})["ok"]   # no window named: the point is the point
+
+    class Unreadable(Screen):
+        def on_top_at(self, wid, x, y):
+            raise RuntimeError("no window list")
+    s = QuartzInput(Unreadable(), post=(posted := []).append, quartz=FakeQuartz(), sleep=lambda s: None)
+    got = s.do_input({"type": "click", "app": "Notes", "x": 0.5, "y": 0.5})
+    assert not got["ok"] and "could not be read" in got["detail"] and posted == []
