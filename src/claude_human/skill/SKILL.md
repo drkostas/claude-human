@@ -110,6 +110,21 @@ claude-human android files --serial HOST:PORT --since <the time you asked, ISO 8
 - Exit 0 means a settled burst is there, 2 the wait ran out (it says what it saw), 1 the phone did not
   answer.
 
+## Reading an app on a phone
+
+```bash
+claude-human android read --serial HOST:PORT --package <package> --json
+claude-human android tap --serial HOST:PORT --package <package> X Y --json
+```
+
+- Read the screen with `android read`, never with a bare `uiautomator dump`. It refuses on a locked
+  phone and while another window has focus, so it never returns another app's screen, which a dump
+  taken after a launch that failed quietly does.
+- Tap at the middle of a node's `bounds`, and read again after each tap. `android tap` already reports
+  the texts that appeared and went.
+- When an app does not start (`could not be started`), name a link it opens with `--link` (for example
+  its `scheme://` home). `launched` in the report says which way started it.
+
 ## Testing a gesture on a phone yourself
 
 When a page or an app must be checked with a touch gesture (a pinch, two fingers), run it on the

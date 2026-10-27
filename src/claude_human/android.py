@@ -17,13 +17,18 @@ tap also waits for all of these, and refuses with the reason when they do not ho
     hashed on the phone so only the hash travels. A drawer or a page still animating takes a tap
     meant for what comes after it.
 
-`tap` refuses on a locked phone and brings the app forward when it is not focused (through its
-launcher activity with `am start -n`; never `monkey`, which also injects a random event, and a
-rotation event turns auto-rotate back on). After the tap it reads the screen back with
+`tap` refuses on a locked phone and brings the app forward when it is not focused (launch_how: its
+launcher activity with `am start -n`, the launcher intent, then a link the app opens; never `monkey`,
+which also injects a random event, and a rotation event turns auto-rotate back on). After the tap it reads the screen back with
 `uiautomator dump` and reports what changed: the focused window, and the texts that appeared and
 went. It can also save a screenshot.
 
     claude-human android tap --serial HOST:PORT --package com.example.app X Y [--json] [--out shot.png]
+
+Reading the app's screen is `android read` (checked_read): the view tree's nodes, read only while the
+app's own window has focus and the phone is unlocked.
+
+    claude-human android read --serial HOST:PORT --package com.example.app [--json] [--no-start]
 
 Two fingers (a pinch) are `android pinch`, in android_touch, behind the same checks. Reading a page
 in the phone's Chromium browser is `android browser`, in android_browser.
@@ -35,6 +40,7 @@ import json
 import re
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 
 ADB = "adb"
@@ -65,6 +71,8 @@ BYTES = {1: 4, 2: 4, 3: 3, 4: 2, 5: 4}
 BAND, STILL_GAP = 120, 0.4
 #: how many texts that appeared or went a report names, and how much of each
 REPORTED, TEXT_MAX = 10, 60
+#: links that open an app when neither its launcher activity nor the launcher intent starts it from adb
+LINKS = {"com.viber.voip": "viber://chats"}
 
 
 def _runner(adb: str, env: Mapping[str, str] | None) -> Runner:
@@ -94,15 +102,40 @@ def locked(serial: str, run: Runner) -> bool:
     return "isKeyguardShowing=true" in out
 
 
-def launch(serial: str, package: str, run: Runner) -> bool:
-    """Start the app's launcher activity with `am start -n`. False when it has none."""
+def started(code: int, said: str) -> bool:
+    """Pure. Whether `am start` started something. It can exit 0 and still print "Error: Activity
+    class ... does not exist" or "Error: Activity not started, unable to resolve Intent"; a warning
+    that the app was already in front ("intent has been delivered") is a start."""
+    return code == 0 and not any(line.strip().startswith("Error") for line in said.splitlines())
+
+
+def launch_how(serial: str, package: str, run: Runner, *, link: str | None = None) -> str | None:
+    """Start the app, and say which way worked, or None when none did.
+
+    In turn: its launcher activity by name (`am start -n`), the launcher intent limited to the
+    package, and a link the app opens (`link`, or the one LINKS names for the package), also
+    limited to the package so no other app takes it. Some phones name a launcher activity that
+    `am start -n` then reports as missing (an activity alias the app switches between)."""
     _, out = run(["-s", serial, "shell", "cmd", "package", "resolve-activity", "--brief",
                   "-c", "android.intent.category.LAUNCHER", package])
     lines = [line.strip() for line in out.splitlines() if line.strip()]
-    if not lines or "/" not in lines[-1]:
-        return False
-    code, _ = run(["-s", serial, "shell", "am", "start", "-n", lines[-1]])
-    return code == 0
+    ways: list[tuple[str, list[str]]] = []
+    if lines and "/" in lines[-1]:
+        ways.append((f"activity {lines[-1]}", ["am", "start", "-n", lines[-1]]))
+    ways.append(("launcher intent", ["am", "start", "-a", "android.intent.action.MAIN",
+                                     "-c", "android.intent.category.LAUNCHER", "-p", package]))
+    if uri := link or LINKS.get(package):
+        ways.append((f"link {uri}", ["am", "start", "-a", "android.intent.action.VIEW", "-d", uri,
+                                     "-p", package]))
+    for how, argv in ways:
+        if started(*run(["-s", serial, "shell", *argv])):
+            return how
+    return None
+
+
+def launch(serial: str, package: str, run: Runner, *, link: str | None = None) -> bool:
+    """Start the app (launch_how). False when no way started it."""
+    return launch_how(serial, package, run, link=link) is not None
 
 
 def heads_up(systemui: str) -> str | None:
@@ -225,23 +258,27 @@ def _short(items: list[str]) -> list[str]:
 
 def checked_tap(serial: str, package: str, x: int, y: int, *, idle: float = 3.0, still: bool = True,
                 read: bool = True, wait: float = 10.0, settle: float = 1.0, out: str | None = None,
-                adb: str = ADB, env: Mapping[str, str] | None = None, run: Runner | None = None,
-                sleep=time.sleep, clock=time.monotonic) -> dict:
+                link: str | None = None, adb: str = ADB, env: Mapping[str, str] | None = None,
+                run: Runner | None = None, sleep=time.sleep, clock=time.monotonic) -> dict:
     """Tap (x, y) in `package` on the device `serial` once every check holds, and read the screen back.
 
     {"outcome": "success" | "refused", "why", "focus_before", "focus_after", "appeared", "gone",
-    "screenshot"}. Nothing is tapped on a refusal: a locked phone, an app with no launcher activity,
-    or a check that did not hold within `wait` seconds (its reason). The view tree is read before
-    the tap and `settle` seconds after it, and the texts that appeared and went are named."""
+    "screenshot", "launched"}. Nothing is tapped on a refusal: a locked phone, an app no way could
+    start, or a check that did not hold within `wait` seconds (its reason). An app without focus is
+    started first (launch_how, with `link` as its last way), and `launched` says which way worked.
+    The view tree is read before the tap and `settle` seconds after it, and the texts that appeared
+    and went are named."""
     run = run or _runner(adb, env)
     report: dict = {"outcome": "refused", "why": "", "focus_before": "", "focus_after": "",
-                    "appeared": None, "gone": None, "screenshot": None}
+                    "appeared": None, "gone": None, "screenshot": None, "launched": None}
     if locked(serial, run):
         report["why"] = "the phone is locked"
         return report
-    if package not in focus(serial, run) and not launch(serial, package, run):
-        report["why"] = f"{package} has no launcher activity"
-        return report
+    if package not in focus(serial, run):
+        report["launched"] = launch_how(serial, package, run, link=link)
+        if report["launched"] is None:
+            report["why"] = f"{package} could not be started (no launcher activity, launcher intent or link started it)"
+            return report
     end = clock() + wait
     while (why := why_not(serial, package, y, run, idle=idle, still=still, sleep=sleep)) is not None:
         if clock() >= end:
@@ -307,6 +344,100 @@ def tap(serial: str, package: str, x: int, y: int, *, out: str | None = None, wa
     return report["outcome"], summary(report)
 
 
+def _flag(node: ET.Element, name: str) -> bool:
+    return node.get(name) == "true"
+
+
+def nodes(xml: str | None) -> list[dict] | None:
+    """Pure. The nodes of a uiautomator dump that say something or can be pressed, in order: each
+    with a text or a content description, or clickable with a resource id. Each is {"text", "desc",
+    "id", "class", "package", "bounds": [left, top, right, bottom], "clickable", "scrollable",
+    "focused", "selected"}. None when it is not a dump."""
+    if not xml or "<hierarchy" not in xml:
+        return None
+    try:
+        root = ET.fromstring(xml[xml.index("<hierarchy"):])
+    except ET.ParseError:
+        return None
+    out: list[dict] = []
+    for n in root.iter("node"):
+        text, desc, rid = n.get("text", ""), n.get("content-desc", ""), n.get("resource-id", "")
+        if not (text.strip() or desc.strip() or (rid and _flag(n, "clickable"))):
+            continue
+        box = [int(v) for v in re.findall(r"-?\d+", n.get("bounds", ""))][:4]
+        out.append({"text": text, "desc": desc, "id": rid, "class": n.get("class", ""),
+                    "package": n.get("package", ""), "bounds": box if len(box) == 4 else None,
+                    "clickable": _flag(n, "clickable"), "scrollable": _flag(n, "scrollable"),
+                    "focused": _flag(n, "focused"), "selected": _flag(n, "selected")})
+    return out
+
+
+def _window(serial: str, run: Runner) -> tuple[str, bool]:
+    """(the focused window's line, whether the keyguard shows), from one `dumpsys window`."""
+    _, out = run(["-s", serial, "shell", "dumpsys", "window"])
+    now = next((line.strip() for line in out.splitlines() if "mCurrentFocus" in line), "")
+    return now, "isKeyguardShowing=true" in out
+
+
+def checked_read(serial: str, package: str, *, start: bool = True, link: str | None = None,
+                 wait: float = 10.0, adb: str = ADB, env: Mapping[str, str] | None = None,
+                 run: Runner | None = None, sleep=time.sleep, clock=time.monotonic) -> dict:
+    """Read what `package` shows on the device `serial`, only while its own window has focus.
+
+    {"outcome": "success" | "refused", "why", "focus", "launched", "nodes", "left_out", "xml"}.
+    Refused, with nothing read, on a locked phone (the keyguard showing), when another window has
+    focus (a shade, a dialog, another app) for all of `wait` seconds, and when the focus or the lock
+    changed while the view tree was read, since the tree may then be another window's. With `start`
+    an app without focus is started first (launch_how, `launched` says how); without it, it is
+    refused. `nodes` are the app's own (nodes); `left_out` counts the nodes of other packages the
+    dump held. `xml` is the dump as read."""
+    run = run or _runner(adb, env)
+    report: dict = {"outcome": "refused", "why": "", "focus": "", "launched": None, "nodes": None,
+                    "left_out": 0, "xml": None}
+    now, shut = _window(serial, run)
+    if shut:
+        report["why"] = "the phone is locked"
+        return report
+    if package not in now:
+        if not start:
+            report["why"] = f"{package} does not have focus ({now or 'nothing focused'})"
+            return report
+        report["launched"] = launch_how(serial, package, run, link=link)
+        if report["launched"] is None:
+            report["why"] = f"{package} could not be started (no launcher activity, launcher intent or link started it)"
+            return report
+    end = clock() + wait
+    while True:
+        now, shut = _window(serial, run)
+        if shut:
+            report["why"] = "the phone is locked"
+            return report
+        found = None
+        if package in now:
+            found = nodes(xml := _read(serial, run, DUMP))
+            after, shut = _window(serial, run)
+            if shut or after != now:
+                report["why"] = ("the phone locked while the screen was read" if shut else
+                                 f"the focus moved to {after or 'nothing'} while the screen was read")
+                return report
+            if found is not None:
+                break
+        if clock() >= end:
+            report["focus"] = now
+            report["why"] = (f"{package} does not have focus ({now or 'nothing focused'})" if package not in now
+                             else "the view tree could not be read (uiautomator dump failed)")
+            return report
+        sleep(0.5)
+    own = [n for n in found if n["package"] in ("", package)]
+    if found and not own:
+        others = sorted({n["package"] for n in found})
+        report.update(focus=now, why=f"the view tree held only other apps' nodes ({', '.join(others)})")
+        return report
+    report.update(outcome="success", focus=now, nodes=own, left_out=len(found) - len(own), xml=xml,
+                  why=f"read {len(own)} node(s) of {package}")
+    return report
+
+
 def main(argv: list[str]) -> int:
     import argparse   # noqa: PLC0415
     if argv[:1] == ["files"]:
@@ -329,8 +460,26 @@ def main(argv: list[str]) -> int:
     t.add_argument("--no-read", action="store_true", help="do not read the screen back before and after")
     t.add_argument("--settle", type=float, default=1.0, help="seconds between the tap and reading the screen back")
     t.add_argument("--out", help="save a screenshot here after the tap")
+    t.add_argument("--link", help="a link the app opens, tried when it has to be started and its "
+                                  "launcher activity and the launcher intent do not start it")
     t.add_argument("--json", action="store_true", help="print the whole report as JSON")
     t.add_argument("--adb", default=ADB)
+    r = sub.add_parser("read", help="the texts, bounds and clickable flags on an app's screen, read only "
+                                    "while its own window has focus and the phone is unlocked")
+    r.add_argument("--serial", required=True, help="the device, as adb names it (HOST:PORT or a serial)")
+    r.add_argument("--package", required=True, help="the app's package name")
+    r.add_argument("--no-start", action="store_true", help="refuse when the app is not in front, do not start it")
+    r.add_argument("--link", help="a link the app opens, tried when it has to be started")
+    r.add_argument("--wait", type=float, default=10.0, help="seconds to wait for the app's focus and a readable tree")
+    r.add_argument("--xml", help="save the view tree as read here")
+    r.add_argument("--json", action="store_true", help="print the whole report as JSON (without the tree)")
+    r.add_argument("--adb", default=ADB)
+    s = sub.add_parser("launch", help="start an app, by its launcher activity, the launcher intent or a "
+                                      "link, and say which way worked")
+    s.add_argument("--serial", required=True, help="the device, as adb names it (HOST:PORT or a serial)")
+    s.add_argument("--package", required=True, help="the app's package name")
+    s.add_argument("--link", help="a link the app opens, tried last")
+    s.add_argument("--adb", default=ADB)
     g = sub.add_parser("pinch", help="pinch with two fingers around a point, behind the same checks as tap")
     g.add_argument("--serial", required=True, help="the device, as adb names it (HOST:PORT or a serial)")
     g.add_argument("--package", required=True, help="the app's package name")
@@ -359,8 +508,26 @@ def main(argv: list[str]) -> int:
         else:
             print(android_touch.summary(report) if report["outcome"] == "success" else f"REFUSED: {report['why']}")
         return 0 if report["outcome"] == "success" else 2
+    if a.cmd == "launch":
+        how = launch_how(a.serial, a.package, _runner(a.adb, None), link=a.link)
+        print(f"started {a.package} by its {how}" if how else f"REFUSED: nothing started {a.package}")
+        return 0 if how else 2
+    if a.cmd == "read":
+        report = checked_read(a.serial, a.package, start=not a.no_start, link=a.link, wait=a.wait, adb=a.adb)
+        if a.xml and report["xml"]:
+            with open(a.xml, "w", encoding="utf-8") as f:
+                f.write(report["xml"])
+        if a.json:
+            print(json.dumps({k: v for k, v in report.items() if k != "xml"}, ensure_ascii=False, indent=1))
+        elif report["outcome"] != "success":
+            print(f"REFUSED: {report['why']}")
+        else:
+            for n in report["nodes"]:
+                flag = "\tclickable" if n["clickable"] else ""
+                print(f"{n['text'] or n['desc'] or n['id']}\t{n['bounds']}{flag}")
+        return 0 if report["outcome"] == "success" else 2
     report = checked_tap(a.serial, a.package, a.x, a.y, idle=a.idle, still=not a.no_still,
-                         read=not a.no_read, wait=a.wait, settle=a.settle, out=a.out, adb=a.adb)
+                         read=not a.no_read, wait=a.wait, settle=a.settle, out=a.out, link=a.link, adb=a.adb)
     if a.json:
         print(json.dumps(report, ensure_ascii=False, indent=1))
     else:
