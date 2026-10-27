@@ -167,18 +167,29 @@ blank with `screencapture -l`, so bring it on screen before taking a picture of 
 ```bash
 claude-human brave has-login example.org      # exit 0 saved, 1 not, 2 the login stores could not be read
 claude-human android tap --serial 192.0.2.10:5555 --package com.example.app 540 1200 --json
+claude-human android read --serial 192.0.2.10:5555 --package com.example.app --json
 ```
 
 `brave has-login` reads only the address column of a copy of each profile's login store, never a
 password, so it asks for nothing and shows nothing. `android tap` taps only when the app's own window
 has focus (`mCurrentFocus`, which names a notification shade, a dialog or the lock screen when one lies
-over the app), brings the app forward with `am start -n` when it is not, and refuses on a locked phone.
+over the app), brings the app forward when it is not, and refuses on a locked phone. It starts the app by
+its launcher activity (`am start -n`), then by the launcher intent limited to the package, then by a link
+the app opens (`--link`, or one the package knows for the app), because some phones name a launcher
+activity that `am start -n` then reports as missing; the report says which way worked (`launched`), and
+`android launch` does only that step.
 It also waits, up to `--wait` seconds, until no heads-up notification shows (a banner takes no focus,
 so `mCurrentFocus` misses it), no call rings or runs, nobody has used the phone for `--idle` seconds,
 and a band of the screen around the point hashes the same twice (an animating drawer takes a tap meant
 for what comes after it). It refuses with the reason when one does not hold. After the tap it reads the
 view tree back with `uiautomator dump` and reports the focused window and the texts that appeared and
 went (`--json` for the whole report, `--out` for a screenshot).
+
+`android read` reads the app's screen from the view tree: each node's text or description, its resource
+id, its bounds and whether it is clickable or scrollable. It reads nothing on a locked phone or while
+another window has focus, and refuses when the focus or the lock changed during the read, so a launch
+that failed quietly cannot hand back another app's screen. Nodes of other packages are left out and
+counted (`left_out`); `--no-start` refuses instead of starting the app, and `--xml` saves the tree.
 
 ## A pinch on a phone, and reading the page it changed
 
