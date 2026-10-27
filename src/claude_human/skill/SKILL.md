@@ -213,6 +213,11 @@ claude-human consent deny
   with Full Keyboard Access on).
 - The prompt's application must be in front for the keys to reach it. `answer` brings it forward
   and refuses to press anything when it cannot.
+- Gatekeeper's "is an app downloaded from the Internet" prompt (CoreServicesUIAgent, "Open" and
+  "Cancel") is pressed by the button's title through the Accessibility API, so only a process with
+  that grant can answer it. Ask the station (`POST /input {"type": "consent", "choice": ...}` with a
+  master token). While it is up the app it is about sits stopped (state T) and `open -a` hangs, and
+  ending that app does not close the prompt.
 - On a locked screen the prompt is still listed but cannot be captured or answered. Unlock first
   (through the person's approval).
 

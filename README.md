@@ -131,7 +131,14 @@ claude-human key --window 1234 cmd+ctrl+left cmd+ctrl+right --json
 It waits until nobody has used the keyboard, mouse or trackpad for `--idle` seconds (120 by default),
 brings the window forward with yabai when another one is in front, presses each combination in turn,
 stops at the first one the station refuses, and puts the window that was in front back. The token comes
-from `--token-file`, `$CLAUDE_HUMAN_STATION_TOKEN` or the station's own token file.
+from `--token-file`, `$CLAUDE_HUMAN_STATION_TOKEN` or the station's own token file. yabai reports only
+the windows it manages, so when it has no answer the front window is the frontmost application's first
+window in the window server's list (a system dialog, or an app yabai leaves alone).
+
+The station refuses a click (`down`, `click`, `dblclick`) in a named window unless that window is the
+topmost one at the point, and its refusal names the window on top (`on_top`). A click lands on whatever
+is on top there, so a click meant for a window behind another would reach the other one. A release or
+a drag after an accepted press is never refused, so a button is never left held down.
 
 ## Putting a file into a page in the browser
 
@@ -268,6 +275,14 @@ macOS asks "X wants access to control Y" the first time one program sends Apple 
 and every such event hangs until a person answers. `claude-human consent` lists the prompts on
 screen (with `--out` a picture and its words), and `consent allow` or `consent deny` presses the
 button the person chose through the virtual keyboard, since synthetic clicks are ignored there.
+
+Gatekeeper asks too, the first time an app downloaded from the Internet opens ('"X" is an app
+downloaded from the Internet. Are you sure you want to open it?'). That prompt belongs to
+CoreServicesUIAgent, and the app waits stopped, with no window, until someone answers it. It is listed
+with the others, and `allow` presses "Open" and `deny` presses "Cancel" by their titles through the
+Accessibility API. That needs a process with the Accessibility grant. The station has one, and answers
+the front prompt when a master grant posts `{"type": "consent", "choice": "allow"}` to `/input`. Each
+listed prompt carries the titles of its two buttons (`allow`, `deny`).
 
 ## Telling a person something
 

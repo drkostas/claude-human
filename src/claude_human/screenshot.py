@@ -149,6 +149,44 @@ def covered_by(raw: Iterable[dict], wid: int) -> str | None:
     return None
 
 
+def covered_at(raw: Iterable[dict], wid: int, x: float, y: float) -> str | None:
+    """Pure. The owner of the first window that lies in front of window ``wid`` at the point (x, y),
+    or None when ``wid`` is the topmost window there.
+
+    The same windows as in ``covered_by`` do not count: one of the same application (a sheet, a
+    menu), one with almost no opacity, and system chrome. ``wid`` missing from the list, or not
+    holding the point, reads as covered (an empty owner): a click there cannot reach it."""
+    ahead: list[dict] = []
+    target = None
+    for w in raw:
+        if w.get("kCGWindowNumber") == wid:
+            target = w
+            break
+        ahead.append(w)
+    if target is None:
+        return ""
+
+    def holds(w: dict) -> bool:
+        b = w.get("kCGWindowBounds") or {}
+        bx, by = float(b.get("X", 0)), float(b.get("Y", 0))
+        return bx <= x < bx + float(b.get("Width", 0)) and by <= y < by + float(b.get("Height", 0))
+
+    if not holds(target):
+        return ""
+    mine = target.get("kCGWindowOwnerPID"), str(target.get("kCGWindowOwnerName") or "")
+    for w in ahead:
+        if float(w.get("kCGWindowAlpha", 1.0) or 0.0) <= INVISIBLE:
+            continue
+        pid, owner = w.get("kCGWindowOwnerPID"), str(w.get("kCGWindowOwnerName") or "")
+        if owner in CHROME:
+            continue
+        if (pid is not None and pid == mine[0]) or (pid is None and owner and owner == mine[1]):
+            continue
+        if holds(w):
+            return owner or "an unnamed window"
+    return None
+
+
 def find_blocker(raw: Iterable[dict], blocking: set[str] = BLOCKING_APPS) -> str | None:
     """The owner name of the first window, on any layer, that belongs to a blocking system app."""
     for w in raw:
@@ -302,6 +340,14 @@ def resolve(app: str | None, wid: int | None) -> int | None:
     if app:
         return pick_window(windows(), app)
     return wid
+
+
+def on_top_at(wid: int, x: float, y: float) -> str | None:
+    """Who lies in front of window ``wid`` at the point (x, y) on the desktop now (``covered_at``):
+    None when it is topmost there. Raises when the window list cannot be read."""
+    q = _quartz()
+    return covered_at(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or [],
+                      wid, x, y)
 
 
 def window_rect(wid: int):

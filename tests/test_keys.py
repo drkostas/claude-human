@@ -149,3 +149,60 @@ def test_the_command_refuses_without_a_token_or_with_a_name_it_does_not_know(tmp
     assert keys.main(["--window", "9", "cmd+ctrl+left"], environ={"CLAUDE_HUMAN_STATION_TOKEN": "env-tok"}) == 0
     assert seen["token"] == "env-tok" and seen["window"] == 9 and seen["idle"] == 120.0 and seen["bring"]
     assert "pressed cmd+ctrl+left" in capsys.readouterr().out
+
+
+#: the window server's list with Gatekeeper's alert in front, which yabai does not manage: its tiny
+#: helper window first, then the alert itself, then the window behind it
+DIALOG_FRONT = [
+    {"kCGWindowOwnerName": "CoreServicesUIAgent", "kCGWindowOwnerPID": 58901, "kCGWindowNumber": 14370,
+     "kCGWindowAlpha": 1.0, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1, "Height": 1}},
+    {"kCGWindowOwnerName": "CoreServicesUIAgent", "kCGWindowOwnerPID": 58901, "kCGWindowNumber": 14369,
+     "kCGWindowAlpha": 1.0, "kCGWindowBounds": {"X": 766, "Y": 236, "Width": 260, "Height": 274}},
+    {"kCGWindowOwnerName": "Notes", "kCGWindowOwnerPID": 300, "kCGWindowNumber": 7,
+     "kCGWindowAlpha": 1.0, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 900, "Height": 700}},
+]
+
+
+class Unmanaged(Mac):
+    """yabai has no answer for the front window; LaunchServices names the app in front."""
+
+    def __init__(self, front_pid="58901", **kw):
+        super().__init__(**kw)
+        self.front_pid = front_pid
+
+    def run(self, cmd, **k):
+        if cmd[1:] == ["-m", "query", "--windows", "--window"]:
+            class R:
+                returncode, stdout = 1, "could not retrieve window details."
+            self.ran.append(cmd)
+            return R()
+        if cmd[0] == "/usr/bin/lsappinfo":
+            class L:
+                returncode, stdout = 0, ""
+            self.ran.append(cmd)
+            if self.front_pid is None:
+                L.returncode = 1
+            else:
+                L.stdout = "ASN:0x0-0x5e05e:\n" if cmd[1] == "front" else f'"pid"={self.front_pid}\n'
+            return L()
+        return super().run(cmd, **k)
+
+
+def test_front_falls_back_to_the_window_server_when_yabai_has_no_answer():
+    mac = Unmanaged()
+    got = keys.front(run=mac.run, windows=lambda: DIALOG_FRONT)
+    assert got == {"id": 14369, "app": "CoreServicesUIAgent", "pid": 58901, "title": "", "source": "window server"}
+    assert keys.front(run=Unmanaged(front_pid=None).run, windows=lambda: DIALOG_FRONT) is None
+    assert keys.front(run=Unmanaged(front_pid="999").run, windows=lambda: DIALOG_FRONT) is None
+
+
+def test_a_key_for_a_window_yabai_does_not_manage_goes_to_the_station():
+    mac = Unmanaged(front=14369)
+    got = keys.press(14369, ["escape"], token="tok", run=mac.run, opener=mac.opener, sleep=mac.sleep,
+                     clock=lambda: sum(mac.slept), windows=lambda: DIALOG_FRONT)
+    assert got["ok"] and got["front_before"] == {"id": 14369, "app": "CoreServicesUIAgent"} and not got["brought"]
+    assert mac.posted == [{"type": "key", "code": 53, "flags": 0, "window": 14369}]
+    mac = Unmanaged(front_pid=None)
+    got = keys.press(14369, ["escape"], token="tok", run=mac.run, opener=mac.opener, sleep=mac.sleep,
+                     clock=lambda: sum(mac.slept), windows=lambda: DIALOG_FRONT)
+    assert not got["ok"] and "neither yabai nor the window server" in got["why"] and not mac.posted

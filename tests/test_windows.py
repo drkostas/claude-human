@@ -197,3 +197,26 @@ def test_keep_front_can_bring_the_app_back_through_the_callers_function(monkeypa
     assert screenshot.keep_front("com.example.term", lambda: "com.brave.Browser", watch=0,
                                  activate_app=mine.append) == "com.example.term"
     assert mine == ["com.example.term"]
+
+
+def _w(wid, owner, pid, x, y, w, h, alpha=1.0, layer=0):
+    return {"kCGWindowNumber": wid, "kCGWindowOwnerName": owner, "kCGWindowOwnerPID": pid, "kCGWindowLayer": layer,
+            "kCGWindowAlpha": alpha, "kCGWindowBounds": {"X": x, "Y": y, "Width": w, "Height": h}}
+
+
+#: an iTerm2 window lying over the right half of a Viber window, front to back, with the Dock's
+#: full-display window and a menu of Viber's own in front of both
+OVERLAP = [_w(1, "Dock", 600, 0, 0, 1728, 1117, layer=20), _w(2, "Viber", 300, 300, 300, 200, 150, layer=101),
+           _w(3, "iTerm2", 400, 800, 100, 900, 900), _w(4, "Viber", 300, 100, 100, 1200, 800)]
+
+
+def test_covered_at_names_the_window_on_top_at_the_point_only():
+    from claude_human.screenshot import covered_at
+    assert covered_at(OVERLAP, 4, 1000, 500) == "iTerm2"          # under the iTerm2 window
+    assert covered_at(OVERLAP, 4, 400, 500) is None               # the uncovered left half
+    assert covered_at(OVERLAP, 4, 350, 350) is None               # under its own menu
+    assert covered_at(OVERLAP, 3, 1000, 500) is None              # iTerm2 is on top there
+    assert covered_at(OVERLAP, 4, 1500, 1000) == ""               # outside the window
+    assert covered_at(OVERLAP, 9, 400, 500) == ""                 # not on screen
+    faint = [_w(5, "Overlay", 700, 0, 0, 1728, 1117, alpha=0.003)] + OVERLAP
+    assert covered_at(faint, 4, 400, 500) is None

@@ -91,3 +91,102 @@ def test_a_prompt_still_open_after_the_key_is_a_failure(world):
 def test_an_unknown_answer_is_refused(world):
     ok, _ = c.answer("maybe", helper="/h", find=world.find, forward=world.forward)
     assert not ok and world.calls == []
+
+
+#: Gatekeeper's '"OpenMTP" is an app downloaded from the Internet' alert as the window list showed it
+#: (macOS 26, a 1728 by 1117 display), behind the lock screen's two windows
+GATEKEEPER = [
+    {"kCGWindowOwnerName": "loginwindow", "kCGWindowNumber": 14351, "kCGWindowOwnerPID": 501, "kCGWindowLayer": 2004,
+     "kCGWindowAlpha": 1.0, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1728, "Height": 1117}},
+    {"kCGWindowOwnerName": "Dock", "kCGWindowNumber": 70, "kCGWindowOwnerPID": 600, "kCGWindowLayer": 20,
+     "kCGWindowAlpha": 1.0, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1728, "Height": 1117}},
+    {"kCGWindowOwnerName": "CoreServicesUIAgent", "kCGWindowNumber": 14369, "kCGWindowOwnerPID": 58901,
+     "kCGWindowLayer": 8, "kCGWindowAlpha": 1.0, "kCGWindowBounds": {"X": 766, "Y": 236, "Width": 260, "Height": 274}},
+]
+
+
+def test_gatekeepers_alert_is_a_prompt_with_its_own_buttons():
+    found = c.find_prompts(GATEKEEPER, (1728, 1117))
+    assert [(p["wid"], p["owner"], p["allow"], p["deny"]) for p in found] == [(14369, "CoreServicesUIAgent", "Open", "Cancel")]
+    assert c.find_prompts([win()], (1728, 1117))[0]["deny"] == "Don't Allow"
+    assert c.join_lines(['“OpenMTP” is an app downloaded from the Internet.', "Are you sure you want to open it?",
+                         "Open", "Cancel"]) == '"OpenMTP" is an app downloaded from the Internet. Are you sure you want to open it?'
+
+
+def test_a_gatekeeper_prompt_is_pressed_by_its_buttons_title_without_the_keyboard(world):
+    world.open = [{"wid": 14369, "pid": 58901, "owner": "CoreServicesUIAgent"}]
+    pressed = []
+
+    def press(pid, wid, title):
+        pressed.append((pid, wid, title))
+        world.open = []
+        return True, f"pressed {title}"
+    ok, why = c.answer("deny", helper="/h", find=world.find, forward=world.forward, press=press)
+    assert ok and why == "Pressed Cancel." and pressed == [(58901, 14369, "Cancel")]
+    assert world.calls == [] and world.fronted == []   # no helper, no bringing forward
+    world.open = [{"wid": 14369, "pid": 58901, "owner": "CoreServicesUIAgent"}]
+    ok, why = c.answer("allow", find=world.find, press=press)
+    assert ok and pressed[-1][2] == "Open"
+
+
+def test_a_gatekeeper_press_that_fails_or_leaves_it_open_says_so(world):
+    world.open = [{"wid": 14369, "pid": 58901, "owner": "CoreServicesUIAgent"}]
+    ok, why = c.answer("allow", find=world.find, press=lambda *a: (False, "this process has no Accessibility grant"))
+    assert not ok and why.startswith("nothing was pressed") and "grant" in why
+    ok, why = c.answer("allow", find=world.find, press=lambda *a: (True, "pressed Open"))
+    assert not ok and "still open" in why
+
+
+class FakeAX:
+    """The Accessibility API over a tree of dicts: {"role", "title", "children", "wid"}."""
+
+    def __init__(self, windows, trusted=True):
+        self.app = {"role": "AXApplication", "title": "CoreServicesUIAgent", "children": windows}
+        self.trusted, self.pressed = trusted, []
+
+    def AXIsProcessTrusted(self):
+        return self.trusted
+
+    def AXUIElementCreateApplication(self, pid):
+        return self.app
+
+    def AXUIElementCopyAttributeValue(self, element, name, _):
+        value = {"AXWindows": element.get("children") if element is self.app else None,
+                 "AXRole": element.get("role"), "AXTitle": element.get("title"),
+                 "AXChildren": element.get("children")}.get(name)
+        return (0, value) if value is not None else (-25205, None)
+
+    def AXUIElementPerformAction(self, element, action):
+        self.pressed.append((element["title"], action))
+        return 0
+
+    def window_id(self, element):
+        return element.get("wid")
+
+
+def alert(wid, *buttons):
+    group = {"role": "AXGroup", "children": [{"role": "AXButton", "title": b} for b in buttons]}
+    return {"role": "AXWindow", "title": "", "wid": wid, "children": [{"role": "AXStaticText", "title": ""}, group]}
+
+
+def test_press_button_finds_the_button_by_title_in_the_named_window_only():
+    ax = FakeAX([alert(1, "Open", "Cancel"), alert(14369, "Open", "Cancel")])
+    assert c.press_button(58901, 14369, "Cancel", ax=ax) == (True, "pressed Cancel")
+    assert ax.pressed == [("Cancel", "AXPress")]
+    ax = FakeAX([alert(1, "Open", "Cancel")])
+    ok, why = c.press_button(58901, 14369, "Cancel", ax=ax)
+    assert not ok and "not among" in why and ax.pressed == []
+    ax = FakeAX([alert(14369, "Move to Trash", "Done")])
+    ok, why = c.press_button(58901, 14369, "Open", ax=ax)
+    assert not ok and "no button titled 'Open'" in why and ax.pressed == []
+
+
+def test_press_button_without_the_accessibility_grant_presses_nothing():
+    ax = FakeAX([alert(14369, "Open", "Cancel")], trusted=False)
+    ok, why = c.press_button(58901, 14369, "Open", ax=ax)
+    assert not ok and "grant" in why and ax.pressed == []
+
+
+def test_a_title_with_a_curly_apostrophe_matches():
+    ax = FakeAX([alert(5, "Don’t Allow", "Allow")])
+    assert c.press_button(1, 5, "Don't Allow", ax=ax)[0]

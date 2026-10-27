@@ -271,8 +271,11 @@ class Handler(BaseHTTPRequestHandler):
                 if who.window:
                     msg["window"] = who.window
             sink = self.st.input
-            if msg.get("type") == "spotlight":
-                result = self.st.auth.perform(who.grant, "spotlight", lambda: sink.do_input(msg))
+            if msg.get("type") == "consent" and not who.master:
+                self._send(403, {"ok": False, "detail": "only a master grant may answer a system prompt"})
+                return
+            if msg.get("type") in ("spotlight", "consent"):
+                result = self.st.auth.perform(who.grant, msg["type"], lambda: sink.do_input(msg))
             else:
                 result = sink.do_input(msg)
         except Exception as e:  # noqa: BLE001

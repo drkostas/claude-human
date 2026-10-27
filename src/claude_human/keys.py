@@ -96,16 +96,68 @@ def idle_seconds(*, run: Callable = subprocess.run, env: Mapping[str, str] | Non
     return idle_s(r.stdout) if r.returncode == 0 else None
 
 
-def front(*, run: Callable = subprocess.run, yabai: str = YABAI,
-          env: Mapping[str, str] | None = None) -> dict | None:
-    """The window in front, as yabai describes it ({"id", "app", "title", ...}), or None."""
+#: windows smaller than this are a menu bar item or a helper of the app, not what keys go to
+FRONT_MIN = 40
+
+
+def front_of(raw: Iterable[dict], pid: int) -> dict | None:
+    """Pure. The first on-screen window of the process `pid` in a window list that runs front to
+    back (CGWindowListCopyWindowInfo's), on any layer, as {"id", "app", "pid", "title"}, or None."""
+    for w in raw:
+        if int(w.get("kCGWindowOwnerPID") or 0) != int(pid) or float(w.get("kCGWindowAlpha", 1) or 0) <= 0:
+            continue
+        b = w.get("kCGWindowBounds") or {}
+        if float(b.get("Width", 0)) < FRONT_MIN or float(b.get("Height", 0)) < FRONT_MIN:
+            continue
+        return {"id": int(w.get("kCGWindowNumber") or 0), "app": str(w.get("kCGWindowOwnerName") or ""),
+                "pid": int(pid), "title": str(w.get("kCGWindowName") or "")}
+    return None
+
+
+def front_pid(*, run: Callable = subprocess.run, env: Mapping[str, str] | None = None) -> int | None:
+    """The frontmost application's pid, from LaunchServices (``lsappinfo``), or None."""
+    try:
+        asn = run(["/usr/bin/lsappinfo", "front"], capture_output=True, text=True, timeout=10, env=env)
+        if asn.returncode != 0 or not asn.stdout.strip():
+            return None
+        r = run(["/usr/bin/lsappinfo", "info", "-only", "pid", asn.stdout.strip()], capture_output=True,
+                text=True, timeout=10, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r'"pid"\s*=\s*(\d+)', r.stdout or "")
+    return int(m.group(1)) if r.returncode == 0 and m else None
+
+
+def _onscreen() -> list[dict]:
+    import Quartz   # noqa: PLC0415 - macOS only
+    return list(Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID) or [])
+
+
+def front(*, run: Callable = subprocess.run, yabai: str = YABAI, env: Mapping[str, str] | None = None,
+          windows: Callable[[], Iterable[dict]] | None = None) -> dict | None:
+    """The window in front, as yabai describes it ({"id", "app", "title", ...}), or None.
+
+    yabai reports only the windows it manages, so a system dialog (Gatekeeper's "Open" and "Cancel",
+    owned by CoreServicesUIAgent) or a window of an app yabai leaves alone has no answer there. Then
+    the front window is the frontmost application's first on-screen window by the window server
+    (``front_pid`` and ``front_of``), marked {"source": "window server"}. `windows` lists the
+    on-screen windows front to back (default: Quartz's list)."""
     try:
         r = run([yabai, "-m", "query", "--windows", "--window"], capture_output=True, text=True,
                 timeout=10, env=env)
         got = json.loads(r.stdout) if r.returncode == 0 else None
     except (OSError, subprocess.SubprocessError, ValueError):
+        got = None
+    if isinstance(got, dict) and got.get("id"):
+        return got
+    pid = front_pid(run=run, env=env)
+    if pid is None:
         return None
-    return got if isinstance(got, dict) and got.get("id") else None
+    try:
+        found = front_of((windows or _onscreen)(), pid)
+    except Exception:  # noqa: BLE001 - a list that cannot be read is no answer
+        return None
+    return {**found, "source": "window server"} if found else None
 
 
 def focus(window: int, *, run: Callable = subprocess.run, yabai: str = YABAI,
@@ -142,7 +194,7 @@ def press(window: int, combos: Iterable[str], *, token: str, station: str = STAT
           idle: float = 120.0, wait: float = 3600.0, gap: float = 0.5, bring: bool = True,
           restore: bool = True, run: Callable = subprocess.run, opener: Callable = urllib.request.urlopen,
           sleep: Callable = time.sleep, clock: Callable = time.monotonic, yabai: str = YABAI,
-          env: Mapping[str, str] | None = None) -> dict:
+          env: Mapping[str, str] | None = None, windows: Callable[[], Iterable[dict]] | None = None) -> dict:
     """Press each combination in `window`, in order, once the Mac has been idle for `idle` seconds
     (waiting up to `wait`). Returns a report: {"ok", "pressed" (the combinations the station
     pressed), "why" (the first refusal, or None), "front_before" ({"id", "app"} of the window that
@@ -170,9 +222,9 @@ def press(window: int, combos: Iterable[str], *, token: str, station: str = STAT
             return report
         sleep(min(5.0, max(0.5, idle - now)))
     report["waited_s"] = round(clock() - start, 1)
-    before = front(run=run, yabai=yabai, env=env)
+    before = front(run=run, yabai=yabai, env=env, windows=windows)
     if before is None:
-        report["why"] = "yabai did not say which window is in front"
+        report["why"] = "neither yabai nor the window server said which window is in front"
         return report
     report["front_before"] = {"id": before.get("id"), "app": before.get("app")}
     if int(before["id"]) != int(window):
@@ -181,7 +233,7 @@ def press(window: int, combos: Iterable[str], *, token: str, station: str = STAT
             return report
         focus(window, run=run, yabai=yabai, env=env)
         sleep(0.6)
-        now_front = front(run=run, yabai=yabai, env=env)
+        now_front = front(run=run, yabai=yabai, env=env, windows=windows)
         report["brought"] = True
         if not now_front or int(now_front.get("id") or 0) != int(window):
             report["why"] = f"window {window} did not come to the front"
