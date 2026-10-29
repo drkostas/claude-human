@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `consent.requests(log_text)` reads the unified log's consent requests: which program asked (`asker`, an executable path or a bundle id) to control which app (`target`), and the answer logged after it (`result`, None while a prompt still waits). The log names both while the screen is locked, when a prompt's words cannot be read. `recent_requests(minutes)` runs `/usr/bin/log` for them, `waiting` keeps the ones still unanswered, and `short` gives a program's short name
+- `consent.timed_out()` reads, from the user's consent database and only reading it, the Apple Events consents macOS denied because nobody answered the prompt in time. Until a new prompt is answered, that program's every Apple Event to that app fails with -1743 and no message. None when the database cannot be read (it needs Full Disk Access)
 - `consent` lists an app's request to control the computer through accessibility features (universalAccessAuthWarn, "Open System Settings" and "Deny") with `kind` "settings": only the person can grant it, in System Settings, so `answer("allow")` refuses it and presses nothing, while a deny presses "Deny" by its title. Every other prompt has `kind` "press"
 - `consent.prompts()` also lists prompts on other desktops, after the ones on screen, marked `on_screen: false`. A prompt on a desktop nobody is looking at waits as long as one in front of them, and it was missing from the listing
 - `consent.read_words(pid, wid)` reads a consent prompt's words from its text through the Accessibility API, with the quotes straightened. It reads a locked or covered screen, where a picture of the prompt cannot be taken, and needs the Accessibility grant

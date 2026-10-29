@@ -29,6 +29,7 @@ Rules every function here keeps:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from collections.abc import Iterable, Mapping
@@ -358,3 +359,95 @@ def ask_station(choice: str, *, token: str, station: str = "http://127.0.0.1:878
     if not isinstance(got, dict):
         return False, "the station's answer was not an object"
     return bool(got.get("ok")), str(got.get("detail") or ("pressed" if got.get("ok") else "refused"))
+
+
+# ----------------------------------------------------------------------------- who asked, and timeouts
+
+#: the unified log's line that starts a request (the process asking is the TARGET app, which asks on
+#: behalf of the program that sent it Apple Events, named in the identity block that follows)
+_REQUEST = re.compile(r"^(\S+ \S+) +\w+ +(.+?)\[(\d+):[0-9a-f]+\] \[com\.apple\.TCC:access\] "
+                      r"TCCAccessRequestIndirect: TCCAccessRequestIndirect with pid \d+: target_identity")
+_IDENTITY = re.compile(r'kTCCCodeIdentityIdentifier = "([^"]+)"')
+#: the line that answers a request, logged by the same process once the decision is known
+_RESULT = re.compile(r"^\S+ \S+ +\w+ +.+?\[(\d+):[0-9a-f]+\] \[com\.apple\.TCC:access\] "
+                     r"TCCAccessRequestIndirect_block_invoke: access request result was (\d+)")
+#: TCC's reason for a denial that came from a prompt nobody answered
+TIMEOUT_REASON = 9
+#: the per-user consent database, read only
+USER_TCC = "~/Library/Application Support/com.apple.TCC/TCC.db"
+
+
+def requests(text: str) -> list[dict]:
+    """Pure. The consent requests in ``log show --style compact`` output, oldest first, as
+    ``{at, target, target_pid, asker, result}``: ``target`` is the app asked to be controlled (the
+    process that logged the request), ``asker`` the program that sent it Apple Events (an executable
+    path or a bundle id), and ``result`` the answer the same process logged next (None while it has
+    none, which is a request still waiting on a prompt). The log names both programs while the
+    screen is locked, when the prompt's words cannot be read."""
+    out: list[dict] = []
+    current: dict | None = None
+    for line in (text or "").splitlines():
+        m = _REQUEST.match(line)
+        if m:
+            current = {"at": m.group(1), "target": m.group(2), "target_pid": int(m.group(3)), "asker": None,
+                       "result": None}
+            out.append(current)
+            continue
+        res = _RESULT.match(line)
+        if res:
+            waiting = [r for r in out if r["target_pid"] == int(res.group(1)) and r["result"] is None]
+            if waiting:
+                waiting[0]["result"] = int(res.group(2))
+            continue
+        if current is not None and current["asker"] is None:
+            ident = _IDENTITY.search(line)
+            if ident:
+                current["asker"] = ident.group(1)
+                current = None
+    return [r for r in out if r["asker"]]
+
+
+def waiting(found: list[dict]) -> list[dict]:
+    """Pure. The requests among `found` that no answer followed yet: the ones a prompt is up for."""
+    return [r for r in found if r.get("result") is None]
+
+
+def short(name: str | None) -> str | None:
+    """Pure. A program's short name: the last part of an executable path, or the bundle id as it is."""
+    if not name:
+        return None
+    return name.rstrip("/").rsplit("/", 1)[-1] if "/" in name else name
+
+
+def recent_requests(minutes: int = 10, *, run=None, env: Mapping[str, str] | None = None) -> list[dict] | None:
+    """The consent requests the unified log holds from the last `minutes`, oldest first (``requests``),
+    or None when the log could not be read."""
+    argv = ["/usr/bin/log", "show", "--info", "--style", "compact", "--last", f"{int(minutes)}m", "--predicate",
+            'eventMessage CONTAINS "TCCAccessRequestIndirect"']
+    try:
+        r = (run or _run)(argv, capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return requests(r.stdout) if r.returncode == 0 else None
+
+
+def timed_out(db: str | os.PathLike | None = None) -> list[dict] | None:
+    """The Apple Events consents macOS recorded as denied because nobody answered the prompt in time,
+    newest first, as ``{asker, target, at}`` (``at`` in seconds since the epoch), read only from the
+    user's consent database. Until a new prompt is answered, the asker's every Apple Event to the
+    target fails (error -1743) with no prompt and no message. None when the database cannot be read
+    (it needs Full Disk Access). Nothing here writes the database."""
+    import sqlite3   # noqa: PLC0415
+    path = os.path.expanduser(str(db or USER_TCC))
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = conn.execute(
+                "SELECT client, indirect_object_identifier, last_modified FROM access "
+                "WHERE service = 'kTCCServiceAppleEvents' AND auth_value = 0 AND auth_reason = ? "
+                "ORDER BY last_modified DESC", (TIMEOUT_REASON,)).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return [{"asker": r[0], "target": r[1], "at": int(r[2] or 0)} for r in rows]
