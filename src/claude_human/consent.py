@@ -263,3 +263,30 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
     if r.returncode != 0:
         return False, f"virtual HID helper failed: {(r.stderr or r.stdout or '').strip()[:80]}"
     return _closed(find, target, poll_seconds, "Allowed." if choice == "allow" else "Not allowed.")
+
+
+def ask_station(choice: str, *, token: str, station: str = "http://127.0.0.1:8789",
+                opener: Callable | None = None) -> Result:
+    """Answer the front consent prompt through a running station, which presses it with its own
+    Accessibility grant (``{"type": "consent"}`` on ``/input``, master token only). For a process
+    that has no such grant, such as a launchd job. The station's answer, or why it could not be
+    asked."""
+    import json   # noqa: PLC0415
+    import urllib.error   # noqa: PLC0415
+    import urllib.request   # noqa: PLC0415
+    if choice not in ("allow", "deny"):
+        return False, f"unknown answer {choice!r}: allow or deny"
+    req = urllib.request.Request(
+        f"{station.rstrip('/')}/input", method="POST",
+        data=json.dumps({"type": "consent", "choice": choice}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with (opener or urllib.request.urlopen)(req, timeout=30) as r:
+            got = json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return False, f"the station answered {e.code}"
+    except (OSError, ValueError) as e:
+        return False, f"the station did not answer: {type(e).__name__}"
+    if not isinstance(got, dict):
+        return False, "the station's answer was not an object"
+    return bool(got.get("ok")), str(got.get("detail") or ("pressed" if got.get("ok") else "refused"))
