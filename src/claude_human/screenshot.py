@@ -149,13 +149,17 @@ def covered_by(raw: Iterable[dict], wid: int) -> str | None:
     return None
 
 
-def covered_at(raw: Iterable[dict], wid: int, x: float, y: float) -> str | None:
+def covered_at(raw: Iterable[dict], wid: int, x: float, y: float,
+               display: tuple[float, float] | None = None) -> str | None:
     """Pure. The owner of the first window that lies in front of window ``wid`` at the point (x, y),
     or None when ``wid`` is the topmost window there.
 
     The same windows as in ``covered_by`` do not count: one of the same application (a sheet, a
-    menu), one with almost no opacity, and system chrome. ``wid`` missing from the list, or not
-    holding the point, reads as covered (an empty owner): a click there cannot reach it."""
+    menu), one with almost no opacity, and system chrome. Nor does a window above the ordinary
+    layer that spans the whole ``display`` (width, height): Notification Center and similar
+    overlays keep an opaque window that size, and a click passes through it wherever it draws
+    nothing. A banner or a panel of theirs is smaller, and still counts. ``wid`` missing from the
+    list, or not holding the point, reads as covered (an empty owner): a click there cannot reach it."""
     ahead: list[dict] = []
     target = None
     for w in raw:
@@ -182,9 +186,18 @@ def covered_at(raw: Iterable[dict], wid: int, x: float, y: float) -> str | None:
             continue
         if (pid is not None and pid == mine[0]) or (pid is None and owner and owner == mine[1]):
             continue
+        if display and int(w.get("kCGWindowLayer", 0) or 0) != 0 and _spans(w, display):
+            continue
         if holds(w):
             return owner or "an unnamed window"
     return None
+
+
+def _spans(w: dict, display: tuple[float, float]) -> bool:
+    """Whether a window covers the whole display (a full-screen overlay)."""
+    b = w.get("kCGWindowBounds") or {}
+    return (float(b.get("X", 0)) <= 0 and float(b.get("Y", 0)) <= 0
+            and float(b.get("Width", 0)) >= display[0] and float(b.get("Height", 0)) >= display[1])
 
 
 def find_blocker(raw: Iterable[dict], blocking: set[str] = BLOCKING_APPS) -> str | None:
@@ -346,8 +359,9 @@ def on_top_at(wid: int, x: float, y: float) -> str | None:
     """Who lies in front of window ``wid`` at the point (x, y) on the desktop now (``covered_at``):
     None when it is topmost there. Raises when the window list cannot be read."""
     q = _quartz()
+    disp = q.CGDisplayBounds(q.CGMainDisplayID())
     return covered_at(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or [],
-                      wid, x, y)
+                      wid, x, y, (disp.size.width, disp.size.height))
 
 
 def window_rect(wid: int):
