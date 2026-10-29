@@ -413,3 +413,24 @@ def test_a_consent_answer_is_for_a_master_grant_only_and_goes_through_perform(st
     assert code == 403 and not json.loads(body)["ok"] and not any(m.get("type") == "consent" for m in sink.got)
     code, _h, body = req(port, "POST", "/input", token="master-token", body={"type": "consent", "choice": "deny"})
     assert code == 200 and auth.performed[-1][1] == "consent" and sink.got[-1]["type"] == "consent"
+
+
+def test_a_full_shot_asks_the_screen_for_its_own_size_and_a_high_quality():
+    from claude_human.station import server as srv
+
+    class Sized:
+        def __init__(self):
+            self.kw = None
+
+        def frame(self, wid, **kw):
+            self.kw = kw
+            return (JPEG + b"full", 1000, 600)
+
+    s = Sized()
+    assert srv.full_frame(s, 7) == (JPEG + b"full", 1000, 600)
+    assert s.kw == {"max_width": 0, "quality": srv.FULL_QUALITY}
+
+    class Plain:
+        def frame(self, wid):
+            return (JPEG + b"plain", 100, 50)
+    assert srv.full_frame(Plain(), 7) == (JPEG + b"plain", 100, 50), "a screen without the options gives its own shot"
