@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `brave.start()` opens a browser that is not running with its last session and waits until it answers, for a browser that something else ended. A running browser is left as it is ("skipped"), so nothing is stopped.
 - `station.steps` and `claude-human steps OUTDIR (--window ID | --app NAME)`: drive one window through a running station a step at a time. Steps arrive as files (`cmd-<n>.json`: click, double, key, text, scroll, page, raise, wait, noop, stop) and each result is written to `done-<n>.json` with the station's answers, a picture and its text lines. The session waits for an unlocked session, keeps the display awake for its whole time, opens the app when asked, brings the window forward before each input, pages until the picture stops changing, and on every way out (a stop step, no step in time, its time cap, a signal) stops keeping the display awake and runs its exit hook (`--relock` locks the session again). `station.client.windows` lists the windows the station can show
 - The station's `scroll` takes `"unit": "line"` (a mouse wheel's line steps) and `"phased": true` (pixel deltas wrapped in the began, changed and ended phases a trackpad sends). Some apps, Qt apps among them, ignore plain pixel scroll events, which the station still sends by default
 - The station takes `{"type": "raise"}`: the named window is brought to the front through yabai, which also switches to its desktop, and the answer says whether it came. A window left on another desktop answers no click and gives no picture
