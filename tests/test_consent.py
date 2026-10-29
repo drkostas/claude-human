@@ -190,3 +190,21 @@ def test_press_button_without_the_accessibility_grant_presses_nothing():
 def test_a_title_with_a_curly_apostrophe_matches():
     ax = FakeAX([alert(5, "Don’t Allow", "Allow")])
     assert c.press_button(1, 5, "Don't Allow", ax=ax)[0]
+
+
+def test_ask_station_posts_a_consent_input_with_the_master_token():
+    import io
+    import json
+    import urllib.error
+    sent = []
+
+    def opener(req, timeout=None):
+        sent.append((req.full_url, req.get_header("Authorization"), json.loads(req.data)))
+        return io.BytesIO(json.dumps({"ok": True, "detail": "Pressed Cancel."}).encode())
+    assert c.ask_station("deny", token="tok", opener=opener) == (True, "Pressed Cancel.")
+    assert sent == [("http://127.0.0.1:8789/input", "Bearer tok", {"type": "consent", "choice": "deny"})]
+
+    def refused(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 403, "no", {}, None)
+    assert c.ask_station("allow", token="tok", opener=refused) == (False, "the station answered 403")
+    assert not c.ask_station("open", token="tok", opener=opener)[0] and len(sent) == 1
