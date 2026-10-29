@@ -86,6 +86,11 @@ describe("what the listener forwards", () => {
     expect(kotlin).toContain("Notification.EXTRA_MESSAGES");
   });
 
+  it("sends a long message's whole text, the longer of the big text and the short line", () => {
+    expect(kotlin).toContain("Notification.EXTRA_BIG_TEXT");
+    expect(kotlin).toContain("val body = if (big != null && big.length > (short?.length ?: 0)) big else short");
+  });
+
   it("queues what the endpoint did not take, bounded, and never logs a notification's text", () => {
     expect(kotlin).toContain("takeLast(QUEUE_MAX)");
     expect(kotlin).toContain("private const val QUEUE_MAX = 200");

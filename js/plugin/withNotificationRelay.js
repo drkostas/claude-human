@@ -186,7 +186,11 @@ class NotificationRelayService : NotificationListenerService() {
     private fun payloadOf(sbn: StatusBarNotification, n: Notification): JSONObject? {
         val x = n.extras ?: return null
         val title = text(x, Notification.EXTRA_TITLE)
-        val body = text(x, Notification.EXTRA_TEXT)
+        // a long message's whole text is in EXTRA_BIG_TEXT (BigTextStyle); EXTRA_TEXT may be only
+        // the short line the collapsed notification shows, so the longer of the two is sent
+        val short = text(x, Notification.EXTRA_TEXT)
+        val big = text(x, Notification.EXTRA_BIG_TEXT)
+        val body = if (big != null && big.length > (short?.length ?: 0)) big else short
         val conversation = text(x, Notification.EXTRA_CONVERSATION_TITLE) ?: title
         val messages = JSONArray()
         x.getParcelableArray(Notification.EXTRA_MESSAGES)?.forEach { p ->
