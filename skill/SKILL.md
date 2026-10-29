@@ -213,6 +213,8 @@ claude-human consent deny
   with Full Keyboard Access on).
 - The prompt's application must be in front for the keys to reach it. `answer` brings it forward
   and refuses to press anything when it cannot.
+- An app asking to control the computer through accessibility features (universalAccessAuthWarn, "Open System Settings" and "Deny") is listed with `kind` "settings". Only the person grants it, in System Settings, Privacy & Security, Accessibility, so ask them in words and never press either button for them. `answer("allow")` refuses it.
+- The listing includes prompts on other desktops (`on_screen: false`): one there waits as long as one in front.
 - A process without Screen Recording cannot take a picture of a prompt, so read its words through the station instead (`{"type": "consent", "choice": "read"}`, or `consent.read_words` in a process with the Accessibility grant). The station presses any prompt by its button's title and tries once more when it stays open.
 - Gatekeeper's "is an app downloaded from the Internet" prompt (CoreServicesUIAgent, "Open" and
   "Cancel") is pressed by the button's title through the Accessibility API, so only a process with

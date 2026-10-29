@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `consent` lists an app's request to control the computer through accessibility features (universalAccessAuthWarn, "Open System Settings" and "Deny") with `kind` "settings": only the person can grant it, in System Settings, so `answer("allow")` refuses it and presses nothing, while a deny presses "Deny" by its title. Every other prompt has `kind` "press"
+- `consent.prompts()` also lists prompts on other desktops, after the ones on screen, marked `on_screen: false`. A prompt on a desktop nobody is looking at waits as long as one in front of them, and it was missing from the listing
 - `consent.read_words(pid, wid)` reads a consent prompt's words from its text through the Accessibility API, with the quotes straightened. It reads a locked or covered screen, where a picture of the prompt cannot be taken, and needs the Accessibility grant
 - `consent.answer(..., by_title=True)` presses any owner's prompt by its button's title (`press_button`), and a press that leaves the prompt open is tried once more (`tries`). Without `by_title` a "wants access to control" prompt is still answered with the keyboard
 - The station's `consent` input presses every owner's prompt by title with its own Accessibility grant, where it used to refuse the "wants access to control" prompts, and `{"type": "consent", "choice": "read"}` answers the front prompt's words and its two buttons without pressing anything. `consent.ask_station` takes "read" too
