@@ -220,3 +220,20 @@ def test_covered_at_names_the_window_on_top_at_the_point_only():
     assert covered_at(OVERLAP, 9, 400, 500) == ""                 # not on screen
     faint = [_w(5, "Overlay", 700, 0, 0, 1728, 1117, alpha=0.003)] + OVERLAP
     assert covered_at(faint, 4, 400, 500) is None
+
+
+def test_a_full_screen_overlay_above_the_ordinary_layer_does_not_cover_a_click():
+    # the list at a refused click: Tuck (layer 999, alpha 0), Notification Center and the Dock as
+    # full-screen windows on layers 21 and 20, then the app's own window on layer 0
+    from claude_human.screenshot import covered_at
+    raw = [_w(1, "Tuck", 800, 0, 0, 1728, 1117, alpha=0.0, layer=999),
+           _w(2, "Notification Center", 500, 0, 0, 1728, 1117, layer=21),
+           _w(3, "Dock", 600, 0, 0, 1728, 1117, layer=20),
+           _w(15735, "Rakuten Viber", 300, 300, 100, 900, 700)]
+    assert covered_at(raw, 15735, 554, 194, (1728, 1117)) is None
+    assert covered_at(raw, 15735, 554, 194) == "Notification Center"     # without the display it still counts
+    banner = [_w(4, "Notification Center", 500, 1000, 120, 360, 90, layer=21)] + raw
+    assert covered_at(banner, 15735, 554, 194, (1728, 1117)) is None             # beside the banner
+    assert covered_at(banner, 15735, 1100, 150, (1728, 1117)) == "Notification Center"   # under it
+    full_app = [_w(6, "Other", 700, 0, 0, 1728, 1117)] + raw
+    assert covered_at(full_app, 15735, 554, 194, (1728, 1117)) == "Other"   # a full-screen ordinary window covers
