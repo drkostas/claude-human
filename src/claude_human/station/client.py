@@ -88,3 +88,16 @@ def key(window: int, code: int, flags: int = 0, **kw) -> dict:
 def text(window: int, words: str, **kw) -> dict:
     """Text put into `window` (the station pastes it), at most 2000 characters."""
     return send({"type": "text", "window": int(window), "text": str(words)}, **kw)
+
+
+def windows(*, token: str, station: str = STATION, timeout: float = 20.0,
+            opener: Callable = urllib.request.urlopen) -> Optional[list[dict]]:
+    """The windows the station can show (a master token only), as {"id", "app", "title", "x", "y",
+    "width", "height"}, or None when it could not be asked or refused."""
+    try:
+        with opener(_req(station, "/windows", token), timeout=timeout) as r:
+            got = json.loads(r.read() or b"{}")
+    except (urllib.error.HTTPError, OSError, ValueError):
+        return None
+    listed = got.get("windows") if isinstance(got, dict) else None
+    return listed if isinstance(listed, list) else None
