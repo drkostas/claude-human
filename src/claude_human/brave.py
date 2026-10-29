@@ -270,6 +270,31 @@ def restart(app: str = APP, *, quit_wait: float = 60.0, answer_wait: float = 90.
     return "success", {"message": f"{app} {how} and reopened its last session", "how": how}
 
 
+def start(app: str = APP, *, answer_wait: float = 90.0, procs: Processes | None = None,
+          env: Mapping[str, str] | None = None) -> tuple[str, dict]:
+    """Open a browser that is not running with its last session, and wait until it answers.
+
+    For a browser that something else ended (a crash, a signal to every process of the user):
+    nothing is stopped, so nothing can be lost, and a running browser is left as it is ("skipped").
+    Its profiles are set to continue where they left off and it is opened with
+    --restore-last-session, as restart does. Returns (outcome, detail): "success" once it answers a
+    tab listing, "skipped" when it was running, "failure" when it could not be opened or did not
+    answer within `answer_wait` seconds; detail carries "message"."""
+    p = procs or Processes(app, env)
+    if p.pids():
+        return "skipped", {"message": f"{app} is running; nothing was started"}
+    p.prepare()
+    if not p.open():
+        return "failure", {"message": f"{app} could not be opened"}
+    waited = 0.0
+    while not p.answers():
+        if waited >= answer_wait:
+            return "failure", {"message": f"{app} opened but did not answer within {answer_wait:.0f} s"}
+        p.sleep(3)
+        waited += 3
+    return "success", {"message": f"{app} was not running, and it reopened its last session"}
+
+
 def tabs(app: str = APP, *, timeout: float = 30, env: Mapping[str, str] | None = None) -> list[dict] | None:
     """Every tab. [] when the browser is not running, which is known: nothing is open. None when it
     runs and could not be asked, which is unknown, never "no tabs"."""

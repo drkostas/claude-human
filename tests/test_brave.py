@@ -166,6 +166,22 @@ def test_restart_stops_a_browser_that_will_not_quit():
     assert outcome == "success" and detail["how"] == "stopped" and p.signals == [_s.SIGTERM, _s.SIGKILL]
 
 
+def test_start_opens_a_browser_that_is_not_running_with_its_last_session():
+    p = FakeProcs(pids=(), answers_after=2)
+    outcome, detail = brave.start(procs=p)
+    assert outcome == "success" and p.prepared == 1 and p.opened == 1 and p.asked == 2 and p.signals == []
+    p = FakeProcs(pids=(), answers_after=10**6)
+    assert brave.start(procs=p, answer_wait=9)[0] == "failure"
+    p = FakeProcs(pids=(), opens=False)
+    assert brave.start(procs=p)[0] == "failure"
+
+
+def test_start_leaves_a_running_browser_alone():
+    p = FakeProcs()
+    outcome, detail = brave.start(procs=p)
+    assert outcome == "skipped" and p.prepared == 0 and p.opened == 0 and p.signals == []
+
+
 def test_restart_refuses_without_exactly_one_process():
     p = FakeProcs(pids=())
     assert brave.restart(procs=p)[0] == "failure" and p.signals == []
