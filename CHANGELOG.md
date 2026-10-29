@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `claude-human steps --open NAME` opens the app by its bundle's name when that differs from the name its windows carry (`--app`). `--open` alone still uses the `--app` name, which `open -a` refused for such an app
 - `brave.run` and `claude-human brave` fail at once with `blocked_by UserNotificationCenter` (`brave.Blocked`, exit 1) when a macOS consent prompt is on screen, before a window is opened, and in either wait when the prompt appears during the run. Behind such a prompt every AppleScript call waits out its own timeout, so a run given `--timeout 90` went on for minutes. `brave.blocked_by()` names the prompt's owner. `brave.new_window` now waits `wait` seconds by the clock rather than a count of listings that could each take 30 s
 - `claude-human consent list --out PNG` exits 1 and says why on stderr (and as `image_error` in the listing) when no picture was saved, for example when the process may not record the screen. It used to exit 0 with no file. `consent.capture_why` gives the reason, and `consent.capture` keeps its yes or no answer
 - `brave.start()` opens a browser that is not running with its last session and waits until it answers, for a browser that something else ended. A running browser is left as it is ("skipped"), so nothing is stopped.

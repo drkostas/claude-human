@@ -119,3 +119,10 @@ def test_the_client_lists_windows_and_refusals_are_none():
         raise urllib.error.HTTPError(req.full_url, 403, "no", {}, None)
     assert client.windows(token="t", opener=ok) == [{"id": 1}]
     assert client.windows(token="t", opener=no) is None
+
+
+def test_open_takes_the_bundles_name_when_it_differs_from_the_windows_owner(tmp_path):
+    w = World(tmp_path, windows=[{"id": 7, "app": "Example Inc", "width": 900, "height": 700}])
+    w.steps_to_write = {1.0: (1, {"stop": True})}
+    assert w.session(app="Example Inc", open_app="Example").run() == 0
+    assert w.opened == ["Example"]

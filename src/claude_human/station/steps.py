@@ -33,7 +33,7 @@ Every input goes through the station, which refuses while the session is locked,
 up, or another window covers the point, and each answer is in the done file. Nothing here decides
 what to do: it does what each step says and reports what it saw.
 
-    claude-human steps OUTDIR (--window ID | --app NAME) [--open] [--total S] [--step-wait S] [--relock]
+    claude-human steps OUTDIR (--window ID | --app NAME) [--open [NAME]] [--total S] [--step-wait S] [--relock]
 """
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ class StepSession:
     client, the lock bit, caffeinate, the text reader, `open -a` and time, in a test."""
 
     def __init__(self, out: str, *, token: str, window: Optional[int] = None, app: Optional[str] = None,
-                 open_app: bool = False, total: float = 1500.0, step_wait: float = 480.0,
+                 open_app: bool | str = False, total: float = 1500.0, step_wait: float = 480.0,
                  wait_unlock: float = 3600.0, awake: bool = True, relock: bool = False,
                  station: str = client.STATION, send: Callable | None = None, shot: Callable | None = None,
                  windows: Callable | None = None, locked: Callable | None = None,
@@ -232,8 +232,10 @@ class StepSession:
         try:
             if self.awake:
                 self._awake_proc = self._keep_awake(self.total)
-            if self.open_app and self.app:
-                self._open(self.app)
+            if self.open_app:
+                # the name `open -a` takes is the app bundle's, which can differ from the name its windows
+                # carry (an app named "Example" whose windows belong to "Example Inc"): a string names it
+                self._open(self.open_app if isinstance(self.open_app, str) else self.app)
             for _ in range(40):
                 self.window = self._find()
                 if self.window:
@@ -296,7 +298,8 @@ def main(argv: list[str], *, environ=None) -> int:
     who = p.add_mutually_exclusive_group(required=True)
     who.add_argument("--window", type=int, help="the window's id")
     who.add_argument("--app", help="the app, whose largest window is used")
-    p.add_argument("--open", action="store_true", help="open the app first (open -a)")
+    p.add_argument("--open", nargs="?", const=True, default=False, metavar="NAME",
+                   help="open the app first (open -a), by NAME when its bundle's name differs from --app")
     p.add_argument("--total", type=float, default=1500.0, help="seconds the session lasts at most")
     p.add_argument("--step-wait", type=float, default=480.0, help="seconds to wait for the next step file")
     p.add_argument("--wait-unlock", type=float, default=3600.0, help="seconds to wait for an unlocked session")
