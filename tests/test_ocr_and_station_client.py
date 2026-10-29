@@ -95,6 +95,8 @@ def test_shot_returns_the_jpeg_and_its_size():
     seen, opener = recorder(b"\xff\xd8jpeg", {"X-Frame-Size": "1085x682"})
     assert client.shot(9, token="t", opener=opener) == (b"\xff\xd8jpeg", 1085, 682)
     assert seen[0].full_url.endswith("/shot?window=9") and seen[0].get_method() == "GET"
+    client.shot(9, token="t", full=True, opener=opener)
+    assert seen[1].full_url.endswith("/shot?window=9&full=1"), "a full shot is asked for by name"
 
     def missing(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 404, "no", {}, io.BytesIO(b"{}"))

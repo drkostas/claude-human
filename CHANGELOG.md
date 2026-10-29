@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The station's `/shot?full=1` (and `station.client.shot(window, full=True)`) returns a window at its own size and a high JPEG quality. The ordinary shot is made small for streaming to a phone, which is too coarse to read small text or digits from with OCR
 - `ocr.lines(path)` reads the text lines in a picture with macOS's Vision framework, each with its box as fractions of the picture from the top left, in reading order. `find` picks a line by its exact words and side of the picture, `in_band` the lines in a horizontal band, and `middle` the point to press. Reading needs no permission
 - `station.client`: a client for a running station, for a program without Screen Recording or Accessibility of its own. `shot(window)` returns a JPEG of one window and its size, and `click`, `scroll`, `key` and `text` send the inputs the station takes, each returning the station's answer, its refusal (screen locked, a dialog up, the point covered) or why it could not be asked
 - The station's click check (`screenshot.covered_at`) no longer counts a window above the ordinary layer that spans the whole display. Notification Center keeps an opaque full-screen window on layer 21 that a click passes through wherever it draws nothing, and every click on an ordinary window was refused as covered by it. `covered_at` takes the display's size, `on_top_at` passes the main display's, and a banner or panel smaller than the display still counts

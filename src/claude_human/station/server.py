@@ -5,7 +5,7 @@ Routes.
     GET  /view      the page (static, no secret, served no-store)
     GET  /health    {"ok", "locked", "trusted", "windows"} (the window count for a master grant only)
     GET  /windows   every on-screen window (master grant only)
-    GET  /shot      one JPEG frame
+    GET  /shot      one JPEG frame (?full=1: at the window's own size and a high quality, for reading text)
     GET  /stream    multipart/x-mixed-replace, one JPEG per part
     POST /input     one input message, see ``QuartzInput.do_input``
 
@@ -74,6 +74,19 @@ class _Access:
         self.master = grant.master
         self.app = app
         self.window = window
+
+
+#: JPEG quality of a full-size shot (``/shot?full=1``), sharp enough to read small text from
+FULL_QUALITY = 0.92
+
+
+def full_frame(screen: Any, wid: Optional[int]) -> Any:
+    """A shot of `wid` at the window's own size and a high JPEG quality, for a program that reads
+    text from it; a screen whose ``frame`` takes no size or quality gives its ordinary shot."""
+    try:
+        return screen.frame(wid, max_width=0, quality=FULL_QUALITY)
+    except TypeError:
+        return screen.frame(wid)
 
 
 def default_screen() -> Any:
@@ -199,7 +212,9 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/shot":
                 app, wid = target()
                 resolved = screen.resolve(app, wid)
-                f = None if (app and resolved is None) else screen.frame(resolved)
+                full = q.get("full", ["0"])[0].lower() in ("1", "true", "yes")
+                f = None if (app and resolved is None) else (full_frame(screen, resolved) if full
+                                                               else screen.frame(resolved))
                 if not f:
                     self._send(404, {"error": "nothing to capture"})
                     return

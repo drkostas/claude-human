@@ -51,11 +51,12 @@ def send(msg: dict, *, token: str, station: str = STATION, timeout: float = 20.0
     return got if isinstance(got, dict) else {"ok": False, "detail": "the station's answer was not an object"}
 
 
-def shot(window: int, *, token: str, station: str = STATION, timeout: float = 20.0,
+def shot(window: int, *, token: str, station: str = STATION, full: bool = False, timeout: float = 20.0,
          opener: Callable = urllib.request.urlopen) -> Optional[tuple[bytes, int, int]]:
     """A JPEG of `window` and its size in pixels, or None when the station has nothing to capture
-    or could not be asked."""
-    q = urllib.parse.urlencode({"window": int(window)})
+    or could not be asked. `full` asks for the window's own size at a high quality, for reading
+    text from it (the ordinary shot is made small for streaming)."""
+    q = urllib.parse.urlencode({"window": int(window), **({"full": 1} if full else {})})
     try:
         with opener(_req(station, f"/shot?{q}", token), timeout=timeout) as r:
             body = r.read()
