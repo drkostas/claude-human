@@ -268,3 +268,36 @@ def test_read_words_reads_the_prompts_text_and_none_without_the_grant():
     assert c.read_words(42, 5, ax=Texts([win])) == '"tool" wants access to control "Browser".'
     assert c.read_words(42, 5, ax=Texts([win], trusted=False)) is None
     assert c.read_words(42, 9, ax=Texts([win])) is None
+
+
+#: an app asking to control the computer through accessibility features, as the window list showed
+#: it on a desktop nobody was looking at, behind an ordinary window on screen
+ACCESSIBILITY = [
+    {"kCGWindowOwnerName": "Notes", "kCGWindowNumber": 3, "kCGWindowOwnerPID": 300, "kCGWindowLayer": 0,
+     "kCGWindowAlpha": 1.0, "kCGWindowIsOnscreen": True, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 900, "Height": 700}},
+    {"kCGWindowOwnerName": "universalAccessAuthWarn", "kCGWindowNumber": 16507, "kCGWindowOwnerPID": 20651,
+     "kCGWindowLayer": 8, "kCGWindowAlpha": 1.0, "kCGWindowIsOnscreen": False,
+     "kCGWindowBounds": {"X": 734, "Y": 260, "Width": 260, "Height": 300}},
+]
+
+
+def test_an_accessibility_request_is_a_prompt_only_the_person_grants_in_system_settings():
+    found = c.find_prompts(ACCESSIBILITY, (1728, 1117))
+    assert [(p["wid"], p["kind"], p["on_screen"], p["allow"], p["deny"]) for p in found] == \
+        [(16507, "settings", False, "Open System Settings", "Deny")]
+    assert c.find_prompts([win()], (1728, 1117))[0]["kind"] == "press"
+    assert c.find_prompts([win()], (1728, 1117))[0]["on_screen"] is True
+
+
+def test_allowing_an_accessibility_request_is_refused_and_presses_nothing(world):
+    world.open = [{"wid": 16507, "pid": 20651, "owner": "universalAccessAuthWarn"}]
+    pressed = []
+    ok, why = c.answer("allow", find=world.find, forward=world.forward, helper="/h",
+                       press=lambda *a: pressed.append(a) or (True, "pressed"), by_title=True)
+    assert not ok and "System Settings" in why and pressed == [] and world.calls == []
+    def press(pid, wid, title):
+        pressed.append(title)
+        world.open = []
+        return True, "pressed"
+    ok, why = c.answer("deny", find=world.find, press=press, by_title=True)
+    assert ok and pressed == ["Deny"]   # a deny the caller was told to give presses Deny by its title

@@ -38,8 +38,13 @@ from . import paths
 
 #: who shows consent prompts, and the titles of the buttons that allow and that deny
 BUTTONS = {"UserNotificationCenter": ("Allow", "Don't Allow"),
-           "CoreServicesUIAgent": ("Open", "Cancel")}
+           "CoreServicesUIAgent": ("Open", "Cancel"),
+           "universalAccessAuthWarn": ("Open System Settings", "Deny")}
 CONSENT_OWNERS = set(BUTTONS)
+#: the owners whose prompt only the person can grant, in System Settings (an app asking to control
+#: the computer through accessibility features): such a prompt is listed with ``kind`` "settings",
+#: and ``answer`` refuses to allow it, since its first button only opens System Settings
+SETTINGS_OWNERS = {"universalAccessAuthWarn"}
 #: the owners whose prompts are pressed by a button's title through the Accessibility API
 AX_OWNERS = {"CoreServicesUIAgent"}
 #: how deep under a prompt window its buttons are looked for
@@ -62,9 +67,11 @@ Result = tuple[bool, str]
 
 def find_prompts(raw: Iterable[dict], display: tuple[float, float],
                  owners: set[str] = CONSENT_OWNERS) -> list[dict]:
-    """Pure. The consent prompts among on-screen windows (front to back), as
-    ``{wid, pid, owner, x, y, w, h, allow, deny}``; ``allow`` and ``deny`` are the titles of the
-    owner's two buttons (``BUTTONS``)."""
+    """Pure. The consent prompts among the windows (front to back), as
+    ``{wid, pid, owner, x, y, w, h, allow, deny, kind, on_screen}``; ``allow`` and ``deny`` are the
+    titles of the owner's two buttons (``BUTTONS``), ``kind`` is "settings" for a prompt only the
+    person can grant in System Settings (``SETTINGS_OWNERS``) and "press" otherwise, and
+    ``on_screen`` is False for one on another desktop."""
     cap_w, cap_h = display[0] * MAX_FRACTION, display[1] * MAX_FRACTION
     out = []
     for w in raw:
@@ -80,25 +87,33 @@ def find_prompts(raw: Iterable[dict], display: tuple[float, float],
         allow, deny = BUTTONS.get(owner, ("Allow", "Don't Allow"))
         out.append({"wid": int(w.get("kCGWindowNumber") or 0), "pid": int(w.get("kCGWindowOwnerPID") or 0),
                     "owner": owner, "x": float(b.get("X", 0)),
-                    "y": float(b.get("Y", 0)), "w": ww, "h": hh, "allow": allow, "deny": deny})
+                    "y": float(b.get("Y", 0)), "w": ww, "h": hh, "allow": allow, "deny": deny,
+                    "kind": "settings" if owner in SETTINGS_OWNERS else "press",
+                    "on_screen": bool(w.get("kCGWindowIsOnscreen", True))})
     return out
 
 
 def prompts() -> list[dict] | None:
-    """The consent prompts on screen now, or None when the window list cannot be read."""
+    """The consent prompts open now, on screen first (front to back), then those on other desktops,
+    or None when the window list cannot be read. A prompt on a desktop nobody is looking at waits as
+    long as one in front of them."""
     try:
         from .screenshot import _quartz
         q = _quartz()
         disp = q.CGDisplayBounds(q.CGMainDisplayID())
-        raw = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or []
-        return find_prompts(raw, (disp.size.width, disp.size.height))
+        shown = list(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or [])
+        seen = {w.get("kCGWindowNumber") for w in shown}
+        rest = [w for w in (q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionAll, q.kCGNullWindowID) or [])
+                if w.get("kCGWindowNumber") not in seen and str(w.get("kCGWindowOwnerName") or "") in CONSENT_OWNERS]
+        return find_prompts(shown + rest, (disp.size.width, disp.size.height))
     except Exception:
         return None
 
 
 def join_lines(lines: Iterable[str]) -> str:
     """Pure. OCR lines of a prompt as one sentence: the button labels and the help mark dropped."""
-    skip = {"allow", "don't allow", "don’t allow", "ok", "?", "deny", "open", "cancel", "show web page"}
+    skip = {"allow", "don't allow", "don’t allow", "ok", "?", "deny", "open", "cancel", "show web page",
+            "open system settings"}
     kept = [s.strip() for s in lines if s.strip() and s.strip().lower() not in skip]
     return " ".join(kept).replace("“", '"').replace("”", '"').replace("’", "'")
 
@@ -288,6 +303,9 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
         return False, "No consent prompt is open on the Mac right now."
     target = now[0]
     owner = target.get("owner") or "UserNotificationCenter"
+    if owner in SETTINGS_OWNERS and choice == "allow":
+        return False, ("this prompt is granted by the person in System Settings (Privacy & Security), "
+                       "not by a button here, so nothing was pressed")
     if owner in AX_OWNERS or by_title:
         title = BUTTONS.get(owner, BUTTONS["UserNotificationCenter"])[0 if choice == "allow" else 1]
         for attempt in range(1, max(1, tries) + 1):
