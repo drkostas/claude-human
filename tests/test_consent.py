@@ -301,3 +301,60 @@ def test_allowing_an_accessibility_request_is_refused_and_presses_nothing(world)
         return True, "pressed"
     ok, why = c.answer("deny", find=world.find, press=press, by_title=True)
     assert ok and pressed == ["Deny"]   # a deny the caller was told to give presses Deny by its title
+
+
+#: the unified log (compact style) when one program asked through another to control an app: the
+#: target app logs the request, and the identity block names the program that sent it Apple Events
+LOG = """2026-01-31 23:28:41.188 A  osascript[87135:e2a0f4b] (TCC) TCCAccessRequest() IPC
+2026-01-31 23:28:42.047 Df System Events[88343:e2a103b] [com.apple.TCC:access] TCCAccessRequestIndirect: TCCAccessRequestIndirect with pid 88343: target_identity: {
+    kTCCCodeIdentityAuthority = kTCCCodeIdentityDesignatedRequirementAuthority;
+    kTCCCodeIdentityExecutableURL = "file:///usr/local/bin/tool";
+    kTCCCodeIdentityIdentifier = "/usr/local/bin/tool";
+    kTCCCodeIdentityTeamID = "";
+}
+2026-01-31 23:28:42.047 A  System Events[88343:e2a103b] (TCC) TCCAccessRequestIndirect() IPC
+2026-01-31 23:29:10.000 Df Example Browser[37348:e2a0cf7] [com.apple.TCC:access] TCCAccessRequestIndirect: TCCAccessRequestIndirect with pid 37348: target_identity: {
+    kTCCCodeIdentityIdentifier = "com.example.terminal";
+}
+2026-01-31 23:29:10.020 Df Example Browser[37348:e2a0053] [com.apple.TCC:access] TCCAccessRequestIndirect_block_invoke: access request result was 1, timeout was 0
+"""
+
+
+def test_requests_name_the_asker_and_the_target_from_the_log():
+    got = c.requests(LOG)
+    assert [(r["target"], r["target_pid"], r["asker"]) for r in got] == [
+        ("System Events", 88343, "/usr/local/bin/tool"), ("Example Browser", 37348, "com.example.terminal")]
+    assert got[0]["at"] == "2026-01-31 23:28:42.047"
+    assert [r["result"] for r in got] == [None, 1]                       # the first still waits on a prompt
+    assert [r["asker"] for r in c.waiting(got)] == ["/usr/local/bin/tool"]
+    assert c.short("/usr/local/bin/tool") == "tool" and c.short("com.example.terminal") == "com.example.terminal"
+    assert c.requests("") == [] and c.short(None) is None
+
+
+def test_recent_requests_runs_the_log_and_none_when_it_fails():
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=0, stdout=LOG)
+    assert len(c.recent_requests(5, run=run)) == 2 and seen[0][:2] == ["/usr/bin/log", "show"] and "5m" in seen[0]
+    assert c.recent_requests(run=lambda argv, **kw: types.SimpleNamespace(returncode=1, stdout="")) is None
+
+
+def test_timed_out_reads_the_denials_nobody_answered_and_none_when_unreadable(tmp_path):
+    import sqlite3
+    db = tmp_path / "TCC.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE access (service TEXT, client TEXT, indirect_object_identifier TEXT, "
+                 "auth_value INTEGER, auth_reason INTEGER, last_modified INTEGER)")
+    conn.executemany("INSERT INTO access VALUES (?,?,?,?,?,?)", [
+        ("kTCCServiceAppleEvents", "/usr/local/bin/tool", "com.example.events", 0, 9, 200),
+        ("kTCCServiceAppleEvents", "com.example.terminal", "com.example.viewer", 0, 9, 100),
+        ("kTCCServiceAppleEvents", "com.example.other", "com.example.events", 0, 2, 300),   # denied by a person
+        ("kTCCServiceAppleEvents", "com.example.ok", "com.example.events", 2, 9, 400),      # allowed since
+        ("kTCCServiceCamera", "com.example.cam", "UNUSED", 0, 9, 500)])
+    conn.commit()
+    conn.close()
+    assert c.timed_out(db) == [{"asker": "/usr/local/bin/tool", "target": "com.example.events", "at": 200},
+                               {"asker": "com.example.terminal", "target": "com.example.viewer", "at": 100}]
+    assert c.timed_out(tmp_path / "missing.db") is None
