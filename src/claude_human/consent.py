@@ -191,18 +191,15 @@ def _window_id(element, ax) -> int | None:
     return get(element)
 
 
-def press_button(pid: int, wid: int, title: str, *, ax=None) -> Result:
-    """Press the button titled ``title`` in the window ``wid`` of the process ``pid``, through the
-    Accessibility API (``AXPress``). Nothing is pressed when this process has no Accessibility
-    grant, the window is not among the process's accessibility windows, or no button has that
-    title. ``ax`` is the ApplicationServices module or a stand-in."""
+def _ax_window(pid: int, wid: int, ax):
+    """(the accessibility window `wid` of process `pid`, an attribute reader) or (None, why not)."""
     if ax is None:
         try:
             import ApplicationServices as ax   # noqa: PLC0415, N813
         except ImportError:
-            return False, "the Accessibility API is not available here"
+            return None, "the Accessibility API is not available here", None
     if not ax.AXIsProcessTrusted():
-        return False, "this process has no Accessibility grant (the station has one)"
+        return None, "this process has no Accessibility grant (the station has one)", ax
 
     def attr(element, name):
         err, value = ax.AXUIElementCopyAttributeValue(element, name, None)
@@ -212,8 +209,40 @@ def press_button(pid: int, wid: int, title: str, *, ax=None) -> Result:
     windows = [w for w in (attr(app, "AXWindows") or []) if attr(w, "AXRole") == "AXWindow"]
     mine = [w for w in windows if _window_id(w, ax) == int(wid)]
     if not mine:
-        return False, f"window {wid} is not among the accessibility windows of its process"
-    want, level = _title(title), [mine[0]]
+        return None, f"window {wid} is not among the accessibility windows of its process", ax
+    return mine[0], attr, ax
+
+
+def _elements(window, attr):
+    """Every element under `window`, breadth first, AX_DEPTH levels deep."""
+    level = [window]
+    for _ in range(AX_DEPTH):
+        yield from level
+        level = [child for element in level for child in (attr(element, "AXChildren") or [])]
+
+
+def read_words(pid: int, wid: int, *, ax=None) -> str | None:
+    """The prompt's words, read from its text through the Accessibility API, with the quotes
+    straightened, or None when they cannot be read (no Accessibility grant, the window gone). It
+    reads a locked or covered screen as well as an open one, where a picture cannot."""
+    window, attr, ax = _ax_window(pid, wid, ax)
+    if window is None:
+        return None
+    parts = [str(attr(e, "AXValue") or "").strip() for e in _elements(window, attr)
+             if attr(e, "AXRole") == "AXStaticText"]
+    words = join_lines(p for p in parts if p)
+    return words or None
+
+
+def press_button(pid: int, wid: int, title: str, *, ax=None) -> Result:
+    """Press the button titled ``title`` in the window ``wid`` of the process ``pid``, through the
+    Accessibility API (``AXPress``). Nothing is pressed when this process has no Accessibility
+    grant, the window is not among the process's accessibility windows, or no button has that
+    title. ``ax`` is the ApplicationServices module or a stand-in."""
+    window, attr, ax = _ax_window(pid, wid, ax)
+    if window is None:
+        return False, attr
+    want, level = _title(title), [window]
     for _ in range(AX_DEPTH):
         for element in level:
             if attr(element, "AXRole") == "AXButton" and _title(attr(element, "AXTitle")) == want:
@@ -237,14 +266,17 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
            find: Callable[[], Optional[list]] | None = None,
            forward: Callable[[int], bool] | None = None, sudo: bool = True,
            env: Mapping[str, str] | None = None,
-           press: Callable[[int, int, str], Result] | None = None) -> Result:
+           press: Callable[[int, int, str], Result] | None = None, by_title: bool = False,
+           tries: int = 2) -> Result:
     """Press "Allow" (``choice="allow"``) or "Don't Allow" (``"deny"``) on the frontmost consent
     prompt, and observe it close. ``find`` lists the prompts (default ``prompts``), ``forward``
     brings a pid's application to the front (default ``bring_forward``).
 
     A prompt of an owner in ``AX_OWNERS`` (Gatekeeper's "Open" and "Cancel") is pressed by its
     button's title with ``press`` (default ``press_button``) instead of the keyboard, and needs no
-    helper and no bringing forward."""
+    helper and no bringing forward. With ``by_title`` every prompt is pressed that way, which a
+    process with the Accessibility grant (the station) can do for any owner. A press by title that
+    leaves the prompt open is tried again, ``tries`` times in all."""
     if choice not in KEYS:
         return False, f"unknown answer {choice!r}: allow or deny"
     find = find or prompts
@@ -256,13 +288,17 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
         return False, "No consent prompt is open on the Mac right now."
     target = now[0]
     owner = target.get("owner") or "UserNotificationCenter"
-    if owner in AX_OWNERS:
-        title = BUTTONS[owner][0 if choice == "allow" else 1]
-        ok, said = (press or press_button)(target["pid"], target["wid"], title)
-        if not ok:
-            return False, f"nothing was pressed: {said}"
-        ok, said = _closed(find, target, poll_seconds, f"Pressed {title}.")
-        return (ok, said) if ok else (False, f"pressed {title}, but the prompt is still open")
+    if owner in AX_OWNERS or by_title:
+        title = BUTTONS.get(owner, BUTTONS["UserNotificationCenter"])[0 if choice == "allow" else 1]
+        for attempt in range(1, max(1, tries) + 1):
+            ok, said = (press or press_button)(target["pid"], target["wid"], title)
+            if not ok:
+                return False, (f"nothing was pressed: {said}" if attempt == 1
+                               else f"pressed {title}, the prompt stayed, and the next press failed: {said}")
+            ok, said = _closed(find, target, poll_seconds, f"Pressed {title}.")
+            if ok:
+                return True, said if attempt == 1 else f"Pressed {title} (on try {attempt})."
+        return False, f"pressed {title} {max(1, tries)} times, but the prompt is still open"
     if not forward(target["pid"]):
         return False, "could not bring the prompt to the front, so nothing was pressed"
     helper = str(paths.vhid_path(helper))
@@ -288,8 +324,8 @@ def ask_station(choice: str, *, token: str, station: str = "http://127.0.0.1:878
     import json   # noqa: PLC0415
     import urllib.error   # noqa: PLC0415
     import urllib.request   # noqa: PLC0415
-    if choice not in ("allow", "deny"):
-        return False, f"unknown answer {choice!r}: allow or deny"
+    if choice not in ("allow", "deny", "read"):
+        return False, f"unknown answer {choice!r}: allow, deny or read"
     req = urllib.request.Request(
         f"{station.rstrip('/')}/input", method="POST",
         data=json.dumps({"type": "consent", "choice": choice}).encode(),

@@ -185,25 +185,26 @@ class QuartzInput:
         return {"ok": False, "detail": "the window did not come to the front"}
 
     def answer_prompt(self, choice: str) -> dict:
-        """Press `choice` ("allow" or "deny") on the front consent prompt, by its button's title.
-        Only a prompt of an owner in ``consent.AX_OWNERS`` is pressed here; the others take the
-        keyboard helper (``claude-human consent``), which this refuses rather than tries."""
+        """Press `choice` ("allow" or "deny") on the front consent prompt, by its button's title, with
+        this process's Accessibility grant, and observe it close (one more try when it stays). "read"
+        presses nothing and answers the prompt's words, read the same way, with its two buttons."""
         consent = self._consent
         if consent is None:
             from .. import consent  # noqa: PLC0415
-        if choice not in ("allow", "deny"):
-            return {"ok": False, "detail": f"unknown answer {choice!r}: allow or deny"}
+        if choice not in ("allow", "deny", "read"):
+            return {"ok": False, "detail": f"unknown answer {choice!r}: allow, deny or read"}
         found = consent.prompts()
         if found is None:
             return {"ok": False, "detail": "the window list cannot be read"}
         if not found:
             return {"ok": False, "detail": "No consent prompt is open on the Mac right now."}
         front = found[0]
-        if front.get("owner") not in consent.AX_OWNERS:
-            return {"ok": False, "owner": front.get("owner"), "window": front.get("wid"),
-                    "detail": f"the prompt in front ({front.get('owner')}) is answered with the keyboard "
-                              "helper (claude-human consent), not through the station"}
-        ok, said = consent.answer(choice, find=consent.prompts)
+        if choice == "read":
+            words = consent.read_words(front["pid"], front["wid"])
+            return {"ok": words is not None, "words": words, "owner": front.get("owner"),
+                    "window": front.get("wid"), "allow": front.get("allow"), "deny": front.get("deny"),
+                    "detail": words or "the prompt's words could not be read"}
+        ok, said = consent.answer(choice, find=consent.prompts, by_title=True)
         return {"ok": ok, "detail": said, "owner": front.get("owner"), "window": front.get("wid")}
 
     # ------------------------------------------------------------------ the one entry point

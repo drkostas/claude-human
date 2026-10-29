@@ -230,3 +230,41 @@ def test_consent_list_with_out_exits_1_when_no_picture_was_saved(monkeypatch, ca
     monkeypatch.setattr(c, "capture_why", lambda p, out, env=None: None)
     monkeypatch.setattr(c, "read_text", lambda p: "words")
     assert cli.main(["consent", "list", "--out", "/tmp/x.png"]) == 0
+
+
+def test_any_owners_prompt_is_pressed_by_title_on_request_and_tried_once_more(world):
+    unc = {"wid": 5, "pid": 42, "owner": "UserNotificationCenter"}
+    world.open, pressed = [dict(unc)], []
+
+    def stubborn(pid, wid, title):              # the first press leaves it open, the second closes it
+        pressed.append(title)
+        if len(pressed) == 2:
+            world.open = []
+        return True, f"pressed {title}"
+    ok, why = c.answer("allow", find=world.find, press=stubborn, by_title=True)
+    assert ok and why == "Pressed Allow (on try 2)." and pressed == ["Allow", "Allow"] and world.calls == []
+    world.open, pressed = [dict(unc)], []
+    ok, why = c.answer("deny", find=world.find, press=lambda p, w, t: pressed.append(t) or (True, "pressed"), by_title=True)
+    assert not ok and "2 times" in why and pressed == ["Don't Allow", "Don't Allow"]
+    world.open = [dict(unc)]
+    ok, why = c.answer("allow", find=world.find, forward=world.forward, helper="/h", sudo=False)
+    assert ok and world.calls and world.calls[0][0] == ["/h", "--return"]   # without by_title, the keyboard as before
+
+
+class Texts(FakeAX):
+    def __init__(self, windows, trusted=True):
+        super().__init__(windows, trusted)
+
+    def AXUIElementCopyAttributeValue(self, element, name, _):
+        if name == "AXValue":
+            return (0, element.get("value")) if element.get("value") is not None else (-25205, None)
+        return super().AXUIElementCopyAttributeValue(element, name, _)
+
+
+def test_read_words_reads_the_prompts_text_and_none_without_the_grant():
+    win = {"role": "AXWindow", "wid": 5, "children": [
+        {"role": "AXStaticText", "value": "\u201ctool\u201d wants access to control \u201cBrowser\u201d."},
+        {"role": "AXStaticText", "value": ""}, {"role": "AXButton", "title": "Allow"}]}
+    assert c.read_words(42, 5, ax=Texts([win])) == '"tool" wants access to control "Browser".'
+    assert c.read_words(42, 5, ax=Texts([win], trusted=False)) is None
+    assert c.read_words(42, 9, ax=Texts([win])) is None
