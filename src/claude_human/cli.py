@@ -446,11 +446,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.action != "list":
             return _report(*consent.answer(args.action, helper=args.vhid))
         found = consent.prompts()
-        if found and args.out and consent.capture(found[0], args.out):
+        why = consent.capture_why(found[0], args.out) if (found and args.out) else None
+        if found and args.out and why is None:
             found[0]["image"] = args.out
             found[0]["text"] = consent.read_text(args.out)
+        elif why:
+            # asked for a picture and none was saved: say so, and do not exit 0
+            found[0]["image_error"] = why
+            print(f"consent: no picture saved to {args.out}: {why}", file=sys.stderr)
         print(json.dumps(found, indent=2))
-        return 0 if found is not None else 1
+        return 0 if found is not None and not why else 1
 
     from . import unlock  # noqa: PLC0415
     if cmd == "unlock":

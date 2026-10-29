@@ -123,14 +123,28 @@ def read_text(image_path: str | os.PathLike) -> str | None:
 
 def capture(prompt: dict, out: str | os.PathLike, *, env: Mapping[str, str] | None = None) -> bool:
     """Save a picture of the prompt's rectangle to ``out`` (PNG). False when it cannot be taken,
-    which is the case while the screen is locked."""
+    which is the case while the screen is locked (``capture_why`` says why)."""
+    return capture_why(prompt, out, env=env) is None
+
+
+def capture_why(prompt: dict, out: str | os.PathLike, *, env: Mapping[str, str] | None = None) -> str | None:
+    """Save a picture of the prompt's rectangle to ``out`` (PNG): None when the file is there, else
+    why not. screencapture can exit 0 and write nothing when the process may not record the screen,
+    so the file itself is the test."""
     rect = f"{int(prompt['x'])},{int(prompt['y'])},{int(prompt['w'])},{int(prompt['h'])}"
     try:
         r = _run(["/usr/sbin/screencapture", "-x", "-R", rect, str(out)], capture_output=True,
                  timeout=10, env=env)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.returncode == 0 and _exists(str(out))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"screencapture did not run: {e}"
+    said = (getattr(r, "stderr", b"") or b"")
+    said = (said.decode(errors="replace") if isinstance(said, bytes) else str(said)).strip()[:200]
+    if r.returncode != 0:
+        return f"screencapture exited {r.returncode}" + (f": {said}" if said else "")
+    if not _exists(str(out)):
+        return ("screencapture wrote no file (this process may not be allowed to record the screen)"
+                + (f": {said}" if said else ""))
+    return None
 
 
 def bring_forward(pid: int) -> bool:

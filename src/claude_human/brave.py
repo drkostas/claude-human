@@ -106,6 +106,33 @@ def yabai_ids(app: str = APP, *, yabai: str = YABAI, env: Mapping[str, str] | No
         return None
 
 
+#: the owners of the prompts behind which every Apple Event waits until a person answers
+#: (claude_human.consent): while one is up, no AppleScript to the browser returns
+APPLE_EVENT_BLOCKERS = {"UserNotificationCenter"}
+
+
+class Blocked(RuntimeError):
+    """A prompt on screen holds every Apple Event to the browser, so nothing here can answer."""
+
+
+def blocked_by() -> str | None:
+    """The owner of a prompt on screen that holds every Apple Event to the browser, or None (also
+    when the window list cannot be read)."""
+    from . import consent   # noqa: PLC0415
+    for p in consent.prompts() or []:
+        if p.get("owner") in APPLE_EVENT_BLOCKERS:
+            return p["owner"]
+    return None
+
+
+def _refuse_if_blocked(blocker=None) -> None:
+    """Raise Blocked, naming the prompt's owner, when one is on screen."""
+    owner = (blocker or blocked_by)()
+    if owner:
+        raise Blocked(f"blocked_by {owner}: a macOS prompt is on screen and every Apple Event to the "
+                      f"browser waits behind it until someone answers it (claude-human consent list)")
+
+
 def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 10.0,
                step: float = 0.2, env: Mapping[str, str] | None = None) -> tuple[str | None, int | None]:
     """Make a new browser window: (its id, its yabai id or None). The new window is the one listed
@@ -117,10 +144,15 @@ def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 
     before, ybefore = ids(), yids()
     make()
     wid = None
-    for _ in range(int(wait / step)):
+    # by the clock: each listing is an AppleScript call that can itself take its whole 30 s timeout,
+    # so a count of polls once waited 50 times as long as `wait`
+    end = time.monotonic() + wait
+    while True:
         new = ids() - before
         if len(new) == 1:
             wid = new.pop()
+            break
+        if time.monotonic() >= end:
             break
         time.sleep(step)
     if wid is None:
@@ -665,7 +697,7 @@ def upload(window: str, selector: str, paths, *, app: str = APP, done: str | Non
 
 def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep_open: bool = False,
         window: str | None = None, key: str | None = None, app: str = APP,
-        state: Path = STATE) -> dict:
+        state: Path = STATE, blocker=None) -> dict:
     """Run `code` on `url` in a window of the browser. Returns {"result", "window", "yabai",
     "reused"}. The script may be async: it assigns its answer to window.__claude_r (a string); when it
     does not, the value of its last expression is the result. A window this opened is closed unless
@@ -676,11 +708,17 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
     page to finish loading). The script's answer is waited for by itself. So a `wait_for` that names
     window.__claude_r can never hold, since only the script sets it: that is refused with ValueError
     rather than left to time out. Wait for something on the page instead, such as
-    `document.querySelector(".comments")`."""
+    `document.querySelector(".comments")`.
+
+    A macOS prompt that holds every Apple Event (a consent prompt, `blocked_by`) raises Blocked at
+    once, before a window is opened, and in either wait when it appears during the run: behind one,
+    each AppleScript call waits out its own timeout and the run went on for minutes. `blocker`
+    stands in for `blocked_by` in a test."""
     if RESULT in (wait_for or ""):
         raise ValueError(f"wait_for is checked before the script runs, and only the script sets "
                          f"window.{RESULT}, so {wait_for!r} can never hold. Leave wait_for out (the "
                          f"answer is waited for by itself) or wait for something on the page")
+    _refuse_if_blocked(blocker)
     owned, yid, reused = window is None, None, False
     if owned:
         mine = kept(key, state=state, app=app) if (keep_open and key) else None
@@ -702,8 +740,9 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
                 if js_in(window, f"!!({wait_for})", app) == "true":
                     break
             except RuntimeError:
-                pass
+                _refuse_if_blocked(blocker)
             if time.time() > end:
+                _refuse_if_blocked(blocker)
                 raise TimeoutError(f"timed out waiting for: {wait_for}")
             time.sleep(0.5)
         js_in(window, "window.__claude_r = undefined;", app)
@@ -716,10 +755,12 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
             if "window.__claude_r" not in code:
                 return {"result": last, "window": window, "yabai": yid, "reused": reused}
             if time.time() > end:
+                _refuse_if_blocked(blocker)
                 raise TimeoutError("timed out waiting for window.__claude_r")
             time.sleep(0.5)
     finally:
-        if owned and not keep_open:
+        # behind a prompt the close would only wait out its own timeout too
+        if owned and not keep_open and not (blocker or blocked_by)():
             osa(f'tell application "{app}" to close (first window whose id is {window})')
 
 
