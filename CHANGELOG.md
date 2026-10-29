@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The station's `scroll` takes `"unit": "line"` (a mouse wheel's line steps) and `"phased": true` (pixel deltas wrapped in the began, changed and ended phases a trackpad sends). Some apps, Qt apps among them, ignore plain pixel scroll events, which the station still sends by default
+- The station takes `{"type": "raise"}`: the named window is brought to the front through yabai, which also switches to its desktop, and the answer says whether it came. A window left on another desktop answers no click and gives no picture
+- `sckshot` leaves the window's shadow out of a one-window capture (`ignoreShadowsSingleWindow`, macOS 14 and later). With the shadow, window and shadow were scaled into the window's size, so the window filled about 95% of the picture with blank margins and a point read from the picture was off by that much. A helper built before this keeps the old picture until it is built again
 - The station's `/shot?full=1` (and `station.client.shot(window, full=True)`) returns a window at its own size and a high JPEG quality. The ordinary shot is made small for streaming to a phone, which is too coarse to read small text or digits from with OCR
 - `ocr.lines(path)` reads the text lines in a picture with macOS's Vision framework, each with its box as fractions of the picture from the top left, in reading order. `find` picks a line by its exact words and side of the picture, `in_band` the lines in a horizontal band, and `middle` the point to press. Reading needs no permission
 - `station.client`: a client for a running station, for a program without Screen Recording or Accessibility of its own. `shot(window)` returns a JPEG of one window and its size, and `click`, `scroll`, `key` and `text` send the inputs the station takes, each returning the station's answer, its refusal (screen locked, a dialog up, the point covered) or why it could not be asked

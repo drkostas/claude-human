@@ -72,6 +72,10 @@ struct SckShot {
                     }
                     cfg.width  = max(1, Int(win.frame.width))
                     cfg.height = max(1, Int(win.frame.height))
+                    // without this the window's shadow is captured too, and window and shadow are
+                    // scaled into the window's size: the window filled about 95% of the picture,
+                    // with blank margins, so a point read from the picture was off by that much
+                    if #available(macOS 14.0, *) { cfg.ignoreShadowsSingleWindow = true }
                     // desktopIndependentWindow captures only that window, wherever it is
                     filter = SCContentFilter(desktopIndependentWindow: win)
                 } else {
