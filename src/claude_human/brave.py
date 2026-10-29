@@ -39,13 +39,26 @@ RESULT = "__claude_r"
 ARG_MAX_SCRIPT = 100_000
 
 
+#: the end of the run in progress (time.monotonic()), set by `run`: every AppleScript call made
+#: during it is cut to the time left, so its timeout holds for the whole run even when the browser
+#: answers nothing (each call alone would wait out its own 30 s)
+_deadline: float | None = None
+
+
+def _left(timeout: float) -> float:
+    """`timeout`, cut to what is left of the run in progress (at least a tenth of a second)."""
+    if _deadline is None:
+        return timeout
+    return max(0.1, min(timeout, _deadline - time.monotonic()))
+
+
 def osa(script: str, timeout: float = 30, *, env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """(exit code, output or error text) of an AppleScript. A timeout is (-1, "")."""
     long = len(script) > ARG_MAX_SCRIPT
     try:
         r = subprocess.run(["/usr/bin/osascript", "-"] if long else ["/usr/bin/osascript", "-e", script],
                            input=script if long else None, capture_output=True, text=True,
-                           timeout=timeout, env=env)
+                           timeout=_left(timeout), env=env)
     except subprocess.TimeoutExpired:
         return -1, ""
     return r.returncode, (r.stdout if r.returncode == 0 else r.stderr).strip()
@@ -99,7 +112,7 @@ def window_ids(app: str = APP, *, env: Mapping[str, str] | None = None) -> set[s
 def yabai_ids(app: str = APP, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> set[int] | None:
     """The yabai ids of the app's windows, or None when yabai does not answer (or is not installed)."""
     try:
-        r = subprocess.run([yabai, "-m", "query", "--windows"], capture_output=True, text=True, timeout=5,
+        r = subprocess.run([yabai, "-m", "query", "--windows"], capture_output=True, text=True, timeout=_left(5),
                            env=env)
         return {w["id"] for w in json.loads(r.stdout) if w.get("app") == app}
     except Exception:  # noqa: BLE001 - no yabai: the id is not known, never guessed
@@ -129,8 +142,8 @@ def _refuse_if_blocked(blocker=None) -> None:
     """Raise Blocked, naming the prompt's owner, when one is on screen."""
     owner = (blocker or blocked_by)()
     if owner:
-        raise Blocked(f"blocked_by {owner}: a macOS prompt is on screen and every Apple Event to the "
-                      f"browser waits behind it until someone answers it (claude-human consent list)")
+        raise Blocked(f"blocked_by {owner}: a macOS prompt is blocking Brave (every Apple Event to the "
+                      f"browser waits behind it until someone answers it; claude-human consent list)")
 
 
 def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 10.0,
@@ -146,7 +159,7 @@ def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 
     wid = None
     # by the clock: each listing is an AppleScript call that can itself take its whole 30 s timeout,
     # so a count of polls once waited 50 times as long as `wait`
-    end = time.monotonic() + wait
+    end = time.monotonic() + (wait if _deadline is None else min(wait, max(0.0, _deadline - time.monotonic())))
     while True:
         new = ids() - before
         if len(new) == 1:
@@ -713,12 +726,36 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
     A macOS prompt that holds every Apple Event (a consent prompt, `blocked_by`) raises Blocked at
     once, before a window is opened, and in either wait when it appears during the run: behind one,
     each AppleScript call waits out its own timeout and the run went on for minutes. `blocker`
-    stands in for `blocked_by` in a test."""
+    stands in for `blocked_by` in a test.
+
+    `timeout` holds for the whole run, opening the window included: every AppleScript call is cut to
+    the time left, and only closing the window may take up to CLOSE_GRACE seconds more."""
     if RESULT in (wait_for or ""):
         raise ValueError(f"wait_for is checked before the script runs, and only the script sets "
                          f"window.{RESULT}, so {wait_for!r} can never hold. Leave wait_for out (the "
                          f"answer is waited for by itself) or wait for something on the page")
     _refuse_if_blocked(blocker)
+    global _deadline
+    outer, _deadline = _deadline, time.monotonic() + timeout
+    try:
+        return _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state, blocker)
+    finally:
+        _deadline = outer
+
+
+def _ran_out(blocker, what: str, timeout: float) -> None:
+    """Raise Blocked when a prompt is on screen, else TimeoutError naming `what`."""
+    _refuse_if_blocked(blocker)
+    raise TimeoutError(f"timed out after {timeout:g} s waiting for {what} (Brave did not answer in time)")
+
+
+#: how long closing the run's own window may take after its time ran out
+CLOSE_GRACE = 5.0
+
+
+def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state, blocker) -> dict:
+    """`run`'s body, under its deadline."""
+    global _deadline
     owned, yid, reused = window is None, None, False
     if owned:
         mine = kept(key, state=state, app=app) if (keep_open and key) else None
@@ -727,6 +764,8 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
         else:
             window, yid = new_window(app)
             if window is None:
+                if time.monotonic() >= _deadline:
+                    _ran_out(blocker, "a new browser window", timeout)
                 raise RuntimeError("could not identify the new browser window")
             if keep_open and key:
                 keep(key, window, yid, state=state)
@@ -734,34 +773,32 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
         if url != "-":
             osa(f'tell application "{app}" to set URL of active tab of (first window whose id is '
                 f'{window}) to "{url}"')
-        end = time.time() + timeout
         while True:
             try:
                 if js_in(window, f"!!({wait_for})", app) == "true":
                     break
             except RuntimeError:
                 _refuse_if_blocked(blocker)
-            if time.time() > end:
-                _refuse_if_blocked(blocker)
-                raise TimeoutError(f"timed out waiting for: {wait_for}")
+            if time.monotonic() >= _deadline:
+                _ran_out(blocker, wait_for, timeout)
             time.sleep(0.5)
         js_in(window, "window.__claude_r = undefined;", app)
         last = js_in(window, code, app)
-        end = time.time() + timeout
         while True:
             r = js_in(window, 'window.__claude_r === undefined ? "__PENDING__" : String(window.__claude_r)', app)
             if r != "__PENDING__":
                 return {"result": r, "window": window, "yabai": yid, "reused": reused}
             if "window.__claude_r" not in code:
                 return {"result": last, "window": window, "yabai": yid, "reused": reused}
-            if time.time() > end:
-                _refuse_if_blocked(blocker)
-                raise TimeoutError("timed out waiting for window.__claude_r")
+            if time.monotonic() >= _deadline:
+                _ran_out(blocker, "window.__claude_r", timeout)
             time.sleep(0.5)
     finally:
-        # behind a prompt the close would only wait out its own timeout too
+        # behind a prompt the close would only wait out its own timeout too; past the deadline it
+        # gets CLOSE_GRACE seconds of its own
         if owned and not keep_open and not (blocker or blocked_by)():
-            osa(f'tell application "{app}" to close (first window whose id is {window})')
+            _deadline = None
+            osa(f'tell application "{app}" to close (first window whose id is {window})', CLOSE_GRACE)
 
 
 #: where Brave keeps each profile's saved logins

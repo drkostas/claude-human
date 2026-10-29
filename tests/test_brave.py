@@ -503,3 +503,56 @@ def test_a_new_window_waits_by_the_clock_not_by_a_count_of_slow_listings():
     t = time.monotonic()
     assert brave.new_window(ids=slow_ids, yids=lambda: None, make=lambda: None, wait=0.2, step=0.01) == (None, None)
     assert time.monotonic() - t < 1.0 and len(calls) < 20
+
+
+def _hang(monkeypatch):
+    """Every command waits out its whole timeout, as osascript does while a prompt holds Brave."""
+    import subprocess
+    import time
+    calls = []
+
+    def run(cmd, **k):
+        calls.append(k.get("timeout"))
+        time.sleep(k.get("timeout") or 0)
+        raise subprocess.TimeoutExpired(cmd, k.get("timeout"))
+    monkeypatch.setattr(brave.subprocess, "run", run)
+    monkeypatch.setattr(brave, "CLOSE_GRACE", 0.2, raising=False)
+    return calls
+
+
+def test_the_timeout_holds_for_the_whole_run_when_brave_answers_nothing(monkeypatch, capsys, tmp_path):
+    # a prompt that is not recognised, or a browser that hangs: each AppleScript call used to wait
+    # its own 30 s, and a run given --timeout 90 went on for more than six minutes
+    import time
+    calls = _hang(monkeypatch)
+    t = time.monotonic()
+    try:
+        brave.run("https://example.org/", "1", timeout=1.5, blocker=lambda: None)
+    except TimeoutError as e:
+        assert "timed out after 1.5 s" in str(e)
+    else:
+        raise AssertionError("a run against a hung browser did not time out")
+    assert time.monotonic() - t < 1.5 + 1.0, time.monotonic() - t
+    assert calls and max(calls) <= 1.5
+    monkeypatch.setattr(brave, "blocked_by", lambda: None)
+    js = tmp_path / "x.js"
+    js.write_text("1")
+    t = time.monotonic()
+    assert brave.main(["https://example.org/", str(js), "--timeout", "1"]) == 1
+    assert time.monotonic() - t < 2.0 and "timed out after 1 s" in capsys.readouterr().err
+    assert brave._deadline is None
+
+
+def test_a_prompt_seen_when_the_time_runs_out_is_named(monkeypatch):
+    _hang(monkeypatch)
+    seen = []
+
+    def blocker():
+        seen.append(1)
+        return "UserNotificationCenter" if len(seen) > 1 else None   # it appears after the start
+    try:
+        brave.run("https://example.org/", "1", timeout=1, blocker=blocker)
+    except brave.Blocked as e:
+        assert "a macOS prompt is blocking Brave" in str(e)
+    else:
+        raise AssertionError("the prompt was not named")
