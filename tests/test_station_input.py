@@ -206,9 +206,12 @@ class Consent:
     def prompts(self):
         return self.found
 
-    def answer(self, choice, find):
-        self.answered.append(choice)
+    def answer(self, choice, find, by_title=False):
+        self.answered.append((choice, by_title))
         return True, "Pressed Cancel."
+
+    def read_words(self, pid, wid):
+        return '"tool" wants access to control "Browser".' 
 
 
 GATE = {"wid": 14369, "pid": 58901, "owner": "CoreServicesUIAgent"}
@@ -221,19 +224,21 @@ def test_a_consent_answer_reaches_the_dialog_that_blocks_every_other_input():
     assert s.do_input({"type": "click", "x": 0.5, "y": 0.5})["blocked"]
     got = s.do_input({"type": "consent", "choice": "deny"})
     assert got == {"ok": True, "detail": "Pressed Cancel.", "owner": "CoreServicesUIAgent", "window": 14369}
-    assert consent.answered == ["deny"]
+    assert consent.answered == [("deny", True)]   # pressed by its button's title
 
 
-def test_a_consent_answer_is_refused_locked_unknown_or_for_a_keyboard_prompt():
+def test_a_consent_answer_is_refused_locked_or_unknown_and_any_owners_prompt_is_pressed_by_title():
     consent = Consent([GATE])
     s = QuartzInput(Screen(locked=True), quartz=FakeQuartz(), consent=consent)
     assert s.do_input({"type": "consent", "choice": "allow"})["locked"] and consent.answered == []
     s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=consent)
     assert not s.do_input({"type": "consent", "choice": "open it"})["ok"] and consent.answered == []
-    consent = Consent([{"wid": 5, "pid": 42, "owner": "UserNotificationCenter"}])
-    s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=consent)
-    got = s.do_input({"type": "consent", "choice": "allow"})
-    assert not got["ok"] and "keyboard helper" in got["detail"] and consent.answered == []
+    consent = Consent([{"wid": 5, "pid": 42, "owner": "UserNotificationCenter", "allow": "Allow", "deny": "Don't Allow"}])
+    s = QuartzInput(Screen(blocker="UserNotificationCenter"), quartz=FakeQuartz(), consent=consent)
+    assert s.do_input({"type": "consent", "choice": "allow"})["ok"] and consent.answered == [("allow", True)]
+    got = s.do_input({"type": "consent", "choice": "read"})
+    assert got["ok"] and got["words"] == '"tool" wants access to control "Browser".' and got["allow"] == "Allow"
+    assert consent.answered == [("allow", True)]                     # reading presses nothing
     for found, words in (([], "No consent prompt"), (None, "cannot be read")):
         s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=Consent(found))
         assert words in s.do_input({"type": "consent", "choice": "deny"})["detail"]
