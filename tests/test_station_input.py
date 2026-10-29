@@ -12,6 +12,9 @@ class FakeQuartz:
     kCGEventMouseMoved = "move"
     kCGMouseEventClickState = "clickstate"
     kCGScrollEventUnitPixel = "px"
+    kCGScrollEventUnitLine = "line"
+    kCGScrollWheelEventScrollPhase = "phase"
+    kCGScrollPhaseBegan, kCGScrollPhaseChanged, kCGScrollPhaseEnded = 1, 2, 4
     kCGEventFlagMaskCommand = 0x100000
 
     def CGPointMake(self, x, y):
@@ -30,7 +33,10 @@ class FakeQuartz:
         ev[field] = value
 
     def CGEventCreateScrollWheelEvent(self, _s, unit, n, dy, dx):
-        return {"kind": "scroll", "dy": dy, "dx": dx}
+        ev = {"kind": "scroll", "dy": dy, "dx": dx}
+        if unit != "px":
+            ev["unit"] = unit
+        return ev
 
     def CGEventCreateKeyboardEvent(self, _s, code, down):
         return {"kind": "key", "code": code, "down": down, "flags": 0}
@@ -262,3 +268,37 @@ def test_a_click_on_the_whole_display_or_an_unreadable_list():
     s = QuartzInput(Unreadable(), post=(posted := []).append, quartz=FakeQuartz(), sleep=lambda s: None)
     got = s.do_input({"type": "click", "app": "Notes", "x": 0.5, "y": 0.5})
     assert not got["ok"] and "could not be read" in got["detail"] and posted == []
+
+
+def test_scroll_in_lines_or_with_phases_for_apps_that_ignore_plain_pixel_deltas():
+    s, posted = sink(front=3)
+    assert s.do_input({"type": "scroll", "app": "Notes", "dy": -3, "unit": "line"})["ok"]
+    assert posted[1] == {"kind": "scroll", "dy": -3, "dx": 0, "unit": "line", "pt": (200.0, 100.0)}
+    s, posted = sink(front=3)
+    assert s.do_input({"type": "scroll", "app": "Notes", "dy": -60, "phased": True})["ok"]
+    scrolls = [e for e in posted if e["kind"] == "scroll"]
+    assert [(e["dy"], e.get("phase")) for e in scrolls] == [(0, 1), (-60, 2), (0, 4)]
+    assert all(e["pt"] == (200.0, 100.0) for e in scrolls)
+    s, posted = sink(front=3)
+    s.do_input({"type": "scroll", "app": "Notes", "dy": -60})
+    assert [e.get("phase") for e in posted if e["kind"] == "scroll"] == [None]   # the default is unchanged
+
+
+def test_raise_brings_the_named_window_forward_and_observes_it():
+    screen, asked = Screen(front=9), []
+
+    def focus(wid):
+        asked.append(wid)
+        screen.front = wid
+        return True
+    s = QuartzInput(screen, post=[].append, quartz=FakeQuartz(), sleep=lambda t: None, focus=focus)
+    assert s.do_input({"type": "raise", "app": "Notes"}) == {"ok": True, "detail": "brought to the front"}
+    assert asked == [7]
+    assert s.do_input({"type": "raise", "app": "Notes"})["detail"] == "it was in front already"
+    stuck = QuartzInput(Screen(front=9), post=[].append, quartz=FakeQuartz(), sleep=lambda t: None,
+                        focus=lambda wid: True)
+    got = stuck.do_input({"type": "raise", "app": "Notes"})
+    assert not got["ok"] and "did not come" in got["detail"]
+    assert not s.do_input({"type": "raise"})["ok"]                   # no window named
+    assert QuartzInput(Screen(locked=True), quartz=FakeQuartz(), focus=focus).do_input(
+        {"type": "raise", "app": "Notes"})["locked"]

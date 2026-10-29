@@ -55,7 +55,8 @@ class QuartzInput:
                  quartz: Any = None, pasteboard: Any = None,
                  locked_detail: str = LOCKED_DETAIL,
                  blocked_detail: str | Callable[[str], str] = BLOCKED_DETAIL,
-                 sleep: Callable[[float], None] = time.sleep, consent: Any = None):
+                 sleep: Callable[[float], None] = time.sleep, consent: Any = None,
+                 focus: Optional[Callable[[int], bool]] = None):
         if screen is None:
             from .. import screenshot as screen  # noqa: PLC0415
         self.screen = screen
@@ -66,6 +67,7 @@ class QuartzInput:
         self.blocked_detail = blocked_detail
         self.sleep = sleep
         self._consent = consent
+        self._focus = focus
 
     # ------------------------------------------------------------------ plumbing
 
@@ -163,6 +165,25 @@ class QuartzInput:
                     "detail": "that window does not hold that point on the Mac, so nothing was clicked"}
         return {"ok": False, "covered": True, "on_top": owner, "detail": COVERED_DETAIL.format(owner=owner)}
 
+    def raise_window(self, wid: int, *, tries: int = 8, gap: float = 0.25) -> dict:
+        """Bring window `wid` to the front with the window manager (yabai, which also switches to its
+        desktop), and observe it in front. The `focus` hook stands in for yabai."""
+        focus = self._focus
+        if focus is None:
+            from ..keys import focus as yabai_focus  # noqa: PLC0415
+            focus = yabai_focus
+        front = getattr(self.screen, "front_window", None)
+        if not callable(front):
+            return {"ok": False, "detail": "this screen cannot say which window is in front"}
+        if front() == wid:
+            return {"ok": True, "detail": "it was in front already"}
+        focus(wid)
+        for _ in range(tries):
+            self.sleep(gap)
+            if front() == wid:
+                return {"ok": True, "detail": "brought to the front"}
+        return {"ok": False, "detail": "the window did not come to the front"}
+
     def answer_prompt(self, choice: str) -> dict:
         """Press `choice` ("allow" or "deny") on the front consent prompt, by its button's title.
         Only a prompt of an owner in ``consent.AX_OWNERS`` is pressed here; the others take the
@@ -239,8 +260,23 @@ class QuartzInput:
             return {"ok": True}
 
         if kind == "scroll":
-            e = q.CGEventCreateScrollWheelEvent(None, q.kCGScrollEventUnitPixel, 2,
-                                                int(msg.get("dy", 0)), int(msg.get("dx", 0)))
+            # Pixel deltas with no phase are what most apps take. Some (Qt apps among them) ignore
+            # those: "unit": "line" sends a mouse wheel's line steps, and "phased": true wraps the
+            # pixel deltas in the began, changed and ended phases a trackpad's scroll carries.
+            line = msg.get("unit") == "line"
+            unit = q.kCGScrollEventUnitLine if line else q.kCGScrollEventUnitPixel
+            dy, dx = int(msg.get("dy", 0)), int(msg.get("dx", 0))
+            if msg.get("phased") and not line:
+                steps = [(0, 0, q.kCGScrollPhaseBegan), (dy, dx, q.kCGScrollPhaseChanged),
+                         (0, 0, q.kCGScrollPhaseEnded)]
+            else:
+                steps = [(dy, dx, None)]
+            events = []
+            for sdy, sdx, phase in steps:
+                e = q.CGEventCreateScrollWheelEvent(None, unit, 2, sdy, sdx)
+                if phase is not None:
+                    q.CGEventSetIntegerValueField(e, q.kCGScrollWheelEventScrollPhase, phase)
+                events.append(e)
             if wid is not None:
                 # ⚠️ A SCROLL GOES TO THE WINDOW UNDER THE POINTER, wherever the person at the Mac
                 # left it. For a named window the pointer is moved inside it first and the scroll
@@ -249,9 +285,18 @@ class QuartzInput:
                 if pt is None:
                     return {"ok": False, "detail": "that window is gone"}
                 self.post(q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, pt, which))
-                q.CGEventSetLocation(e, pt)
-            self.post(e)
+                for e in events:
+                    q.CGEventSetLocation(e, pt)
+            for e in events:
+                self.post(e)
             return {"ok": True}
+
+        if kind == "raise":
+            # Bring the named window to the front, on whichever desktop (Space) it is: a window left
+            # on another desktop answers no click and gives no picture until it is in front again.
+            if wid is None:
+                return {"ok": False, "detail": "name the window to bring forward"}
+            return self.raise_window(wid)
 
         if kind in ("text", "key") and wid is not None:
             # ⛔ TEXT AND KEYS GO TO WHATEVER WINDOW IS IN FRONT, NOT TO THE ONE NAMED. Typed into
