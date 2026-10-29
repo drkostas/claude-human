@@ -75,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
                                  "whether it has a saved login (brave has-login SITE), or put files into a page's "
                                  "file input (brave upload WINDOW SELECTOR FILE...)")
 
+    sub.add_parser("steps", help="drive one window through the station a step at a time, from step files, "
+                                 "with a picture after each (steps OUTDIR --window ID | --app NAME [--open])")
     sub.add_parser("key", help="press key combinations in one window through the station, once the "
                                "Mac has been idle (key --window ID COMBO... [--idle S] [--json])")
 
@@ -353,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["key"]:
         from claude_human import keys   # noqa: PLC0415
         return keys.main(argv[1:])
+    if argv[:1] == ["steps"]:
+        from claude_human.station import steps   # noqa: PLC0415
+        return steps.main(argv[1:])
     if argv[:1] == ["brave"]:
         # its own arguments, passed through as brave.main reads them
         from claude_human import brave   # noqa: PLC0415
