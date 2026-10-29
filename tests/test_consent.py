@@ -208,3 +208,25 @@ def test_ask_station_posts_a_consent_input_with_the_master_token():
         raise urllib.error.HTTPError(req.full_url, 403, "no", {}, None)
     assert c.ask_station("allow", token="tok", opener=refused) == (False, "the station answered 403")
     assert not c.ask_station("open", token="tok", opener=opener)[0] and len(sent) == 1
+
+
+def test_a_capture_that_saves_no_file_says_why(world, monkeypatch):
+    prompt = {"x": 1, "y": 2, "w": 300, "h": 200}
+    assert c.capture_why(prompt, "/tmp/x.png") is None and c.capture(prompt, "/tmp/x.png")
+    monkeypatch.setattr(c, "_exists", lambda p: False)
+    why = c.capture_why(prompt, "/tmp/x.png")
+    assert why and "wrote no file" in why and not c.capture(prompt, "/tmp/x.png")
+    world.rc = 1
+    assert c.capture_why(prompt, "/tmp/x.png").startswith("screencapture exited 1")
+
+
+def test_consent_list_with_out_exits_1_when_no_picture_was_saved(monkeypatch, capsys):
+    from claude_human import cli
+    monkeypatch.setattr(c, "prompts", lambda: [{"owner": "UserNotificationCenter", "x": 1, "y": 2, "w": 300, "h": 200}])
+    monkeypatch.setattr(c, "capture_why", lambda p, out, env=None: "screencapture wrote no file")
+    assert cli.main(["consent", "list", "--out", "/tmp/x.png"]) == 1
+    out = capsys.readouterr()
+    assert "no picture saved to /tmp/x.png" in out.err and '"image_error"' in out.out
+    monkeypatch.setattr(c, "capture_why", lambda p, out, env=None: None)
+    monkeypatch.setattr(c, "read_text", lambda p: "words")
+    assert cli.main(["consent", "list", "--out", "/tmp/x.png"]) == 0

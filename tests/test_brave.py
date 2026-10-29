@@ -443,3 +443,63 @@ def test_upload_command(monkeypatch, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out) == {"files": ["r.pdf"], "bytes": [3], "done": None}
     assert brave.main(["upload", "7", "#receipt", str(f), "--max-bytes", "2"]) == 2
     assert brave.main(["upload", "7"]) == 2
+
+
+def test_a_consent_prompt_on_screen_fails_the_run_at_once(monkeypatch, capsys, tmp_path):
+    # behind a consent prompt each AppleScript call waits out its own timeout, and a run with
+    # --timeout 90 went on for more than six minutes; now it says why before it opens anything
+    opened = []
+    monkeypatch.setattr(brave, "new_window", lambda *a, **k: opened.append(1) or ("1", None))
+    try:
+        brave.run("https://example.org/", "1", blocker=lambda: "UserNotificationCenter")
+    except brave.Blocked as e:
+        assert str(e).startswith("blocked_by UserNotificationCenter")
+    else:
+        raise AssertionError("a run behind a consent prompt was not refused")
+    assert opened == []
+    monkeypatch.setattr(brave, "blocked_by", lambda: "UserNotificationCenter")
+    js = tmp_path / "x.js"
+    js.write_text("1")
+    assert brave.main(["https://example.org/", str(js)]) == 1
+    assert "blocked_by UserNotificationCenter" in capsys.readouterr().err and opened == []
+
+
+def test_a_prompt_that_appears_during_the_wait_ends_it(monkeypatch):
+    up = []
+    monkeypatch.setattr(brave, "new_window", lambda *a, **k: ("1", None))
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (0, ""))
+
+    def js_in(*a, **k):
+        up.append(1)           # the prompt is up from now on, and the browser does not answer
+        raise RuntimeError("AppleEvent timed out")
+    monkeypatch.setattr(brave, "js_in", js_in)
+    try:
+        brave.run("https://example.org/", "1", timeout=600, blocker=lambda: "UserNotificationCenter" if up else None)
+    except brave.Blocked:
+        pass
+    else:
+        raise AssertionError("the wait went on behind the prompt")
+    assert len(up) == 1
+
+
+def test_no_prompt_is_no_block(monkeypatch):
+    import claude_human.consent as consent
+    monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "CoreServicesUIAgent"}])
+    assert brave.blocked_by() is None
+    monkeypatch.setattr(consent, "prompts", lambda: None)
+    assert brave.blocked_by() is None
+    monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "UserNotificationCenter"}])
+    assert brave.blocked_by() == "UserNotificationCenter"
+
+
+def test_a_new_window_waits_by_the_clock_not_by_a_count_of_slow_listings():
+    import time
+    calls = []
+
+    def slow_ids():
+        calls.append(1)
+        time.sleep(0.05)      # a listing that answers slowly, as AppleScript does behind a prompt
+        return {"100"}
+    t = time.monotonic()
+    assert brave.new_window(ids=slow_ids, yids=lambda: None, make=lambda: None, wait=0.2, step=0.01) == (None, None)
+    assert time.monotonic() - t < 1.0 and len(calls) < 20
