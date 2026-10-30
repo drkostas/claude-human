@@ -46,6 +46,7 @@ def world(monkeypatch):
     monkeypatch.setattr(c, "_sleep", lambda s: None)
     monkeypatch.setattr(c, "_now", Clock().now)
     monkeypatch.setattr(c, "_exists", lambda p: True)
+    monkeypatch.setattr(c, "_may_record", lambda: True)
     w.find = lambda: w.open
     w.fronted = []
     w.forward = lambda pid: w.fronted.append(pid) or True
@@ -218,6 +219,17 @@ def test_a_capture_that_saves_no_file_says_why(world, monkeypatch):
     assert why and "wrote no file" in why and not c.capture(prompt, "/tmp/x.png")
     world.rc = 1
     assert c.capture_why(prompt, "/tmp/x.png").startswith("screencapture exited 1")
+
+
+def test_a_process_that_may_not_record_runs_no_screencapture(world, monkeypatch):
+    # each screencapture from such a process makes macOS show a new screen recording prompt
+    prompt = {"x": 1, "y": 2, "w": 300, "h": 200}
+    monkeypatch.setattr(c, "_may_record", lambda: False)
+    why = c.capture_why(prompt, "/tmp/x.png")
+    assert why and "may not record the screen" in why and not c.capture(prompt, "/tmp/x.png")
+    assert world.calls == []
+    monkeypatch.setattr(c, "_may_record", lambda: None)   # cannot be told: tried, as before
+    assert c.capture_why(prompt, "/tmp/x.png") is None and world.calls[0][0][0] == "/usr/sbin/screencapture"
 
 
 def test_consent_list_with_out_exits_1_when_no_picture_was_saved(monkeypatch, capsys):

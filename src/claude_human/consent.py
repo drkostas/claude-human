@@ -63,6 +63,16 @@ _sleep = time.sleep
 _now = time.time
 _exists = os.path.exists
 
+
+def _may_record() -> bool | None:
+    """Whether this process may record the screen, asked without showing a prompt
+    (CGPreflightScreenCaptureAccess). None when it cannot be told."""
+    try:
+        from Quartz import CGPreflightScreenCaptureAccess
+        return bool(CGPreflightScreenCaptureAccess())
+    except Exception:
+        return None
+
 Result = tuple[bool, str]
 
 
@@ -146,7 +156,12 @@ def capture(prompt: dict, out: str | os.PathLike, *, env: Mapping[str, str] | No
 def capture_why(prompt: dict, out: str | os.PathLike, *, env: Mapping[str, str] | None = None) -> str | None:
     """Save a picture of the prompt's rectangle to ``out`` (PNG): None when the file is there, else
     why not. screencapture can exit 0 and write nothing when the process may not record the screen,
-    so the file itself is the test."""
+    so the file itself is the test. A process that may not record the screen does not run it at all:
+    macOS answers each such screencapture with a new screen recording prompt naming this process,
+    so a caller that tries once a minute would put one in front of the person every minute."""
+    if _may_record() is False:
+        return ("this process may not record the screen, so no picture was taken (screencapture would "
+                "only make macOS ask the person again)")
     rect = f"{int(prompt['x'])},{int(prompt['y'])},{int(prompt['w'])},{int(prompt['h'])}"
     try:
         r = _run(["/usr/sbin/screencapture", "-x", "-R", rect, str(out)], capture_output=True,
