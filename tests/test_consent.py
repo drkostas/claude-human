@@ -362,6 +362,26 @@ def test_timed_out_reads_the_denials_nobody_answered_and_none_when_unreadable(tm
     assert c.timed_out(tmp_path / "missing.db") is None
 
 
+def test_granted_reads_the_allowed_programs_from_both_databases_and_none_when_unreadable(tmp_path):
+    import sqlite3
+    dbs = []
+    for name, rows in (("system.db", [("kTCCServiceScreenCapture", "/usr/local/bin/sh", 2, 300),
+                                      ("kTCCServiceScreenCapture", "com.example.viewer", 0, 400),   # denied
+                                      ("kTCCServiceCamera", "com.example.cam", 2, 500)]),
+                       ("user.db", [("kTCCServiceScreenCapture", "com.example.recorder", 2, 350)])):
+        db = tmp_path / name
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE access (service TEXT, client TEXT, auth_value INTEGER, last_modified INTEGER)")
+        conn.executemany("INSERT INTO access VALUES (?,?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        dbs.append(db)
+    assert c.granted(c.SCREEN, dbs) == [{"client": "com.example.recorder", "at": 350},
+                                        {"client": "/usr/local/bin/sh", "at": 300}]
+    assert c.granted(c.SCREEN, [dbs[0], tmp_path / "missing.db"]) == [{"client": "/usr/local/bin/sh", "at": 300}]
+    assert c.granted(c.SCREEN, [tmp_path / "missing.db"]) is None
+
+
 def test_the_named_prompt_is_pressed_and_a_settings_prompt_in_front_is_passed_over(world):
     front = {"wid": 16921, "pid": 20651, "owner": "universalAccessAuthWarn"}
     behind = [{"wid": 16914, "pid": 42, "owner": "UserNotificationCenter"},
