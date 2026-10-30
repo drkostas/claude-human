@@ -388,6 +388,10 @@ _RESULT = re.compile(r"^\S+ \S+ +\w+ +.+?\[(\d+):[0-9a-f]+\] \[com\.apple\.TCC:a
 TIMEOUT_REASON = 9
 #: the per-user consent database, read only
 USER_TCC = "~/Library/Application Support/com.apple.TCC/TCC.db"
+#: the system consent database, read only, which holds screen recording among others
+SYSTEM_TCC = "/Library/Application Support/com.apple.TCC/TCC.db"
+#: the consent service for recording the screen and audio
+SCREEN = "kTCCServiceScreenCapture"
 
 
 def requests(text: str) -> list[dict]:
@@ -464,3 +468,29 @@ def timed_out(db: str | os.PathLike | None = None) -> list[dict] | None:
     except sqlite3.Error:
         return None
     return [{"asker": r[0], "target": r[1], "at": int(r[2] or 0)} for r in rows]
+
+
+def granted(service: str, dbs: list[str | os.PathLike] | None = None) -> list[dict] | None:
+    """The programs macOS has allowed `service` (for example ``SCREEN``), newest first, as
+    ``{client, at}`` (``client`` an executable path or a bundle id, ``at`` in seconds since the epoch),
+    read only from the system and the user's consent databases (or `dbs`). A prompt that asks again for
+    a consent its program already holds is macOS confirming the grant: answering "Don't Allow" there
+    takes it away. None when no database can be read (they need Full Disk Access). Nothing here writes
+    a database."""
+    import sqlite3   # noqa: PLC0415
+    out: list[dict] = []
+    read = False
+    for db in dbs or [SYSTEM_TCC, USER_TCC]:
+        path = os.path.expanduser(str(db))
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+            try:
+                rows = conn.execute("SELECT client, last_modified FROM access WHERE service = ? AND auth_value = 2",
+                                    (service,)).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+        read = True
+        out += [{"client": r[0], "at": int(r[1] or 0)} for r in rows]
+    return sorted(out, key=lambda g: -g["at"]) if read else None
