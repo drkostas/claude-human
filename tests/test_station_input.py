@@ -206,8 +206,8 @@ class Consent:
     def prompts(self):
         return self.found
 
-    def answer(self, choice, find, by_title=False):
-        self.answered.append((choice, by_title))
+    def answer(self, choice, find, by_title=False, wid=None):
+        self.answered.append((choice, by_title) if wid is None else (choice, by_title, wid))
         return True, "Pressed Cancel."
 
     def read_words(self, pid, wid):
@@ -307,3 +307,12 @@ def test_raise_brings_the_named_window_forward_and_observes_it():
     assert not s.do_input({"type": "raise"})["ok"]                   # no window named
     assert QuartzInput(Screen(locked=True), quartz=FakeQuartz(), focus=focus).do_input(
         {"type": "raise", "app": "Notes"})["locked"]
+
+
+def test_a_consent_answer_can_name_the_prompts_window():
+    consent = Consent([GATE, {"wid": 5, "pid": 42, "owner": "UserNotificationCenter"}])
+    s = QuartzInput(Screen(), quartz=FakeQuartz(), consent=consent)
+    got = s.do_input({"type": "consent", "choice": "allow", "prompt": 5})
+    assert got["ok"] and got["window"] == 5 and consent.answered == [("allow", True, 5)]
+    got = s.do_input({"type": "consent", "choice": "allow", "prompt": 77})
+    assert not got["ok"] and "no longer open" in got["detail"] and len(consent.answered) == 1
