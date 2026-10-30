@@ -283,7 +283,7 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
            forward: Callable[[int], bool] | None = None, sudo: bool = True,
            env: Mapping[str, str] | None = None,
            press: Callable[[int, int, str], Result] | None = None, by_title: bool = False,
-           tries: int = 2) -> Result:
+           tries: int = 2, wid: int | None = None) -> Result:
     """Press "Allow" (``choice="allow"``) or "Don't Allow" (``"deny"``) on the frontmost consent
     prompt, and observe it close. ``find`` lists the prompts (default ``prompts``), ``forward``
     brings a pid's application to the front (default ``bring_forward``).
@@ -302,7 +302,19 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
         return False, "the window list cannot be read (is the screen locked?)"
     if not now:
         return False, "No consent prompt is open on the Mac right now."
-    target = now[0]
+    if wid is not None:
+        # the prompt asked about, never whichever one happens to be in front
+        named = [p for p in now if int(p.get("wid", 0)) == int(wid)]
+        if not named:
+            return False, f"prompt window {wid} is no longer open, so nothing was pressed"
+        target = named[0]
+    else:
+        # a prompt only the person grants in System Settings is never chosen without being named
+        pressable = [p for p in now if (p.get("owner") or "UserNotificationCenter") not in SETTINGS_OWNERS]
+        if not pressable:
+            return False, ("the only prompt open is granted by the person in System Settings, "
+                           "so nothing was pressed")
+        target = pressable[0]
     owner = target.get("owner") or "UserNotificationCenter"
     if owner in SETTINGS_OWNERS and choice == "allow":
         return False, ("this prompt is granted by the person in System Settings (Privacy & Security), "
@@ -335,7 +347,7 @@ def answer(choice: str, *, helper: str | os.PathLike | None = None, poll_seconds
 
 
 def ask_station(choice: str, *, token: str, station: str = "http://127.0.0.1:8789",
-                opener: Callable | None = None) -> Result:
+                opener: Callable | None = None, window: int | None = None) -> Result:
     """Answer the front consent prompt through a running station, which presses it with its own
     Accessibility grant (``{"type": "consent"}`` on ``/input``, master token only). For a process
     that has no such grant, such as a launchd job. The station's answer, or why it could not be
@@ -347,7 +359,8 @@ def ask_station(choice: str, *, token: str, station: str = "http://127.0.0.1:878
         return False, f"unknown answer {choice!r}: allow, deny or read"
     req = urllib.request.Request(
         f"{station.rstrip('/')}/input", method="POST",
-        data=json.dumps({"type": "consent", "choice": choice}).encode(),
+        data=json.dumps({"type": "consent", "choice": choice,
+                         **({"prompt": int(window)} if window is not None else {})}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
         with (opener or urllib.request.urlopen)(req, timeout=30) as r:

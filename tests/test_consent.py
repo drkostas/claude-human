@@ -300,7 +300,9 @@ def test_allowing_an_accessibility_request_is_refused_and_presses_nothing(world)
         world.open = []
         return True, "pressed"
     ok, why = c.answer("deny", find=world.find, press=press, by_title=True)
-    assert ok and pressed == ["Deny"]   # a deny the caller was told to give presses Deny by its title
+    assert not ok and pressed == []     # never chosen without being named
+    ok, why = c.answer("deny", find=world.find, press=press, by_title=True, wid=16507)
+    assert ok and pressed == ["Deny"]   # a deny the caller was told to give, for that window, presses Deny
 
 
 #: the unified log (compact style) when one program asked through another to control an app: the
@@ -358,3 +360,24 @@ def test_timed_out_reads_the_denials_nobody_answered_and_none_when_unreadable(tm
     assert c.timed_out(db) == [{"asker": "/usr/local/bin/tool", "target": "com.example.events", "at": 200},
                                {"asker": "com.example.terminal", "target": "com.example.viewer", "at": 100}]
     assert c.timed_out(tmp_path / "missing.db") is None
+
+
+def test_the_named_prompt_is_pressed_and_a_settings_prompt_in_front_is_passed_over(world):
+    front = {"wid": 16921, "pid": 20651, "owner": "universalAccessAuthWarn"}
+    behind = [{"wid": 16914, "pid": 42, "owner": "UserNotificationCenter"},
+              {"wid": 16943, "pid": 42, "owner": "UserNotificationCenter"}]
+    world.open, pressed = [front, *behind], []
+
+    def press(pid, wid, title):
+        pressed.append((wid, title))
+        world.open = [p for p in world.open if p["wid"] != wid]
+        return True, "pressed"
+    ok, _ = c.answer("allow", find=world.find, press=press, by_title=True)
+    assert ok and pressed == [(16914, "Allow")]          # the request in front is never the one pressed
+    ok, _ = c.answer("deny", find=world.find, press=press, by_title=True, wid=16943)
+    assert ok and pressed[-1] == (16943, "Don't Allow")
+    ok, why = c.answer("allow", find=world.find, press=press, by_title=True, wid=16914)
+    assert not ok and "no longer open" in why and len(pressed) == 2
+    world.open = [front]
+    ok, why = c.answer("allow", find=world.find, press=press, by_title=True)
+    assert not ok and "System Settings" in why and len(pressed) == 2

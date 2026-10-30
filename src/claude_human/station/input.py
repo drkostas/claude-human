@@ -184,10 +184,12 @@ class QuartzInput:
                 return {"ok": True, "detail": "brought to the front"}
         return {"ok": False, "detail": "the window did not come to the front"}
 
-    def answer_prompt(self, choice: str) -> dict:
-        """Press `choice` ("allow" or "deny") on the front consent prompt, by its button's title, with
-        this process's Accessibility grant, and observe it close (one more try when it stays). "read"
-        presses nothing and answers the prompt's words, read the same way, with its two buttons."""
+    def answer_prompt(self, choice: str, prompt: Optional[int] = None) -> dict:
+        """Press `choice` ("allow" or "deny") on a consent prompt, by its button's title, with this
+        process's Accessibility grant, and observe it close (one more try when it stays). "read"
+        presses nothing and answers the prompt's words, read the same way, with its two buttons.
+        `prompt` names the prompt's window; without it, the front prompt that can be pressed (a
+        prompt only the person grants in System Settings is never chosen unnamed)."""
         consent = self._consent
         if consent is None:
             from .. import consent  # noqa: PLC0415
@@ -198,13 +200,17 @@ class QuartzInput:
             return {"ok": False, "detail": "the window list cannot be read"}
         if not found:
             return {"ok": False, "detail": "No consent prompt is open on the Mac right now."}
-        front = found[0]
+        named = [p for p in found if prompt is not None and int(p.get("wid", 0)) == int(prompt)]
+        if prompt is not None and not named:
+            return {"ok": False, "window": prompt, "detail": f"prompt window {prompt} is no longer open"}
+        front = named[0] if named else found[0]
         if choice == "read":
             words = consent.read_words(front["pid"], front["wid"])
             return {"ok": words is not None, "words": words, "owner": front.get("owner"),
                     "window": front.get("wid"), "allow": front.get("allow"), "deny": front.get("deny"),
                     "detail": words or "the prompt's words could not be read"}
-        ok, said = consent.answer(choice, find=consent.prompts, by_title=True)
+        ok, said = consent.answer(choice, find=consent.prompts, by_title=True,
+                                  **({"wid": int(prompt)} if prompt is not None else {}))
         return {"ok": ok, "detail": said, "owner": front.get("owner"), "window": front.get("wid")}
 
     # ------------------------------------------------------------------ the one entry point
@@ -215,7 +221,8 @@ class QuartzInput:
             return {"ok": False, "locked": True, "detail": self.locked_detail}
         if kind == "consent":
             # it answers the very dialog that refuses every other input, so it comes before that check
-            return self.answer_prompt(str(msg.get("choice", "")))
+            return self.answer_prompt(str(msg.get("choice", "")),
+                                      int(msg["prompt"]) if msg.get("prompt") is not None else None)
         blocker = self.screen.blocked_by() if kind not in HARMLESS else None
         if blocker:
             # the caller may word it from the blocking app's name, which is also returned
