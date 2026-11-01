@@ -598,6 +598,9 @@ def _one_window(monkeypatch, tab):
     monkeypatch.setattr(brave, "osa", tab.osa)
     monkeypatch.setattr(brave, "js_in", tab.js_in)
     monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    # these tests are about navigation, not about prompts, and a machine running them may have a
+    # notification window of its own that the real reader counts as one
+    monkeypatch.setattr(brave, "blocked_by", lambda: None)
 
 
 def test_a_reused_window_runs_the_script_on_the_page_that_was_asked_for(monkeypatch):
@@ -651,4 +654,5 @@ def test_a_page_whose_address_cannot_be_read_is_not_waited_for(monkeypatch):
     monkeypatch.setattr(brave, "osa", tab.osa)
     monkeypatch.setattr(brave, "js_in", js_in)
     monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    monkeypatch.setattr(brave, "blocked_by", lambda: None)
     assert brave.run("https://new.example.org/", "1", window="7")["result"] == "old"
