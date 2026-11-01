@@ -556,3 +556,99 @@ def test_a_prompt_seen_when_the_time_runs_out_is_named(monkeypatch):
         assert "a macOS prompt is blocking Brave" in str(e)
     else:
         raise AssertionError("the prompt was not named")
+
+
+class FakeTab:
+    """A tab whose document changes a few polls after it is sent somewhere, as a real one does.
+
+    `pages` maps an address to what a script reads there, and `lag` is how many reads of the
+    address still answer the old page before the new one arrives.
+    """
+
+    def __init__(self, href, pages, lag=2, lands_on=None):
+        self.href, self.pages, self.lag = href, pages, lag
+        self.lands_on, self.sent, self.left = lands_on, None, 0
+        self.ran = []
+
+    def osa(self, script, *a, **k):
+        if "set URL of active tab" in script:
+            self.sent = script.split('to "')[1].rstrip('"')
+            self.left = self.lag
+        return (0, "")
+
+    def js_in(self, window, code, app=None, **k):
+        if code == "location.href":
+            if self.sent is not None:
+                if self.left > 0:
+                    self.left -= 1                       # still the old document
+                else:
+                    self.href, self.sent = self.lands_on or self.sent, None
+            return self.href
+        if code.startswith("!!("):
+            return "true"
+        if code.startswith("window." + brave.RESULT + " = undefined"):
+            return ""
+        if "__PENDING__" in code:
+            return self.pages[self.href]
+        self.ran.append(self.href)                        # the script, on whichever page is there
+        return self.pages[self.href]
+
+
+def _one_window(monkeypatch, tab):
+    monkeypatch.setattr(brave, "osa", tab.osa)
+    monkeypatch.setattr(brave, "js_in", tab.js_in)
+    monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+
+
+def test_a_reused_window_runs_the_script_on_the_page_that_was_asked_for(monkeypatch):
+    # the window held another page, and the condition was answered by that page before the new one
+    # arrived, so the script read the wrong document and the answer looked plausible
+    tab = FakeTab("https://old.example.org/", {"https://old.example.org/": "old",
+                                               "https://new.example.org/": "new"})
+    _one_window(monkeypatch, tab)
+    out = brave.run("https://new.example.org/", "1", window="7")
+    assert out["result"] == "new"
+    assert tab.ran == ["https://new.example.org/"]
+
+
+def test_a_redirect_counts_as_the_document_having_changed(monkeypatch):
+    # the address that answers is not the one that was asked for, and waiting for the asked-for one
+    # would wait out the whole timeout
+    tab = FakeTab("https://old.example.org/", {"https://old.example.org/": "old",
+                                               "https://signin.example.org/": "the sign-in page"},
+                  lands_on="https://signin.example.org/")
+    _one_window(monkeypatch, tab)
+    out = brave.run("https://app.example.org/private", "1", window="7")
+    assert out["result"] == "the sign-in page"
+    assert tab.ran == ["https://signin.example.org/"]
+
+
+def test_nothing_is_waited_for_when_the_window_already_holds_that_address(monkeypatch):
+    tab = FakeTab("https://example.org/", {"https://example.org/": "here"}, lag=10**6)
+    _one_window(monkeypatch, tab)
+    assert brave.run("https://example.org/", "1", window="7")["result"] == "here"
+
+
+def test_a_document_that_never_changes_times_out_and_says_what_it_waited_for(monkeypatch):
+    tab = FakeTab("https://old.example.org/", {"https://old.example.org/": "old"}, lag=10**6)
+    _one_window(monkeypatch, tab)
+    try:
+        brave.run("https://new.example.org/", "1", window="7", timeout=0.01)
+    except TimeoutError as e:
+        assert "to leave https://old.example.org/" in str(e)
+    else:
+        raise AssertionError("the run did not time out on a page that never changed")
+
+
+def test_a_page_whose_address_cannot_be_read_is_not_waited_for(monkeypatch):
+    # a page the browser lets no script in answers nothing, and that must not become a wait
+    tab = FakeTab("https://old.example.org/", {"https://old.example.org/": "old"}, lag=10**6)
+
+    def js_in(window, code, app=None, **k):
+        if code == "location.href":
+            raise RuntimeError("cannot run a script here")
+        return tab.js_in(window, code, app, **k)
+    monkeypatch.setattr(brave, "osa", tab.osa)
+    monkeypatch.setattr(brave, "js_in", js_in)
+    monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    assert brave.run("https://new.example.org/", "1", window="7")["result"] == "old"

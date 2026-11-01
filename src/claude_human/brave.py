@@ -717,6 +717,11 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
     `keep_open`; one passed as `window` is never closed. Raises TimeoutError when the page or the
     script does not answer in `timeout` seconds.
 
+    A window that is reused keeps its previous page until the new one arrives, so the run first
+    waits for the window's own document to change (`address`), and only then checks `wait_for`.
+    Without that the condition is answered by the page that was already there, and the script reads
+    it instead of the page that was asked for.
+
     `wait_for` is a condition on the page, checked BEFORE the script runs (the default waits for the
     page to finish loading). The script's answer is waited for by itself. So a `wait_for` that names
     window.__claude_r can never hold, since only the script sets it: that is refused with ValueError
@@ -741,6 +746,44 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
         return _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state, blocker)
     finally:
         _deadline = outer
+
+
+def address(window: str, app: str = APP) -> str | None:
+    """The address of the document in the window's active tab, or None when it cannot be read.
+
+    Read from the page and not from the tab. A tab reports the address it was last sent to as soon
+    as it is sent, while the document behind it is still the previous one, so the tab cannot say
+    whether a page has actually changed. A page the browser does not let a script into, such as its
+    own settings, answers nothing, and None says so rather than guessing."""
+    try:
+        return js_in(window, "location.href", app)
+    except RuntimeError:
+        return None
+
+
+def _await_new_document(window: str, app: str, before: str | None, url: str, blocker,
+                        timeout: float, pause: float = 0.25) -> None:
+    """Wait until the window holds a document other than the one it held before.
+
+    Without this, a window that is reused runs the script against the page it already had. The
+    address is set, the caller's condition is checked at once, and the previous document is still
+    there and still complete, so the condition holds and the script reads the wrong page. Any
+    address other than the one before means the document has changed, which also covers a redirect,
+    where the page that answers is not the one that was asked for.
+
+    Nothing is waited for when the previous address could not be read, or when the window already
+    held the address being asked for, since no change is coming in either case."""
+    if before is None or before == url:
+        return
+    while True:
+        now = address(window, app)
+        if now is None:
+            _refuse_if_blocked(blocker)        # a prompt holds every call; do not poll behind one
+        elif now != before:
+            return
+        if time.monotonic() >= _deadline:
+            _ran_out(blocker, f"the window to leave {before}", timeout)
+        time.sleep(pause)
 
 
 def _ran_out(blocker, what: str, timeout: float) -> None:
@@ -771,8 +814,14 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
                 keep(key, window, yid, state=state)
     try:
         if url != "-":
+            before = address(window, app)
+            if before is None:
+                # the page answered nothing: a prompt holding every call is the one cause worth
+                # ending the run for, and it is cheaper to find out now than one call later
+                _refuse_if_blocked(blocker)
             osa(f'tell application "{app}" to set URL of active tab of (first window whose id is '
                 f'{window}) to "{url}"')
+            _await_new_document(window, app, before, url, blocker, timeout)
         while True:
             try:
                 if js_in(window, f"!!({wait_for})", app) == "true":
