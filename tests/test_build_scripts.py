@@ -80,3 +80,45 @@ def test_python_app_builds_once_and_runs_python(tmp_path):
     r = subprocess.run(["bash", str(PYAPP), str(out)], env=env, capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == exe
     assert (out / "Contents" / "MacOS" / "example-agent").stat().st_mtime_ns == stamp  # not rebuilt
+
+
+def _macho_uuid(path):
+    out = subprocess.run(["otool", "-l", str(path)], capture_output=True, text=True).stdout
+    return next(line.split()[1] for line in out.splitlines() if line.split()[:1] == ["uuid"])
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.exists("/opt/homebrew/bin/python3"),
+                    reason="needs macOS and Homebrew's Python")
+def test_python_app_never_shares_the_launchers_uuid(tmp_path):
+    """macOS applies Local Network rules by a binary's UUID, so a copy that kept Python.app's UUID let
+    a new bundle, denied until someone answers for it, cut Python off the LAN."""
+    home = subprocess.run(["/opt/homebrew/bin/python3", "-c", "import sys;print(sys.base_prefix)"],
+                          capture_output=True, text=True).stdout.strip()
+    launcher = _macho_uuid(f"{home}/Resources/Python.app/Contents/MacOS/Python")
+    env = dict(os.environ, CLAUDE_HUMAN_IDENTITY="-", CLAUDE_HUMAN_APP_NAME="Example Agent")
+
+    def build(name, bundle_id):
+        r = subprocess.run(["bash", str(PYAPP), str(tmp_path / name)],
+                           env=dict(env, CLAUDE_HUMAN_BUNDLE_ID=bundle_id), capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    one = build("one.app", "org.example.one")
+    two = build("two.app", "org.example.two")
+    again = build("again.app", "org.example.one")
+    assert _macho_uuid(one) != launcher and _macho_uuid(two) != launcher
+    assert _macho_uuid(one) != _macho_uuid(two), "two bundles must not share one either"
+    assert _macho_uuid(one) == _macho_uuid(again), "a rebuild keeps the bundle's UUID"
+    assert subprocess.run([one, "-c", "import sys; print(sys.version_info[0])"],
+                          capture_output=True, text=True).stdout.strip() == "3"
+    assert subprocess.run(["codesign", "--verify", "--strict", str(tmp_path / "one.app")]).returncode == 0
+
+    # one built before this rule held the launcher's UUID: it is not current, so it is built again
+    raw = bytes.fromhex(_macho_uuid(one).replace("-", ""))
+    data = open(one, "rb").read()
+    assert data.count(raw) == 1
+    open(one, "wb").write(data.replace(raw, bytes.fromhex(launcher.replace("-", ""))))
+    subprocess.run(["codesign", "--force", "--sign", "-", str(tmp_path / "one.app")], check=True, capture_output=True)
+    assert _macho_uuid(one) == launcher
+    build("one.app", "org.example.one")
+    assert _macho_uuid(one) != launcher
