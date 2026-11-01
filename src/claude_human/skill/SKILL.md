@@ -65,7 +65,7 @@ A sudoers file with mode 0644 is ignored by sudo without any message, so the `ch
   "$exe" -m my.agent            # the launchd job runs this; the grant is held against the bundle id and certificate
   ```
 
-  It copies Python.app's launcher, links it to the framework through the opt path, and signs it with the first Apple Development identity. It rebuilds only when it is not current, so call it at every install. Do not wrap `exec python3` in a bundle (exec replaces the process image, so python3 is the binary asking) and do not copy bin/python3 into one (same bytes, same verdict).
+  It copies Python.app's launcher, gives the copy its own Mach-O UUID, links it to the framework through the opt path, and signs it with the first Apple Development identity. The UUID matters because macOS applies Local Network rules by a binary's UUID: a copy that kept Python.app's UUID, under a bundle id nobody has allowed yet, cuts every program running that launcher off the LAN, with `No route to host` and no prompt. It rebuilds only when it is not current, so call it at every install. Do not wrap `exec python3` in a bundle (exec replaces the process image, so python3 is the binary asking) and do not copy bin/python3 into one (same bytes, same verdict).
 - A Mac upgrade can also disable Screen Sharing. That matters only for the person's own remote viewing, since Screen Sharing input never reaches the lock screen (see the catalogue).
 
 ## Screenshots

@@ -26,8 +26,17 @@
 # is then held against `identifier "<bundle id>" and certificate ...`, which a rebuild keeps.
 # No hardened runtime: it would refuse to load Homebrew's unsigned libpython and extensions.
 #
+# ⭐ EACH COPY GETS ITS OWN MACH-O UUID, OR A NEW BUNDLE CUTS PYTHON OFF THE LOCAL NETWORK. macOS applies
+# its Local Network rules by the UUID of the binary, and a plain copy keeps the UUID of Python.app. A
+# bundle id nobody has answered for yet starts as denied, so building a new app denied that UUID for
+# every program running the same launcher, including Python itself and other bundles already allowed:
+# their connects to the LAN failed with EHOSTUNREACH ("No route to host"), with no prompt, while the
+# internet and programs signed by Apple still worked. So the build writes a UUID of its own, made from
+# the bundle id, before it signs.
+#
 # The bundle is rebuilt only when it is not current (missing, signature broken, made from another
-# launcher, or it does not start Python), so running this at every install is cheap and safe.
+# launcher, sharing the launcher's UUID, or it does not start Python), so running this at every
+# install is cheap and safe.
 set -euo pipefail
 APP="${1:?usage: build.sh <output .app path>}"
 BUNDLE_ID="${CLAUDE_HUMAN_BUNDLE_ID:-}"
@@ -62,9 +71,47 @@ fi
 
 xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
+macho_uuid() { otool -l "$1" 2>/dev/null | awk '$1 == "uuid" {print $2; exit}'; }
+
+# Writes a UUID made from the bundle id into every architecture's LC_UUID. The signature goes first,
+# since this changes the bytes it covers.
+give_own_uuid() {
+  "$PY" - "$1" "$BUNDLE_ID" <<'PYTHON'
+import struct, sys, uuid
+path, bundle_id = sys.argv[1:3]
+data = bytearray(open(path, "rb").read())
+FAT, THIN, LC_UUID = 0xcafebabe, 0xfeedfacf, 0x1b
+
+
+def patch(start):
+    magic = struct.unpack_from("<I", data, start)[0]
+    if magic != THIN:
+        raise SystemExit(f"not a 64-bit Mach-O at offset {start}: {magic:#x}")
+    ncmds = struct.unpack_from("<I", data, start + 16)[0]
+    at = start + 32
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, at)
+        if cmd == LC_UUID:
+            old = uuid.UUID(bytes=bytes(data[at + 8:at + 24]))
+            data[at + 8:at + 24] = uuid.uuid5(old, bundle_id).bytes
+            return
+        at += size
+    raise SystemExit("the launcher has no LC_UUID")
+
+
+if struct.unpack_from(">I", data, 0)[0] == FAT:
+    for i in range(struct.unpack_from(">I", data, 4)[0]):
+        patch(struct.unpack_from(">I", data, 8 + i * 20 + 8)[0])
+else:
+    patch(0)
+open(path, "wb").write(data)
+PYTHON
+}
+
 current() {
   [ -x "$EXE" ] && codesign --verify --strict "$APP" >/dev/null 2>&1 \
     && [ "$(cat "$STAMP" 2>/dev/null)" = "$(shasum -a 256 "$SRC" | cut -d' ' -f1)" ] \
+    && [ "$(macho_uuid "$EXE")" != "$(macho_uuid "$SRC")" ] \
     && /usr/bin/grep -q "<string>$BUNDLE_ID</string>" "$APP/Contents/Info.plist" \
     && "$EXE" -c 'import sys' >/dev/null 2>&1
 }
@@ -80,6 +127,7 @@ if ! current; then
   old="$(otool -L "$EXE" | awk '/Python\.framework\/Versions\/[0-9.]+\/Python /{print $1; exit}')"
   [ -n "$old" ] || { echo "the launcher does not link a Python framework" >&2; exit 1; }
   install_name_tool -change "$old" "$PY_HOME/Python" "$EXE" 2>/dev/null
+  give_own_uuid "$EXE"
   cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
