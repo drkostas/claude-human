@@ -23,6 +23,19 @@ def test_questions_quotes_and_others_acting_pass():
         assert by_hand(text) is None, text
 
 
+def test_open_as_an_adjective_is_not_an_ask():
+    for text in ("Open items, each with its date.",
+                 "Open questions for the next round.",
+                 "Open pull requests are listed below.",
+                 "Open question: which account should the assistant use?"):
+        assert by_hand(text) is None, text
+    for text in ("Open the items page.",
+                 "Open Settings and turn it off.",
+                 "Please open your tasks.",
+                 "You need to open the question."):
+        assert by_hand(text), text
+
+
 def test_the_sentence_found_is_returned_and_the_verbs_can_be_given():
     assert by_hand("All fine. Open the page now.") == "Open the page now."
     assert by_hand("Feed the cat.", verbs=("feed",)) == "Feed the cat."

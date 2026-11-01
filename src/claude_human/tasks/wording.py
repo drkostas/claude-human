@@ -14,7 +14,8 @@ list number or a bullet, and after a place set off by a comma, as in "In the app
 the page"), or when the verb follows "you need to", "you should", "you must", "you
 have to", "can you", "could you" or "please". Text in quotation marks is a quote, never an ask, so a
 message that reports a refusal word for word passes. A sentence where someone else acts ("Should I
-open a pull request?") passes too.
+open a pull request?") passes too, and so does "open" used as an adjective ("Open items, each with its
+date").
 """
 from __future__ import annotations
 
@@ -31,13 +32,16 @@ _PLACE = r"(?:(?:in|on|at|from|inside|within)\s+[^,.!?\n]{1,80},\s*)?"
 _LEAD = r"(?:(?:please|then|now|first|next|and|also|just)\s+|(?:\d+[.)]|[-*•])\s+)*"
 #: words that turn the verb that follows into an ask of the reader
 _ASKING = r"(?:you\s+(?:need|have)\s+to|you\s+(?:should|must|can)|can\s+you|could\s+you|would\s+you|please)\s+"
+#: nouns that make "open" an adjective, so "Open items, each with its date" names a list and asks nothing
+_OPEN_ADJECTIVE = r"open\s+(?:items?|questions?|tasks?|issues?|problems?|points?|tickets?|bugs?|threads?|work|prs?|pull\s+requests?)\b"
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|`[^`]*`")
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
 def _pattern(verbs: tuple[str, ...]) -> re.Pattern:
     words = "|".join(sorted((re.escape(v).replace(r"\ ", r"\s+") for v in verbs), key=len, reverse=True))
-    return re.compile(rf"^\s*{_PLACE}{_LEAD}(?:{words})\b|\b{_ASKING}(?:{words})\b", re.I)
+    verb = rf"(?!{_OPEN_ADJECTIVE})(?:{words})\b"
+    return re.compile(rf"^\s*{_PLACE}{_LEAD}{verb}|\b{_ASKING}{verb}", re.I)
 
 
 def by_hand(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> str | None:
