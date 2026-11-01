@@ -6,9 +6,11 @@ import pytest
 from claude_human import consent as c
 
 
-def win(owner="UserNotificationCenter", wid=5, pid=42, w=260, h=256, alpha=1):
+def win(owner="UserNotificationCenter", wid=5, pid=42, w=260, h=256, alpha=1, on_screen=True):
+    """A row of the window list. The list has kCGWindowIsOnscreen only for a window on screen."""
     return {"kCGWindowOwnerName": owner, "kCGWindowNumber": wid, "kCGWindowOwnerPID": pid,
-            "kCGWindowAlpha": alpha, "kCGWindowBounds": {"X": 766, "Y": 222, "Width": w, "Height": h}}
+            "kCGWindowAlpha": alpha, "kCGWindowBounds": {"X": 766, "Y": 222, "Width": w, "Height": h},
+            **({"kCGWindowIsOnscreen": True} if on_screen else {})}
 
 
 def test_find_prompts_keeps_only_a_floating_panel_of_the_owner():
@@ -16,6 +18,43 @@ def test_find_prompts_keeps_only_a_floating_panel_of_the_owner():
     found = c.find_prompts(raw, (1728, 1117))
     assert [p["wid"] for p in found] == [9]
     assert found[0]["pid"] == 42 and found[0]["w"] == 260
+
+
+def quartz(on_screen, everything):
+    """A stand-in for the window server: what it lists on screen and what it lists in all."""
+    def listing(option, _window):
+        return on_screen if option == 1 else everything
+    size = types.SimpleNamespace(width=1728, height=1117)
+    return types.SimpleNamespace(CGDisplayBounds=lambda d: types.SimpleNamespace(size=size), CGMainDisplayID=lambda: 1,
+                                 kCGWindowListOptionOnScreenOnly=1, kCGWindowListOptionAll=0, kCGNullWindowID=0,
+                                 CGWindowListCopyWindowInfo=listing)
+
+
+def test_the_window_of_a_closed_dialog_is_not_a_prompt(monkeypatch):
+    live, away, closed = win(wid=1), win(wid=2, on_screen=False), win(wid=3, on_screen=False)
+    from claude_human import screenshot
+    monkeypatch.setattr(screenshot, "_quartz", lambda: quartz([live], [live, away, closed]))
+    monkeypatch.setattr(c, "_ordered_in", lambda wid: {2: True, 3: False}[wid])
+    found = c.prompts()
+    assert [(p["wid"], p["on_screen"]) for p in found] == [(1, True), (2, False)]
+
+
+def test_a_window_whose_state_cannot_be_asked_stays_listed(monkeypatch):
+    away = win(wid=2, on_screen=False)
+    from claude_human import screenshot
+    monkeypatch.setattr(screenshot, "_quartz", lambda: quartz([], [away]))
+    monkeypatch.setattr(c, "_ordered_in", lambda wid: None)
+    assert [p["wid"] for p in c.prompts()] == [2]
+
+
+def test_a_prompt_on_another_desktop_is_not_pictured(monkeypatch):
+    ran = []
+    monkeypatch.setattr(c, "_may_record", lambda: True)
+    monkeypatch.setattr(c, "_run", lambda *a, **k: ran.append(a))
+    away = {"x": 1, "y": 2, "w": 260, "h": 256, "on_screen": False}
+    why = c.capture_why(away, "/tmp/x.png")
+    assert why and "another desktop" in why and ran == []
+    assert not c.capture(away, "/tmp/x.png")
 
 
 def test_join_lines_drops_buttons_and_straightens_quotes():
@@ -288,7 +327,7 @@ ACCESSIBILITY = [
     {"kCGWindowOwnerName": "Notes", "kCGWindowNumber": 3, "kCGWindowOwnerPID": 300, "kCGWindowLayer": 0,
      "kCGWindowAlpha": 1.0, "kCGWindowIsOnscreen": True, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 900, "Height": 700}},
     {"kCGWindowOwnerName": "universalAccessAuthWarn", "kCGWindowNumber": 16507, "kCGWindowOwnerPID": 20651,
-     "kCGWindowLayer": 8, "kCGWindowAlpha": 1.0, "kCGWindowIsOnscreen": False,
+     "kCGWindowLayer": 8, "kCGWindowAlpha": 1.0,
      "kCGWindowBounds": {"X": 734, "Y": 260, "Width": 260, "Height": 300}},
 ]
 
