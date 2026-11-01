@@ -25,6 +25,12 @@ Rules every function here keeps:
 * Nothing is pressed unless a prompt is on screen and its owner is the frontmost application.
 * The result is observed: a press counts only when the prompt window is gone afterwards.
 * The answer comes from a person. This module presses what it is told and decides nothing.
+
+UserNotificationCenter keeps the window of a dialog that has closed: the window list goes on naming
+it, at the same place and size, with no ``kCGWindowIsOnscreen`` and no accessibility window, until the
+process ends. So a window of the owner is not yet a prompt. ``prompts`` asks the window server whether
+each window off the screen is still ordered in, which a dialog on another desktop is and a closed one
+is not (``_ordered_in``).
 """
 from __future__ import annotations
 
@@ -82,7 +88,8 @@ def find_prompts(raw: Iterable[dict], display: tuple[float, float],
     ``{wid, pid, owner, x, y, w, h, allow, deny, kind, on_screen}``; ``allow`` and ``deny`` are the
     titles of the owner's two buttons (``BUTTONS``), ``kind`` is "settings" for a prompt only the
     person can grant in System Settings (``SETTINGS_OWNERS``) and "press" otherwise, and
-    ``on_screen`` is False for one on another desktop."""
+    ``on_screen`` is False for one on another desktop (the window list leaves the key out for a
+    window that is not on screen)."""
     cap_w, cap_h = display[0] * MAX_FRACTION, display[1] * MAX_FRACTION
     out = []
     for w in raw:
@@ -100,14 +107,30 @@ def find_prompts(raw: Iterable[dict], display: tuple[float, float],
                     "owner": owner, "x": float(b.get("X", 0)),
                     "y": float(b.get("Y", 0)), "w": ww, "h": hh, "allow": allow, "deny": deny,
                     "kind": "settings" if owner in SETTINGS_OWNERS else "press",
-                    "on_screen": bool(w.get("kCGWindowIsOnscreen", True))})
+                    "on_screen": bool(w.get("kCGWindowIsOnscreen"))})
     return out
+
+
+def _ordered_in(wid: int) -> bool | None:
+    """Whether the window server still has window ``wid`` ordered in, on any desktop, through the
+    private call window managers use (``SLSWindowIsOrderedIn``), or None when it cannot be asked."""
+    try:
+        import objc   # noqa: PLC0415
+        from Foundation import NSBundle   # noqa: PLC0415
+        found: dict = {}
+        objc.loadBundleFunctions(NSBundle.bundleWithPath_("/System/Library/PrivateFrameworks/SkyLight.framework"),
+                                 found, [("SLSMainConnectionID", b"i"), ("SLSWindowIsOrderedIn", b"iiio^Z")])
+        err, shown = found["SLSWindowIsOrderedIn"](found["SLSMainConnectionID"](), int(wid), None)
+        return bool(shown) if err == 0 else None
+    except Exception:  # noqa: BLE001 - not on a Mac, or the private call has gone
+        return None
 
 
 def prompts() -> list[dict] | None:
     """The consent prompts open now, on screen first (front to back), then those on other desktops,
     or None when the window list cannot be read. A prompt on a desktop nobody is looking at waits as
-    long as one in front of them."""
+    long as one in front of them. The window of a dialog that closed is not one (see the top of this
+    module); a window whose state cannot be asked stays listed, so a live prompt is never hidden."""
     try:
         from .screenshot import _quartz
         q = _quartz()
@@ -115,7 +138,8 @@ def prompts() -> list[dict] | None:
         shown = list(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or [])
         seen = {w.get("kCGWindowNumber") for w in shown}
         rest = [w for w in (q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionAll, q.kCGNullWindowID) or [])
-                if w.get("kCGWindowNumber") not in seen and str(w.get("kCGWindowOwnerName") or "") in CONSENT_OWNERS]
+                if w.get("kCGWindowNumber") not in seen and str(w.get("kCGWindowOwnerName") or "") in CONSENT_OWNERS
+                and _ordered_in(int(w.get("kCGWindowNumber") or 0)) is not False]
         return find_prompts(shown + rest, (disp.size.width, disp.size.height))
     except Exception:
         return None
@@ -158,7 +182,11 @@ def capture_why(prompt: dict, out: str | os.PathLike, *, env: Mapping[str, str] 
     why not. screencapture can exit 0 and write nothing when the process may not record the screen,
     so the file itself is the test. A process that may not record the screen does not run it at all:
     macOS answers each such screencapture with a new screen recording prompt naming this process,
-    so a caller that tries once a minute would put one in front of the person every minute."""
+    so a caller that tries once a minute would put one in front of the person every minute. A prompt
+    on another desktop is not taken either: a picture of its rectangle shows whatever is in front
+    there, and its text would read as the prompt's words."""
+    if prompt.get("on_screen") is False:
+        return "this prompt is on another desktop, so a picture of its place would not show it"
     if _may_record() is False:
         return ("this process may not record the screen, so no picture was taken (screencapture would "
                 "only make macOS ask the person again)")
@@ -254,8 +282,9 @@ def _elements(window, attr):
 
 def read_words(pid: int, wid: int, *, ax=None) -> str | None:
     """The prompt's words, read from its text through the Accessibility API, with the quotes
-    straightened, or None when they cannot be read (no Accessibility grant, the window gone). It
-    reads a locked or covered screen as well as an open one, where a picture cannot."""
+    straightened, or None when they cannot be read (no Accessibility grant, the window gone, or a
+    locked screen, where macOS 26 answers AXWindows with the application itself). It reads a covered
+    window as well as an open one, where a picture cannot."""
     window, attr, ax = _ax_window(pid, wid, ax)
     if window is None:
         return None
