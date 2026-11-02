@@ -317,7 +317,7 @@ _TEMPLATE = """<!doctype html><html><head><meta charset=utf-8>
    if(button) m.button=button;
    send(m);
  }
- // ⛔ NOTHING LIES ON THE PICTURE (2026-11-02). The hint, the help button, the scroll arrows, the
+ // ⛔ NOTHING LIES ON THE PICTURE. The hint, the help button, the scroll arrows, the
  // diagnostic line and the button bar are fixed on top of the page, and the picture used to fill
  // the whole page under them. On a phone in portrait the arrows covered the right quarter of the
  // window, which is where a System Settings pane puts its pop-up buttons and their menus, so a menu

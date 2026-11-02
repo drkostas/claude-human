@@ -245,11 +245,14 @@ SETTINGS = [_w(1, "Users & Groups", 310, 674, 315, 140, 82, layer=101),
             _w(2, "System Settings", 300, 60, 33, 723, 1084)]
 APPS = {300: "com.apple.systempreferences", 310: None, 400: "com.googlecode.iterm2"}
 POINTS = {310: "com.apple.Settings.extension.ui", 300: None, 400: None}
+EXES = {300: "/System/Applications/System Settings.app/Contents/MacOS/System Settings",
+        310: "/System/Library/ExtensionKit/Extensions/UsersGroups.appex/Contents/MacOS/UsersGroups",
+        400: "/Applications/iTerm.app/Contents/MacOS/iTerm2"}
 
 
 def test_a_menu_of_the_windows_own_extension_does_not_cover_a_click_on_it():
     from claude_human.screenshot import covered_at, covered_by, kin_pids
-    kin = kin_pids(SETTINGS, 2, app_of=APPS.get, host_of=POINTS.get)
+    kin = kin_pids(SETTINGS, 2, app_of=APPS.get, host_of=POINTS.get, exe_of=EXES.get)
     assert kin == {310}
     assert covered_at(SETTINGS, 2, 700, 350, kin=kin) is None          # a click on the menu's item
     assert covered_by(SETTINGS, 2, kin) is None
@@ -259,12 +262,12 @@ def test_a_menu_of_the_windows_own_extension_does_not_cover_a_click_on_it():
 def test_an_extension_of_another_app_is_no_kin_and_still_covers():
     from claude_human.screenshot import covered_at, kin_pids
     raw = [_w(1, "Users & Groups", 310, 674, 315, 140, 82, layer=101), _w(3, "iTerm2", 400, 0, 0, 900, 900)]
-    kin = kin_pids(raw, 3, app_of=APPS.get, host_of=POINTS.get)
+    kin = kin_pids(raw, 3, app_of=APPS.get, host_of=POINTS.get, exe_of=EXES.get)
     assert kin == frozenset()
     assert covered_at(raw, 3, 700, 350, kin=kin) == "Users & Groups"
-    unread = kin_pids(SETTINGS, 2, app_of=lambda pid: None, host_of=POINTS.get)
+    unread = kin_pids(SETTINGS, 2, app_of=lambda pid: None, host_of=POINTS.get, exe_of=EXES.get)
     assert unread == frozenset()                                       # an app that cannot be read has no kin
-    boom = kin_pids(SETTINGS, 2, app_of=APPS.get, host_of=lambda pid: 1 / 0)
+    boom = kin_pids(SETTINGS, 2, app_of=APPS.get, host_of=lambda pid: 1 / 0, exe_of=EXES.get)
     assert boom == frozenset()
 
 
@@ -295,3 +298,24 @@ def test_bundle_info_reads_the_innermost_bundle_of_that_kind(tmp_path):
     assert bundle_info(exe, ".app")["CFBundleIdentifier"] == "host"
     assert bundle_info(str(tmp_path / "bin" / "tool"), ".app") is None
     assert bundle_info(None, ".app") is None
+
+
+def test_an_extension_outside_the_system_and_the_hosts_bundle_is_no_kin(tmp_path):
+    # any program can sit in a folder named X.appex and declare the host's extension point; its
+    # windows must not be shown or clicked under a grant for the host
+    import plistlib
+    from claude_human.screenshot import covered_at, kin_pids
+    fake = tmp_path / "Pane.appex" / "Contents"
+    (fake / "MacOS").mkdir(parents=True)
+    (fake / "Info.plist").write_bytes(plistlib.dumps(
+        {"EXAppExtensionAttributes": {"EXExtensionPointIdentifier": "com.apple.Settings.extension.ui"}}))
+    exes = {**EXES, 310: str(fake / "MacOS" / "Pane")}
+    kin = kin_pids(SETTINGS, 2, app_of=APPS.get, exe_of=exes.get)      # the extension point read from disk
+    assert kin == frozenset()
+    assert covered_at(SETTINGS, 2, 700, 350, kin=kin) == "Users & Groups"
+    bundled = {**EXES, 300: "/Applications/Host.app/Contents/MacOS/Host",
+               310: "/Applications/Host.app/Contents/PlugIns/Pane.appex/Contents/MacOS/Pane"}
+    apps = {**APPS, 300: "com.apple.systempreferences"}
+    assert kin_pids(SETTINGS, 2, app_of=apps.get, host_of=POINTS.get, exe_of=bundled.get) == {310}
+    beside = {**bundled, 310: "/Applications/Host.app.evil/Pane.appex/Contents/MacOS/Pane"}
+    assert kin_pids(SETTINGS, 2, app_of=apps.get, host_of=POINTS.get, exe_of=beside.get) == frozenset()

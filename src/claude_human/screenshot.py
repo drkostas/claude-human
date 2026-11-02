@@ -122,26 +122,49 @@ def extension_point(info: dict | None) -> str | None:
     return ex.get("EXExtensionPointIdentifier") or ns.get("NSExtensionPointIdentifier") or None
 
 
-def kin_pids(raw: Iterable[dict], wid: int, *, app_of=None, host_of=None,
+def _bundle_root(executable: str | None, suffix: str) -> str | None:
+    """Pure. The path of the innermost bundle ending in ``suffix`` that holds ``executable``."""
+    if not executable:
+        return None
+    parts = executable.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i].endswith(suffix):
+            return "/".join(parts[:i + 1])
+    return None
+
+
+#: an extension counts only from here (the sealed system volume) or from inside the host's own bundle
+SYSTEM_ROOT = "/System/"
+
+
+def kin_pids(raw: Iterable[dict], wid: int, *, app_of=None, host_of=None, exe_of=None,
              hosts: Mapping[str, str] | None = None) -> frozenset:
     """The processes whose windows count as part of window ``wid``'s application besides its own:
     app extensions whose extension point ``hosts`` gives to that application's bundle id.
 
-    ``app_of(pid)`` is a process's application bundle id and ``host_of(pid)`` the extension point it
-    serves; both read the process's bundle by default. A process that cannot be read is no kin."""
+    ⛔ ONLY AN EXTENSION THE SYSTEM OR THE HOST SHIPS. Any program can sit in a folder named
+    X.appex and declare a host's extension point in its Info.plist. Counted as kin, its windows
+    would be shown and clicked under a grant for the host alone. So an extension is kin only when
+    its executable lies under ``SYSTEM_ROOT`` or inside the host application's own bundle.
+
+    ``app_of(pid)`` is a process's application bundle id, ``host_of(pid)`` the extension point it
+    serves and ``exe_of(pid)`` its executable's path; all read the process by default. A process
+    that cannot be read is no kin."""
     raw = list(raw)
     target = next((w for w in raw if w.get("kCGWindowNumber") == wid), None)
     if target is None or target.get("kCGWindowOwnerPID") is None:
         return frozenset()
     hosts = EXTENSION_HOSTS if hosts is None else hosts
-    if app_of is None or host_of is None:
+    if app_of is None or host_of is None or exe_of is None:
         from .process import bundle_info, executable_of  # noqa: PLC0415
-        app_of = app_of or (lambda pid: ((bundle_info(executable_of(pid), ".app") or {})
+        exe_of = exe_of or executable_of
+        app_of = app_of or (lambda pid: ((bundle_info(exe_of(pid), ".app") or {})
                                          .get("CFBundleIdentifier")))
-        host_of = host_of or (lambda pid: extension_point(bundle_info(executable_of(pid), ".appex")))
+        host_of = host_of or (lambda pid: extension_point(bundle_info(exe_of(pid), ".appex")))
     mine = target["kCGWindowOwnerPID"]
     try:
         app = app_of(mine)
+        home = _bundle_root(exe_of(mine), ".app")
     except Exception:  # noqa: BLE001
         return frozenset()
     if not app:
@@ -150,9 +173,12 @@ def kin_pids(raw: Iterable[dict], wid: int, *, app_of=None, host_of=None,
     for pid in {w.get("kCGWindowOwnerPID") for w in raw} - {mine, None}:
         try:
             point = host_of(pid)
+            exe = exe_of(pid) or ""
         except Exception:  # noqa: BLE001
             continue
-        if point and hosts.get(point) == app:
+        if not (point and hosts.get(point) == app):
+            continue
+        if exe.startswith(SYSTEM_ROOT) or (home and exe.startswith(home.rstrip("/") + "/")):
             kin.add(pid)
     return frozenset(kin)
 
@@ -653,7 +679,7 @@ def capture(wid: int | None = None, *, max_width: int = DEFAULT_MAX_WIDTH,
 
     This does not check the lock state. Use ``frame`` for that.
 
-    ⛔ A MENU OF THE WINDOW'S OWN EXTENSION IS IN THE PICTURE (2026-11-02). sckshot captures the one
+    ⛔ A MENU OF THE WINDOW'S OWN EXTENSION IS IN THE PICTURE. sckshot captures the one
     window, and the menu a System Settings pane opens is a window of the pane's extension process
     (``kin_pids``), so the viewer saw no menu after tapping a pop-up button and could not pick from
     it. While such a window lies over ``wid``, the picture is the display cropped to the window,
