@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import plistlib
 import re
 import subprocess
 
@@ -148,6 +149,36 @@ def footprint_gb(pid: int) -> float | None:
     if _libproc.proc_pid_rusage(int(pid), 2, ctypes.byref(info)) != 0:     # RUSAGE_INFO_V2
         return None
     return info.ri_phys_footprint / 1024 ** 3
+
+
+def executable_of(pid: int) -> str | None:
+    """The path of a process's executable, or None for a process that is gone or cannot be read."""
+    global _libproc
+    if _libproc is None:
+        _libproc = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib")
+    buf = ctypes.create_string_buffer(4096)                     # PROC_PIDPATHINFO_MAXSIZE
+    try:
+        n = _libproc.proc_pidpath(int(pid), buf, ctypes.sizeof(buf))
+    except Exception:  # noqa: BLE001
+        return None
+    return buf.value.decode("utf-8", "replace") if n > 0 else None
+
+
+def bundle_info(executable: str | None, suffix: str) -> dict | None:
+    """The Info.plist of the innermost bundle ending in ``suffix`` (".app", ".appex") that holds
+    ``executable``, or None when there is no such bundle or its Info.plist cannot be read."""
+    if not executable:
+        return None
+    parts = executable.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i].endswith(suffix):
+            plist = "/".join(parts[:i + 1]) + "/Contents/Info.plist"
+            try:
+                with open(plist, "rb") as fh:
+                    return plistlib.load(fh)
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                return None
+    return None
 
 
 def total_gb(pids) -> float:

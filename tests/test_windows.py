@@ -237,3 +237,61 @@ def test_a_full_screen_overlay_above_the_ordinary_layer_does_not_cover_a_click()
     assert covered_at(banner, 15735, 1100, 150, (1728, 1117)) == "Notification Center"   # under it
     full_app = [_w(6, "Other", 700, 0, 0, 1728, 1117)] + raw
     assert covered_at(full_app, 15735, 554, 194, (1728, 1117)) == "Other"   # a full-screen ordinary window covers
+
+
+#: System Settings (pid 300) with the menu of a pop-up button open over it: the menu is a window of
+#: the pane's extension process (pid 310), as macOS draws each Settings pane in its own process
+SETTINGS = [_w(1, "Users & Groups", 310, 674, 315, 140, 82, layer=101),
+            _w(2, "System Settings", 300, 60, 33, 723, 1084)]
+APPS = {300: "com.apple.systempreferences", 310: None, 400: "com.googlecode.iterm2"}
+POINTS = {310: "com.apple.Settings.extension.ui", 300: None, 400: None}
+
+
+def test_a_menu_of_the_windows_own_extension_does_not_cover_a_click_on_it():
+    from claude_human.screenshot import covered_at, covered_by, kin_pids
+    kin = kin_pids(SETTINGS, 2, app_of=APPS.get, host_of=POINTS.get)
+    assert kin == {310}
+    assert covered_at(SETTINGS, 2, 700, 350, kin=kin) is None          # a click on the menu's item
+    assert covered_by(SETTINGS, 2, kin) is None
+    assert covered_at(SETTINGS, 2, 700, 350) == "Users & Groups"       # without kin, as before
+
+
+def test_an_extension_of_another_app_is_no_kin_and_still_covers():
+    from claude_human.screenshot import covered_at, kin_pids
+    raw = [_w(1, "Users & Groups", 310, 674, 315, 140, 82, layer=101), _w(3, "iTerm2", 400, 0, 0, 900, 900)]
+    kin = kin_pids(raw, 3, app_of=APPS.get, host_of=POINTS.get)
+    assert kin == frozenset()
+    assert covered_at(raw, 3, 700, 350, kin=kin) == "Users & Groups"
+    unread = kin_pids(SETTINGS, 2, app_of=lambda pid: None, host_of=POINTS.get)
+    assert unread == frozenset()                                       # an app that cannot be read has no kin
+    boom = kin_pids(SETTINGS, 2, app_of=APPS.get, host_of=lambda pid: 1 / 0)
+    assert boom == frozenset()
+
+
+def test_the_extension_point_comes_from_either_plist_shape():
+    from claude_human.screenshot import extension_point
+    assert extension_point({"EXAppExtensionAttributes": {"EXExtensionPointIdentifier": "a.b"}}) == "a.b"
+    assert extension_point({"NSExtension": {"NSExtensionPointIdentifier": "c.d"}}) == "c.d"
+    assert extension_point({}) is None and extension_point(None) is None
+
+
+def test_a_kin_menu_over_the_window_is_seen_so_the_picture_shows_it():
+    from claude_human.screenshot import kin_over
+    assert kin_over(SETTINGS, 2, {310}) is True
+    assert kin_over(SETTINGS, 2, set()) is False
+    beside = [_w(1, "Users & Groups", 310, 900, 315, 140, 82, layer=101), SETTINGS[1]]
+    assert kin_over(beside, 2, {310}) is False                         # not over the window
+
+
+def test_bundle_info_reads_the_innermost_bundle_of_that_kind(tmp_path):
+    import plistlib
+    from claude_human.process import bundle_info
+    appex = tmp_path / "Host.app" / "Contents" / "PlugIns" / "Pane.appex"
+    (appex / "Contents" / "MacOS").mkdir(parents=True)
+    (tmp_path / "Host.app" / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "host"}))
+    (appex / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "pane"}))
+    exe = str(appex / "Contents" / "MacOS" / "Pane")
+    assert bundle_info(exe, ".appex")["CFBundleIdentifier"] == "pane"
+    assert bundle_info(exe, ".app")["CFBundleIdentifier"] == "host"
+    assert bundle_info(str(tmp_path / "bin" / "tool"), ".app") is None
+    assert bundle_info(None, ".app") is None

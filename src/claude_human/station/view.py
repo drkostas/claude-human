@@ -317,9 +317,29 @@ _TEMPLATE = """<!doctype html><html><head><meta charset=utf-8>
    if(button) m.button=button;
    send(m);
  }
- window.addEventListener('resize',drawCur);
+ // ⛔ NOTHING LIES ON THE PICTURE (2026-11-02). The hint, the help button, the scroll arrows, the
+ // diagnostic line and the button bar are fixed on top of the page, and the picture used to fill
+ // the whole page under them. On a phone in portrait the arrows covered the right quarter of the
+ // window, which is where a System Settings pane puts its pop-up buttons and their menus, so a menu
+ // item there could not be tapped and could hardly be seen. The picture now gets the area they
+ // leave free, measured from where they really are, in either orientation.
+ function fit(){
+   var W=window.innerWidth, H=window.innerHeight;
+   function at(id){ var e=document.getElementById(id); return e?e.getBoundingClientRect():null; }
+   var hint=at('hint'), help=at('help'), diag=at('diag'), bar=at('bar'), sc=at('scroll');
+   var top=Math.max(hint?hint.bottom:0, help?help.bottom:0), bottom=0, left=0, right=0;
+   if(bar&&bar.height>bar.width){ right=W-bar.left; if(diag) bottom=H-diag.top; }
+   else bottom=H-Math.min(diag?diag.top:H, bar?bar.top:H);
+   if(sc&&sc.width){ if(sc.left+sc.width/2>W/2) right=Math.max(right,W-sc.left+4);
+                     else left=Math.max(left,sc.right+4); }
+   surf.style.top=Math.max(0,top)+'px'; surf.style.bottom=Math.max(0,bottom)+'px';
+   surf.style.left=Math.max(0,left)+'px'; surf.style.right=Math.max(0,right)+'px';
+   drawCur();
+ }
+ window.addEventListener('resize',fit);
  img.addEventListener('load',drawCur);
- setTimeout(drawCur,300);
+ fit();
+ setTimeout(fit,300);
 
  var lastRaw=null, moved=false, holdTimer=null, lastTap=0;
  var twoFinger=false, lastC=null, dragMode=false, lastDist=0, zoom=1, panX=0, panY=0;
