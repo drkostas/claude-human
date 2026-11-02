@@ -105,21 +105,99 @@ def pick_window(wins: list[dict], app: str) -> int | None:
 CHROME = frozenset({"Dock", "Window Server", "Control Center", "SystemUIServer"})
 #: below this a window shows nothing a viewer could read (an overlay measured at 0.003)
 INVISIBLE = 0.05
+#: which application an app extension's windows belong to, by the extension point it declares
+#: (EXAppExtensionAttributes.EXExtensionPointIdentifier in its Info.plist) and the host's bundle id.
+#: System Settings shows each pane from its own extension process, and that process owns the pane's
+#: menus and sheets: the menu behind a pop-up button is a window of "Users & Groups", not of
+#: System Settings. Counted as another application, it refused every click on its own items.
+EXTENSION_HOSTS = {"com.apple.Settings.extension.ui": "com.apple.systempreferences"}
 
 
-def covered_by(raw: Iterable[dict], wid: int) -> str | None:
+def extension_point(info: dict | None) -> str | None:
+    """Pure. The extension point an app extension's Info.plist declares, or None."""
+    if not info:
+        return None
+    ex = info.get("EXAppExtensionAttributes") or {}
+    ns = info.get("NSExtension") or {}
+    return ex.get("EXExtensionPointIdentifier") or ns.get("NSExtensionPointIdentifier") or None
+
+
+def _bundle_root(executable: str | None, suffix: str) -> str | None:
+    """Pure. The path of the innermost bundle ending in ``suffix`` that holds ``executable``."""
+    if not executable:
+        return None
+    parts = executable.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i].endswith(suffix):
+            return "/".join(parts[:i + 1])
+    return None
+
+
+#: an extension counts only from here (the sealed system volume) or from inside the host's own bundle
+SYSTEM_ROOT = "/System/"
+
+
+def kin_pids(raw: Iterable[dict], wid: int, *, app_of=None, host_of=None, exe_of=None,
+             hosts: Mapping[str, str] | None = None) -> frozenset:
+    """The processes whose windows count as part of window ``wid``'s application besides its own:
+    app extensions whose extension point ``hosts`` gives to that application's bundle id.
+
+    ⛔ ONLY AN EXTENSION THE SYSTEM OR THE HOST SHIPS. Any program can sit in a folder named
+    X.appex and declare a host's extension point in its Info.plist. Counted as kin, its windows
+    would be shown and clicked under a grant for the host alone. So an extension is kin only when
+    its executable lies under ``SYSTEM_ROOT`` or inside the host application's own bundle.
+
+    ``app_of(pid)`` is a process's application bundle id, ``host_of(pid)`` the extension point it
+    serves and ``exe_of(pid)`` its executable's path; all read the process by default. A process
+    that cannot be read is no kin."""
+    raw = list(raw)
+    target = next((w for w in raw if w.get("kCGWindowNumber") == wid), None)
+    if target is None or target.get("kCGWindowOwnerPID") is None:
+        return frozenset()
+    hosts = EXTENSION_HOSTS if hosts is None else hosts
+    if app_of is None or host_of is None or exe_of is None:
+        from .process import bundle_info, executable_of  # noqa: PLC0415
+        exe_of = exe_of or executable_of
+        app_of = app_of or (lambda pid: ((bundle_info(exe_of(pid), ".app") or {})
+                                         .get("CFBundleIdentifier")))
+        host_of = host_of or (lambda pid: extension_point(bundle_info(exe_of(pid), ".appex")))
+    mine = target["kCGWindowOwnerPID"]
+    try:
+        app = app_of(mine)
+        home = _bundle_root(exe_of(mine), ".app")
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    if not app:
+        return frozenset()
+    kin = set()
+    for pid in {w.get("kCGWindowOwnerPID") for w in raw} - {mine, None}:
+        try:
+            point = host_of(pid)
+            exe = exe_of(pid) or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if not (point and hosts.get(point) == app):
+            continue
+        if exe.startswith(SYSTEM_ROOT) or (home and exe.startswith(home.rstrip("/") + "/")):
+            kin.add(pid)
+    return frozenset(kin)
+
+
+def covered_by(raw: Iterable[dict], wid: int, kin: Iterable[int] = ()) -> str | None:
     """The owner of the first window that lies in front of window ``wid`` and overlaps it, or None.
 
     ``raw`` is the on-screen list from CGWindowListCopyWindowInfo, which runs front to back, so
     every entry before ``wid`` is in front of it. A window of the same application (a sheet, a
     popover) is part of what a grant for that application shows, a window with almost no opacity
     shows nothing, and system chrome (``CHROME``) draws no other application's content, so none of
-    them counts. ``wid`` missing from the list reads as covered (an empty
+    them counts, and nor does a window of a process in ``kin`` (``kin_pids``: an extension that
+    draws part of that application). ``wid`` missing from the list reads as covered (an empty
     owner), because a window that is not on screen cannot be shown either.
 
     The capture without sckshot crops the whole display to a window's rectangle, so whatever lies
     on top of the window would come through instead of it: another application's page, given to
     someone who was granted only that one window."""
+    kin = frozenset(kin)
     ahead: list[dict] = []
     target = None
     for w in raw:
@@ -141,6 +219,8 @@ def covered_by(raw: Iterable[dict], wid: int) -> str | None:
             continue
         if (pid is not None and pid == mine[0]) or (pid is None and owner and owner == mine[1]):
             continue
+        if pid is not None and pid in kin:
+            continue
         b = w.get("kCGWindowBounds") or {}
         x, y = float(b.get("X", 0)), float(b.get("Y", 0))
         ww, wh = float(b.get("Width", 0)), float(b.get("Height", 0))
@@ -150,16 +230,17 @@ def covered_by(raw: Iterable[dict], wid: int) -> str | None:
 
 
 def covered_at(raw: Iterable[dict], wid: int, x: float, y: float,
-               display: tuple[float, float] | None = None) -> str | None:
+               display: tuple[float, float] | None = None, kin: Iterable[int] = ()) -> str | None:
     """Pure. The owner of the first window that lies in front of window ``wid`` at the point (x, y),
     or None when ``wid`` is the topmost window there.
 
     The same windows as in ``covered_by`` do not count: one of the same application (a sheet, a
-    menu), one with almost no opacity, and system chrome. Nor does a window above the ordinary
+    menu) or of its ``kin``, one with almost no opacity, and system chrome. Nor does a window above the ordinary
     layer that spans the whole ``display`` (width, height): Notification Center and similar
     overlays keep an opaque window that size, and a click passes through it wherever it draws
     nothing. A banner or a panel of theirs is smaller, and still counts. ``wid`` missing from the
     list, or not holding the point, reads as covered (an empty owner): a click there cannot reach it."""
+    kin = frozenset(kin)
     ahead: list[dict] = []
     target = None
     for w in raw:
@@ -185,6 +266,8 @@ def covered_at(raw: Iterable[dict], wid: int, x: float, y: float,
         if owner in CHROME:
             continue
         if (pid is not None and pid == mine[0]) or (pid is None and owner and owner == mine[1]):
+            continue
+        if pid is not None and pid in kin:
             continue
         if display and int(w.get("kCGWindowLayer", 0) or 0) != 0 and _spans(w, display):
             continue
@@ -360,8 +443,8 @@ def on_top_at(wid: int, x: float, y: float) -> str | None:
     None when it is topmost there. Raises when the window list cannot be read."""
     q = _quartz()
     disp = q.CGDisplayBounds(q.CGMainDisplayID())
-    return covered_at(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or [],
-                      wid, x, y, (disp.size.width, disp.size.height))
+    raw = list(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID) or [])
+    return covered_at(raw, wid, x, y, (disp.size.width, disp.size.height), kin=kin_pids(raw, wid))
 
 
 def window_rect(wid: int):
@@ -511,7 +594,9 @@ def _grab_legacy(wid: int | None):
     path captures the window itself and does not need this."""
     q = _quartz()
     try:
-        if wid and covered_by(_raw_windows(), wid) is not None:
+        raw = _raw_windows() if wid else []
+        kin = kin_pids(raw, wid) if wid else frozenset()
+        if wid and covered_by(raw, wid, kin) is not None:
             return None
         full = q.CGWindowListCreateImage(q.CGRectInfinite, q.kCGWindowListOptionOnScreenOnly,
                                          q.kCGNullWindowID, q.kCGWindowImageNominalResolution)
@@ -520,7 +605,7 @@ def _grab_legacy(wid: int | None):
         r = window_rect(wid)
         if full is None or r is None:
             return None
-        if covered_by(_raw_windows(), wid) is not None:
+        if covered_by(_raw_windows(), wid, kin) is not None:
             return None                          # something moved on top while the grab ran
         return q.CGImageCreateWithImageInRect(
             full, q.CGRectMake(r.origin.x, r.origin.y, r.size.width, r.size.height))
@@ -552,13 +637,54 @@ def _jpeg(img, quality: float) -> bytes:
     return bytes(data)
 
 
+def kin_over(raw: Iterable[dict], wid: int, kin: Iterable[int]) -> bool:
+    """Pure. Whether a window of a ``kin`` process lies in front of window ``wid`` and overlaps it."""
+    kin = frozenset(kin)
+    if not kin:
+        return False
+    ahead, target = [], None
+    for w in raw:
+        if w.get("kCGWindowNumber") == wid:
+            target = w
+            break
+        ahead.append(w)
+    if target is None:
+        return False
+    tb = target.get("kCGWindowBounds") or {}
+    tx, ty = float(tb.get("X", 0)), float(tb.get("Y", 0))
+    tw, th = float(tb.get("Width", 0)), float(tb.get("Height", 0))
+    for w in ahead:
+        if w.get("kCGWindowOwnerPID") not in kin:
+            continue
+        b = w.get("kCGWindowBounds") or {}
+        x, y = float(b.get("X", 0)), float(b.get("Y", 0))
+        ww, wh = float(b.get("Width", 0)), float(b.get("Height", 0))
+        if min(tx + tw, x + ww) > max(tx, x) and min(ty + th, y + wh) > max(ty, y):
+            return True
+    return False
+
+
+def _kin_over(wid: int) -> bool:
+    try:
+        raw = _raw_windows()
+        return kin_over(raw, wid, kin_pids(raw, wid))
+    except Exception:  # noqa: BLE001 - unreadable: capture the window alone, as before
+        return False
+
+
 def capture(wid: int | None = None, *, max_width: int = DEFAULT_MAX_WIDTH,
             quality: float = DEFAULT_QUALITY,
             sckshot: str | os.PathLike | None = None, env: Mapping[str, str] | None = None) -> tuple[bytes, int, int] | None:
     """One JPEG of the screen (``wid`` None) or of one window: ``(bytes, width, height)`` or None.
 
-    This does not check the lock state. Use ``frame`` for that."""
-    fr = _sckshot_frame(wid, max_width, paths.sckshot_path(sckshot), env=env)
+    This does not check the lock state. Use ``frame`` for that.
+
+    ⛔ A MENU OF THE WINDOW'S OWN EXTENSION IS IN THE PICTURE. sckshot captures the one
+    window, and the menu a System Settings pane opens is a window of the pane's extension process
+    (``kin_pids``), so the viewer saw no menu after tapping a pop-up button and could not pick from
+    it. While such a window lies over ``wid``, the picture is the display cropped to the window,
+    which shows the menu (and nothing of another application, which ``covered_by`` refuses)."""
+    fr = None if wid and _kin_over(wid) else _sckshot_frame(wid, max_width, paths.sckshot_path(sckshot), env=env)
     if fr is not None:
         return fr
     img = _grab_legacy(wid)

@@ -331,6 +331,18 @@ def test_view_names_can_be_set_and_are_checked():
     assert "Bearer" in render() and "?token" not in render()
 
 
+def test_the_picture_takes_only_the_area_the_controls_leave_free():
+    # the arrows covered the right quarter of a portrait window, where System Settings puts its
+    # pop-up menus; the picture is now inset from every fixed control, measured, on every resize
+    html = render()
+    assert "function fit()" in html
+    assert "window.addEventListener('resize',fit);" in html
+    for part in ("at('hint')", "at('help')", "at('diag')", "at('bar')", "at('scroll')"):
+        assert part in html
+    for side in ("top", "bottom", "left", "right"):
+        assert f"surf.style.{side}=" in html
+
+
 # ----------------------------------------------------------------------------- a pinned window
 
 class WindowScreen(FakeScreen):
