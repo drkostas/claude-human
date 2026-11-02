@@ -39,6 +39,11 @@ HARMLESS = frozenset({"move"})
 #: Keys the station is willing to type for the ``spotlight`` act: Command and Space, nothing else.
 SPACE = 49
 V_KEY = 9
+#: the pasteboard types clipboard managers read as "do not keep" (nspasteboard.org's transient and
+#: concealed markers, and the older name some managers still check). The station's paste is put back
+#: a moment later and may be a password, so it is marked with all three and no clipboard history holds it.
+SKIP_HISTORY = ("org.nspasteboard.TransientType", "org.nspasteboard.ConcealedType",
+                "de.petermaurer.TransientPasteboardType")
 
 
 class QuartzInput:
@@ -127,7 +132,11 @@ class QuartzInput:
     def _paste(self, text: str) -> dict:
         """Type by pasting. Synthesised characters do not reach SwiftUI text fields (they ride on
         keycode 0 and are dropped while the call reports success), but Command+V is a real keycode
-        and lands. The clipboard the person had is put back afterwards."""
+        and lands. The clipboard the person had is put back afterwards.
+
+        The text is marked SKIP_HISTORY, so a clipboard manager that keeps a history (Maccy, Paste,
+        Alfred's clipboard) does not keep it: what a person types through the station can be a
+        password, and a plain paste of one stayed in that history after the clipboard was put back."""
         try:
             if self._pasteboard is not None:
                 pb, kind = self._pasteboard
@@ -135,8 +144,10 @@ class QuartzInput:
                 from AppKit import NSPasteboard, NSStringPboardType  # noqa: PLC0415
                 pb, kind = NSPasteboard.generalPasteboard(), NSStringPboardType
             prior = pb.stringForType_(kind)
-            pb.clearContents()
+            pb.declareTypes_owner_([kind, *SKIP_HISTORY], None)
             pb.setString_forType_(text, kind)
+            for marker in SKIP_HISTORY:
+                pb.setString_forType_("", marker)
             self.sleep(0.05)
             self._keypress(V_KEY, self.q.kCGEventFlagMaskCommand)
             self.sleep(0.25)

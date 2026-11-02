@@ -1,7 +1,7 @@
 """QuartzInput's logic, with a stand-in for Quartz, so it runs on any platform."""
 from types import SimpleNamespace
 
-from claude_human.station.input import QuartzInput
+from claude_human.station.input import SKIP_HISTORY, QuartzInput
 
 
 class FakeQuartz:
@@ -143,28 +143,54 @@ def test_right_button_and_scroll_and_unknown():
     assert s.do_input({"type": "launch"})["ok"] is False
 
 
-def test_text_is_pasted_and_the_clipboard_is_put_back():
-    class Board:
-        def __init__(self):
-            self.value, self.history = "before", []
+class Board:
+    """A pasteboard: one item, its types, and every string written to the text type."""
 
-        def stringForType_(self, _k):
-            return self.value
+    def __init__(self):
+        self.types, self.values, self.history = ["str"], {"str": "before"}, []
 
-        def clearContents(self):
-            self.value = None
+    def stringForType_(self, k):
+        return self.values.get(k)
 
-        def setString_forType_(self, v, _k):
-            self.value = v
+    def clearContents(self):
+        self.types, self.values = [], {}
+
+    def declareTypes_owner_(self, types, _owner):
+        self.types, self.values = list(types), {}
+
+    def setString_forType_(self, v, k):
+        if k not in self.types:
+            self.types.append(k)
+        self.values[k] = v
+        if k == "str":
             self.history.append(v)
 
+
+def test_text_is_pasted_and_the_clipboard_is_put_back():
     board = Board()
     posted = []
     s = QuartzInput(Screen(), post=posted.append, quartz=FakeQuartz(), pasteboard=(board, "str"),
                     sleep=lambda s: None)
     assert s.do_input({"type": "text", "text": "hello"})["ok"]
-    assert board.history == ["hello", "before"] and board.value == "before"
+    assert board.history == ["hello", "before"] and board.values["str"] == "before"
     assert [(e["code"], e["flags"]) for e in posted] == [(9, 0x100000), (9, 0x100000)]
+
+
+def test_pasted_text_is_marked_so_no_clipboard_history_keeps_it():
+    seen = {}
+
+    class Watched(Board):
+        def setString_forType_(self, v, k):
+            super().setString_forType_(v, k)
+            if self.values.get("str") == "typed text":
+                seen.update({t: True for t in self.types})
+
+    board = Watched()
+    s = QuartzInput(Screen(), post=lambda e: None, quartz=FakeQuartz(), pasteboard=(board, "str"),
+                    sleep=lambda s: None)
+    assert s.do_input({"type": "text", "text": "typed text"})["ok"]
+    assert all(seen.get(t) for t in SKIP_HISTORY), seen
+    assert set(board.types) == {"str"} and board.values["str"] == "before"
 
 
 def test_typing_into_a_named_window_needs_it_in_front():
