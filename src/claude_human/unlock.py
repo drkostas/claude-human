@@ -12,6 +12,14 @@ Rules every function here keeps:
   log, and this module does not store it.
 * Nothing is typed unless the target is there: ``unlock`` returns early when the session is not
   locked, and ``approve`` and ``use_password`` refuse when no password panel is on screen.
+* One typist at a time. ``unlock``, ``approve`` and ``use_password`` hold one lock across every
+  process (``HID_LOCK``, a ``SessionLock``), and look at the screen again once they hold it. Two
+  unlocks that overlap would otherwise both type: the second one's keys arrive after the first has
+  unlocked the Mac, into whatever application is in front.
+* The lock screen must be in front when the keys go out. ``unlock`` reads the frontmost application
+  right before each round of typing, after the wake and the wait, and types nothing unless it is
+  the login window. ``--clear`` is Cmd+A and then Backspace, which in a mail client or a chat
+  selects everything and deletes it, and the password and Return would follow.
 * The result is observed, never assumed. ``unlock`` watches the session's lock bit clear,
   ``approve`` watches the panel close, ``relock`` watches the lock bit set.
 * A failed unlock is retried at most ``attempts`` times (two by default), because every try is a
@@ -28,6 +36,7 @@ from collections.abc import Mapping
 from typing import Callable, Optional
 
 from . import paths
+from .session_lock import Busy, SessionLock
 
 #: Hooks for the outside world, replaced by tests.
 _run = subprocess.run
@@ -35,6 +44,13 @@ _popen = subprocess.Popen
 _sleep = time.sleep
 _now = time.time
 _exists = os.path.exists
+
+#: the bundle id in front while the screen is locked
+LOGIN_WINDOW = "com.apple.loginwindow"
+#: the one lock every process that types through the virtual keyboard holds while it types
+HID_LOCK = os.environ.get("CLAUDE_HUMAN_HID_LOCK", "~/.local/state/claude-human/hid-keyboard.lock")
+#: how long a second typist waits for the first, which can take about a minute (two tries)
+HID_WAIT_S = 120.0
 
 Result = tuple[bool, str]
 
@@ -50,6 +66,29 @@ def is_locked() -> Optional[bool]:
 def _default_prompt() -> Optional[dict]:
     from .screenshot import auth_prompt
     return auth_prompt()
+
+
+def front_app(*, env: Mapping[str, str] | None = None) -> Optional[str]:
+    """The bundle id of the application in front, from LaunchServices (``lsappinfo``), or None when it
+    cannot be read. It needs no grant, and every call asks afresh (AppKit's frontmostApplication keeps
+    its first answer inside a process with no run loop). On a locked screen it is ``LOGIN_WINDOW``."""
+    import re   # noqa: PLC0415
+    try:
+        asn = subprocess.run(["/usr/bin/lsappinfo", "front"], capture_output=True, text=True,
+                             timeout=5, env=env).stdout.strip()
+        if not asn:
+            return None
+        out = subprocess.run(["/usr/bin/lsappinfo", "info", "-only", "bundleid", asn],
+                             capture_output=True, text=True, timeout=5, env=env).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r'"CFBundleIdentifier"="([^"]*)"', out)
+    return m.group(1) if m else None
+
+
+def hid_lock() -> SessionLock:
+    """The lock that keeps the virtual keyboard to one typist across every process."""
+    return SessionLock(HID_LOCK, label="the virtual keyboard")
 
 
 def helper_argv(helper: str | os.PathLike, *flags: str, sudo: bool = True) -> list[str]:
@@ -88,7 +127,9 @@ def _wake(*, env: Mapping[str, str] | None = None) -> None:
 
 def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: float = 2.0,
            poll_seconds: float = 8.0, attempts: int = 2,
-           locked: Callable[[], Optional[bool]] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None) -> Result:
+           locked: Callable[[], Optional[bool]] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None,
+           front: Callable[[], Optional[str]] | None = None, lock: SessionLock | None = None,
+           wait_s: float = HID_WAIT_S) -> Result:
     """Type ``password`` at the lock screen and observe the result. Returns ``(ok, detail)``.
 
     The display is woken first, then the helper taps Shift (to show the password field), clears the
@@ -96,6 +137,11 @@ def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: fl
     because the field has not taken focus yet, so when the session is still locked after
     ``poll_seconds`` the display is woken again and the password typed once more, up to
     ``attempts`` tries in total.
+
+    It holds the virtual keyboard's lock (``lock``, by default ``hid_lock()``) for the whole time, waits
+    up to ``wait_s`` seconds for another typist, and once it holds the lock looks again: a Mac another
+    typist unlocked meanwhile is "Already unlocked.", with nothing typed. Before each round of typing
+    the login window must be in front (``front``, by default ``front_app``), or nothing is typed.
 
     ``locked`` replaces ``is_locked`` (for a caller with its own observer)."""
     locked = locked or is_locked
@@ -106,12 +152,43 @@ def unlock(password: str, *, helper: str | os.PathLike | None = None, settle: fl
     helper = str(paths.vhid_path(helper))
     if not _exists(helper):
         return False, f"virtual HID helper not built ({helper})"
+    front = front or (lambda: front_app(env=env))
+    try:
+        with (lock or hid_lock()).hold("unlock the Mac", wait_s):
+            return _unlock_held(password, helper, settle, poll_seconds, attempts, locked, front, sudo, env)
+    except Busy as e:
+        return False, f"another program is typing through the virtual keyboard: {e}"
 
+
+def _at_lock_screen(locked: Callable[[], Optional[bool]], front: Callable[[], Optional[str]]) -> Optional[str]:
+    """None when the keys may go out now (the session reads locked, or cannot be read, and the login
+    window is in front), else why not. "unlocked" when the session reads unlocked."""
+    if locked() is False:
+        return "unlocked"
+    app = front()
+    if app != LOGIN_WINDOW:
+        return (f"the lock screen is not in front ({app or 'the front application cannot be read'}), "
+                f"so nothing was typed")
+    return None
+
+
+def _unlock_held(password, helper, settle, poll_seconds, attempts, locked, front, sudo, env) -> Result:
+    """unlock, while this process holds the virtual keyboard."""
+    # ⛔ LOOKED AT AGAIN ONCE THE LOCK IS HELD: a typist that waited for another finds the Mac unlocked
+    if locked() is False:
+        return True, "Already unlocked."
     _wake(env=env)
     _sleep(settle)
 
     helper_error = ""
     for attempt in range(max(1, attempts)):
+        # ⛔ AND RIGHT BEFORE THE KEYS GO OUT, after the wake and the wait: Cmd+A and Backspace in any
+        # other application select everything in it and delete it
+        why = _at_lock_screen(locked, front)
+        if why == "unlocked":
+            return True, "Already unlocked." if attempt == 0 else "Unlocked."
+        if why:
+            return False, why
         ran, err = _type(helper, password, ("--wake", "--clear", "--return"), 45, sudo, env=env)
         if not ran:
             return False, err or "the virtual HID helper did not run"
@@ -166,7 +243,8 @@ NO_PROMPT = "No password prompt is open on the Mac right now."
 
 
 def use_password(*, helper: str | os.PathLike | None = None,
-                 prompt_present: Callable[[], object] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None) -> Result:
+                 prompt_present: Callable[[], object] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None,
+                 lock: SessionLock | None = None, wait_s: float = HID_WAIT_S) -> Result:
     """Switch a Touch ID first credential panel to its password field. Nothing is typed.
 
     Some panels open on the Touch ID screen with a "Use Password..." button and no field yet. That
@@ -179,14 +257,21 @@ def use_password(*, helper: str | os.PathLike | None = None,
     helper = str(paths.vhid_path(helper))
     if not _exists(helper):
         return False, f"virtual HID helper not built ({helper})"
-    _, err = _type(helper, "", ("--return",), 20, sudo, env=env)
+    try:
+        with (lock or hid_lock()).hold("switch a password panel to its field", wait_s):
+            if not prompt_present():       # another typist may have answered it meanwhile
+                return False, NO_PROMPT
+            _, err = _type(helper, "", ("--return",), 20, sudo, env=env)
+    except Busy as e:
+        return False, f"another program is typing through the virtual keyboard: {e}"
     if err:
         return False, err
     return True, "Asked the Mac to switch to the password field."
 
 
 def approve(password: str, *, helper: str | os.PathLike | None = None, poll_seconds: float = 7.0,
-            prompt_present: Callable[[], object] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None) -> Result:
+            prompt_present: Callable[[], object] | None = None, sudo: bool = True, env: Mapping[str, str] | None = None,
+            lock: SessionLock | None = None, wait_s: float = HID_WAIT_S) -> Result:
     """Type ``password`` into the credential panel on screen and observe it close.
 
     The OK button of the LocalAuthentication panel ignores Return, and synthetic clicks never reach
@@ -203,14 +288,19 @@ def approve(password: str, *, helper: str | os.PathLike | None = None, poll_seco
     helper = str(paths.vhid_path(helper))
     if not _exists(helper):
         return False, f"virtual HID helper not built ({helper})"
-    _, err = _type(helper, password + "\t\t ", ("--clear",), 45, sudo, env=env)
-    if err:
-        return False, err
-
-    deadline = _now() + poll_seconds
-    while _now() < deadline:
-        _sleep(0.4)
-        if not prompt_present():
-            return True, "Approved."
+    try:
+        with (lock or hid_lock()).hold("type a password into a password panel", wait_s):
+            if not prompt_present():       # another typist may have answered it meanwhile
+                return False, NO_PROMPT
+            _, err = _type(helper, password + "\t\t ", ("--clear",), 45, sudo, env=env)
+            if err:
+                return False, err
+            deadline = _now() + poll_seconds
+            while _now() < deadline:
+                _sleep(0.4)
+                if not prompt_present():
+                    return True, "Approved."
+    except Busy as e:
+        return False, f"another program is typing through the virtual keyboard: {e}"
     return False, ("typed the password into the prompt, but it is still open (the password may be "
                    "wrong, or the prompt is waiting for Touch ID)")
