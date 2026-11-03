@@ -13,6 +13,8 @@
   memory (phys_footprint, which counts compressed pages), from proc_pid_rusage in about a
   microsecond instead of a `top` run of about 0.65 s. Only the user's own processes; another user's
   answers None.
+- `started_at(pid)`: when a process started, to the microsecond, from proc_pidinfo. Keep it beside a
+  pid to tell the process from a later one that was given the same pid. Only the user's own processes.
 """
 from __future__ import annotations
 
@@ -149,6 +151,45 @@ def footprint_gb(pid: int) -> float | None:
     if _libproc.proc_pid_rusage(int(pid), 2, ctypes.byref(info)) != 0:     # RUSAGE_INFO_V2
         return None
     return info.ri_phys_footprint / 1024 ** 3
+
+
+class _BsdInfo(ctypes.Structure):
+    """libproc's proc_bsdinfo (sys/proc_info.h), which PROC_PIDTBSDINFO fills."""
+    _fields_ = [(n, ctypes.c_uint32) for n in (
+        "pbi_flags", "pbi_status", "pbi_xstatus", "pbi_pid", "pbi_ppid", "pbi_uid", "pbi_gid", "pbi_ruid",
+        "pbi_rgid", "pbi_svuid", "pbi_svgid", "rfu_1")] + [
+        ("pbi_comm", ctypes.c_char * 16), ("pbi_name", ctypes.c_char * 32)] + [(n, ctypes.c_uint32) for n in (
+        "pbi_nfiles", "pbi_pgid", "pbi_pjobc", "e_tdev", "e_tpgid")] + [
+        ("pbi_nice", ctypes.c_int32), ("pbi_start_tvsec", ctypes.c_uint64), ("pbi_start_tvusec", ctypes.c_uint64)]
+
+
+def started_at(pid) -> float | None:
+    """When a process started, in seconds since the epoch, or None when it is gone, is another user's or
+    cannot be read.
+
+    A pid is used again once its process ends, so a pid alone cannot say that a process is still the
+    one it was. Keep this beside the pid and compare: a different value is another process. It is read
+    from proc_pidinfo, with no process started, and to the microsecond, so two processes started in the
+    same second still differ, and the hour the clocks go back changes nothing (`ps -o lstart` prints
+    local time to the second).
+    """
+    global _libproc
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    try:
+        if _libproc is None:
+            _libproc = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib")
+        info = _BsdInfo()
+        n = _libproc.proc_pidinfo(pid, 3, ctypes.c_uint64(0), ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDTBSDINFO
+    except Exception:  # noqa: BLE001 - not a Mac, or no libproc
+        return None
+    if n != ctypes.sizeof(info) or info.pbi_pid != pid:
+        return None
+    return info.pbi_start_tvsec + info.pbi_start_tvusec / 1e6
 
 
 def executable_of(pid: int) -> str | None:
