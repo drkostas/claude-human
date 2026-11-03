@@ -36,6 +36,33 @@ def test_footprint_of_this_process():
     assert process.total_gb([os.getpid(), 2 ** 22 + 12345]) == pytest.approx(gb, rel=0.5)
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="proc_pidinfo is macOS")
+def test_started_at_tells_a_process_from_a_later_one():
+    import subprocess
+    import time
+    me = process.started_at(os.getpid())
+    assert me is not None and me <= time.time()
+    assert process.started_at(os.getpid()) == me            # the same process reads the same each time
+    before = time.time()
+    child = subprocess.Popen(["/bin/sleep", "30"])
+    try:
+        seen = process.started_at(child.pid)
+        assert seen is not None and before - 1 <= seen <= time.time() + 1
+        assert seen > me
+    finally:
+        child.kill()
+        child.wait()
+    assert process.started_at(child.pid) is None            # gone, and not yet given to another process
+
+
+def test_started_at_cannot_tell_without_a_pid():
+    assert process.started_at(None) is None
+    assert process.started_at("not a pid") is None
+    assert process.started_at(0) is None
+    assert process.started_at(-4) is None
+    assert process.started_at(2 ** 22 + 12345) is None
+
+
 LSOF = """p4120
 cControlCe
 Lalice
