@@ -154,3 +154,21 @@ def test_argv_window():
     assert prepare.argv_window(["A", "activate"]) == (None, ["A", "activate"])
     with pytest.raises(SystemExit):
         prepare.argv_window(["A", "--window", "x"])
+
+
+def test_place_phase_skips_a_wait_that_only_input_steps_follow():
+    # A wait is for the step after it. When every later step is an input step, the place phase
+    # defers them, and the time a person needs to open the window is longer than the wait.
+    mac, p = rig("Demo", present=False, elsewhere=True)
+    clock = p.clock
+    out = p.run("Demo", ["open x-apple.foo", "wait 2.0", "activate", "scroll 0 -700"], phase="place")
+    assert succeeded(out) and "wait 2.0: left to the input phase, which starts later" in out
+    assert clock.now - 1000.0 < 2.0
+    # a wait that a later place step still needs keeps its time
+    mac, p = rig("Demo", present=False, elsewhere=True)
+    out = p.run("Demo", ["open x-apple.foo", "wait 2.0", "open x-apple.bar", "activate"], phase="place")
+    assert "wait 2.0: ok" in out and p.clock.now - 1000.0 >= 2.0
+    # and the whole recipe in one go still waits before its input
+    mac, p = rig("Demo")
+    out = p.run("Demo", ["open x-apple.foo", "wait 2.0", "activate"])
+    assert "wait 2.0: ok" in out and p.clock.now - 1000.0 >= 2.0

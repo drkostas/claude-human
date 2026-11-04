@@ -35,6 +35,8 @@ frontmost on the visible desktop, because macOS sends a synthetic key to the fro
 synthetic click to whatever is topmost at that point. Running an input step against a window on
 another desktop types into whatever the person is doing. So ``run(..., phase="place")`` runs only
 placement steps and logs the input steps as deferred, and ``phase="input"`` runs the rest later.
+A ``wait`` is for the step after it, so in the place phase a wait that only input steps follow is
+left out: the input phase begins later than such a wait, once a person opens the window.
 
 "Is the app there" also has two answers. The on-screen window list sees only the visible desktop,
 which is right for input and wrong for placement: a window placed on another desktop reads as
@@ -342,13 +344,25 @@ class Preparer:
         if not self.ensure_running(app, phase=phase):
             return [f"{app}: never started" if phase == "place" else f"{app}: never opened a window"]
         log.append(f"{app}: process running" if phase == "place" else f"{app}: window present")
-        for raw in steps:
+        # A wait is for the step after it (a pane that is still animating, a page still loading).
+        # In the place phase, a wait that only input steps follow waits for steps this phase does
+        # not run, and the input phase starts later than any such wait, once a person opens the
+        # window. So it is left out here, which saves its seconds on every placement.
+        kinds = [phase_of(s) for s in steps]
+        last_open = max((i for i, s in enumerate(steps)
+                         if kinds[i] == "place" and s.strip().partition(" ")[0].lower() != "wait"),
+                        default=-1)
+        for n, raw in enumerate(steps):
             step = raw.strip()
             if not step or step.startswith("#"):
                 continue
             want = phase_of(step)
             if phase != "all" and want != phase:
                 log.append(f"{step}: deferred to the {want} phase")
+                continue
+            if (phase == "place" and n > last_open and step.partition(" ")[0].lower() == "wait"
+                    and "input" in kinds[n + 1:]):
+                log.append(f"{step}: left to the input phase, which starts later")
                 continue
             if not self._ready(app, phase):
                 log.append(f"{app}: {'quit' if phase == 'place' else 'window went away'} — reopening")
