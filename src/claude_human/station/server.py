@@ -248,21 +248,35 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         delay = 1.0 / max(1.0, min(fps, 20.0))
         screen = self.st.screen
-        while True:
-            # looked up again every frame, so the stream follows the app through a relaunch
-            resolved = screen.resolve(app, wid)
-            if app and resolved is None:
-                break          # the app is not on the visible desktop: end, never widen
-            f = screen.frame(resolved)
-            if not f:
-                break
-            jpg = f[0]
-            self.wfile.write(b"--" + BOUNDARY + b"\r\nContent-Type: image/jpeg\r\n"
-                             b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n")
-            self.wfile.write(jpg)
-            self.wfile.write(b"\r\n")
-            self.wfile.flush()
-            time.sleep(delay)
+        sent, why, resolved = 0, "", None
+        try:
+            while True:
+                # looked up again every frame, so the stream follows the app through a relaunch
+                resolved = screen.resolve(app, wid)
+                if app and resolved is None:
+                    why = "the app has no window on the visible desktop"
+                    break          # end, never widen
+                f = screen.frame(resolved)
+                if not f:
+                    why = "no frame (the window is gone, covered, or the screen is locked)"
+                    break
+                jpg = f[0]
+                self.wfile.write(b"--" + BOUNDARY + b"\r\nContent-Type: image/jpeg\r\n"
+                                 b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n")
+                self.wfile.write(jpg)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+                sent += 1
+                time.sleep(delay)
+        except (BrokenPipeError, ConnectionResetError):
+            why = "the viewer left"
+        except Exception as e:  # noqa: BLE001 - said in the log, then the stream ends as before
+            why = f"{type(e).__name__}: {e}"[:200]
+        finally:
+            # ⛔ it used to end with nothing in the log, and the viewer only said "The picture
+            # stopped": the reason had to be worked out from the code
+            self.st.log(f"stream of {app or 'window'} {resolved if resolved is not None else wid} "
+                        f"ended after {sent} frame(s): {why or 'the server stopped'}")
 
     # ------------------------------------------------------------------ POST
 

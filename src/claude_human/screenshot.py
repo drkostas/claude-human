@@ -315,11 +315,14 @@ def find_auth_panel(raw: Iterable[dict], display: tuple[float, float],
 
 
 def sckshot_args(binary: str | os.PathLike, out: str, wid: int | None = None,
-                 max_width: int = 0) -> list[str]:
-    """The command line for one sckshot capture."""
+                 max_width: int = 0, with_ids: Iterable[int] = ()) -> list[str]:
+    """The command line for one sckshot capture. ``with_ids`` are windows of the same application's
+    helpers (``kin_over``) to show in the picture of ``wid``."""
     args = [str(binary), "--out", str(out), "--max-width", str(int(max_width))]
     if wid:
         args += ["--window", str(int(wid))]
+        for k in with_ids:
+            args += ["--with", str(int(k))]
     return args
 
 
@@ -558,11 +561,12 @@ def capture_approval_of(approvals: Mapping[str, dict] | None, app: str) -> dict 
 
 # ----------------------------------------------------------------------------- capture
 
-def _sckshot_frame(wid: int | None, max_w: int, binary: str | os.PathLike, *, env: Mapping[str, str] | None = None) -> tuple[bytes, int, int] | None:
+def _sckshot_frame(wid: int | None, max_w: int, binary: str | os.PathLike, *, env: Mapping[str, str] | None = None,
+                   with_ids: Iterable[int] = ()) -> tuple[bytes, int, int] | None:
     fd, tmp = tempfile.mkstemp(suffix=".jpg")
     os.close(fd)
     try:
-        r = subprocess.run(sckshot_args(binary, tmp, wid, max_w), capture_output=True, timeout=6, env=env)
+        r = subprocess.run(sckshot_args(binary, tmp, wid, max_w, with_ids), capture_output=True, timeout=6, env=env)
         if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
             return None
         with open(tmp, "rb") as fh:
@@ -639,9 +643,15 @@ def _jpeg(img, quality: float) -> bytes:
 
 def kin_over(raw: Iterable[dict], wid: int, kin: Iterable[int]) -> bool:
     """Pure. Whether a window of a ``kin`` process lies in front of window ``wid`` and overlaps it."""
+    return bool(kin_windows_over(raw, wid, kin))
+
+
+def kin_windows_over(raw: Iterable[dict], wid: int, kin: Iterable[int]) -> list[int]:
+    """Pure. The ids of the windows of ``kin`` processes that lie in front of window ``wid`` and
+    overlap it, front to back."""
     kin = frozenset(kin)
     if not kin:
-        return False
+        return []
     ahead, target = [], None
     for w in raw:
         if w.get("kCGWindowNumber") == wid:
@@ -649,10 +659,11 @@ def kin_over(raw: Iterable[dict], wid: int, kin: Iterable[int]) -> bool:
             break
         ahead.append(w)
     if target is None:
-        return False
+        return []
     tb = target.get("kCGWindowBounds") or {}
     tx, ty = float(tb.get("X", 0)), float(tb.get("Y", 0))
     tw, th = float(tb.get("Width", 0)), float(tb.get("Height", 0))
+    over = []
     for w in ahead:
         if w.get("kCGWindowOwnerPID") not in kin:
             continue
@@ -660,16 +671,16 @@ def kin_over(raw: Iterable[dict], wid: int, kin: Iterable[int]) -> bool:
         x, y = float(b.get("X", 0)), float(b.get("Y", 0))
         ww, wh = float(b.get("Width", 0)), float(b.get("Height", 0))
         if min(tx + tw, x + ww) > max(tx, x) and min(ty + th, y + wh) > max(ty, y):
-            return True
-    return False
+            over.append(int(w.get("kCGWindowNumber")))
+    return over
 
 
-def _kin_over(wid: int) -> bool:
+def _kin_windows_over(wid: int) -> list[int]:
     try:
         raw = _raw_windows()
-        return kin_over(raw, wid, kin_pids(raw, wid))
+        return kin_windows_over(raw, wid, kin_pids(raw, wid))
     except Exception:  # noqa: BLE001 - unreadable: capture the window alone, as before
-        return False
+        return []
 
 
 def capture(wid: int | None = None, *, max_width: int = DEFAULT_MAX_WIDTH,
@@ -682,9 +693,16 @@ def capture(wid: int | None = None, *, max_width: int = DEFAULT_MAX_WIDTH,
     ⛔ A MENU OF THE WINDOW'S OWN EXTENSION IS IN THE PICTURE. sckshot captures the one
     window, and the menu a System Settings pane opens is a window of the pane's extension process
     (``kin_pids``), so the viewer saw no menu after tapping a pop-up button and could not pick from
-    it. While such a window lies over ``wid``, the picture is the display cropped to the window,
-    which shows the menu (and nothing of another application, which ``covered_by`` refuses)."""
-    fr = None if wid and _kin_over(wid) else _sckshot_frame(wid, max_width, paths.sckshot_path(sckshot), env=env)
+    it. While such windows lie over ``wid``, sckshot is given them with ``--with``: the picture is
+    the display cropped to the window, through a filter that holds only the window and those
+    windows, so the menu shows and no other application's window can.
+
+    ⛔ AND NOT THROUGH THE DISPLAY CROP. That was the first way to show the menu, and it gave no
+    picture at all on a Mac where a notification window that spans the display stays opaque in
+    front of every window: ``covered_by`` counted it, so the menu path ended the
+    stream as soon as a pop-up opened. The crop is now only the fallback when sckshot fails."""
+    kin_ids = _kin_windows_over(wid) if wid else []
+    fr = _sckshot_frame(wid, max_width, paths.sckshot_path(sckshot), env=env, with_ids=kin_ids)
     if fr is not None:
         return fr
     img = _grab_legacy(wid)
