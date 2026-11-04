@@ -231,10 +231,30 @@ def test_stream_sends_frames_as_parts(station):
 
 
 def test_stream_of_an_app_that_is_gone_ends_without_a_frame(station):
-    port, screen, *_ = station
+    port, screen, _s, _a, logs = station
     status, _c, data = _read_stream(port, "/stream", "pinned-Mail", 1)
     assert status == 200 and b"Content-Length" not in data
     assert screen.framed == []
+    assert any("stream of Mail" in m and "ended after 0 frame(s)" in m and "no window" in m for m in logs)
+
+
+def test_a_stream_that_loses_its_frame_says_why_in_the_log(station):
+    port, screen, _s, _a, logs = station
+    screen.frame = lambda wid: None
+    status, _c, data = _read_stream(port, "/stream", "pinned-Notes", 1)
+    assert status == 200 and b"Content-Length" not in data
+    assert any("stream of Notes 11 ended after 0 frame(s): no frame" in m for m in logs), logs
+
+
+def test_a_stream_whose_capture_raises_says_why_in_the_log(station):
+    port, screen, _s, _a, logs = station
+
+    def boom(wid):
+        raise RuntimeError("capture broke")
+
+    screen.frame = boom
+    _read_stream(port, "/stream", "pinned-Notes", 1)
+    assert any("ended after 0 frame(s): RuntimeError: capture broke" in m for m in logs), logs
 
 
 # ----------------------------------------------------------------------------- input

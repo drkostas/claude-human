@@ -236,3 +236,59 @@ def test_capture_approvals_are_read_with_their_dates_in_utc(tmp_path):
     assert s.capture_approval_of(got, "com.example.recorder")["asks_again"] is None
     assert s.capture_approval_of(got, "com.example.other") is None and "broken" not in got
     assert s.capture_approvals(tmp_path / "missing.plist") is None
+
+
+# --- a menu of the window's own helper shows, whatever lies in front of every window ------------
+
+def _pwin(wid, owner, pid, w, h, layer=0, x=0, y=0, alpha=1.0):
+    d = win(wid, owner, w, h, layer=layer, x=x, y=y, alpha=alpha)
+    d["kCGWindowOwnerPID"] = pid
+    return d
+
+
+def test_sckshot_args_add_each_helper_window():
+    assert s.sckshot_args("/b/sckshot", "/t/x.jpg", 42, 0, [7, 8])[-6:] == \
+        ["--window", "42", "--with", "7", "--with", "8"]
+    assert "--with" not in s.sckshot_args("/b/sckshot", "/t/x.jpg", None, 0, [7])
+
+
+def test_a_helper_menu_under_a_full_display_overlay_still_gives_a_frame(monkeypatch):
+    # measured on a Mac: a notification window that spans the display stays in front of every
+    # ordinary window (layer 21, alpha 1.0), and the pane's menu is a window of the pane's
+    # extension process, over the settings window
+    overlay = _pwin(501, "Notification Center", 500, 1728, 1117, layer=21)
+    menu = _pwin(31, "Users & Groups", 310, 140, 82, layer=101, x=674, y=315)
+    settings = _pwin(22, "System Settings", 300, 723, 1084, x=60, y=33)
+    raw = [overlay, menu, settings]
+    monkeypatch.setattr(s, "_raw_windows", lambda: list(raw))
+    monkeypatch.setattr(s, "kin_pids", lambda r, wid, **kw: frozenset({310}))
+    asked = []
+
+    def sck(wid, max_w, binary, *, env=None, with_ids=()):
+        asked.append((wid, list(with_ids)))
+        return b"jpeg", 723, 1084
+
+    class Q:
+        CGRectInfinite = kCGWindowListOptionOnScreenOnly = kCGNullWindowID = 0
+        kCGWindowImageNominalResolution = 0
+
+        @staticmethod
+        def CGWindowListCreateImage(*a):
+            return None
+
+    monkeypatch.setattr(s, "_quartz", lambda: Q)
+    monkeypatch.setattr(s, "_sckshot_frame", sck)
+    assert s.capture(22) == (b"jpeg", 723, 1084)
+    assert asked == [(22, [31])], "sckshot is given the menu, so the picture shows it"
+
+
+def test_without_a_helper_window_over_it_the_window_is_captured_alone(monkeypatch):
+    settings = _pwin(22, "System Settings", 300, 723, 1084, x=60, y=33)
+    beside = _pwin(31, "Users & Groups", 310, 140, 82, layer=101, x=900, y=315)
+    monkeypatch.setattr(s, "_raw_windows", lambda: [beside, settings])
+    monkeypatch.setattr(s, "kin_pids", lambda r, wid, **kw: frozenset({310}))
+    asked = []
+    monkeypatch.setattr(s, "_sckshot_frame",
+                        lambda wid, m, b, *, env=None, with_ids=(): asked.append(list(with_ids)) or (b"j", 1, 1))
+    assert s.capture(22) == (b"j", 1, 1)
+    assert asked == [[]]

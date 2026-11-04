@@ -286,6 +286,14 @@ def test_a_kin_menu_over_the_window_is_seen_so_the_picture_shows_it():
     assert kin_over(beside, 2, {310}) is False                         # not over the window
 
 
+def test_the_kin_windows_over_the_window_are_named_front_to_back():
+    from claude_human.screenshot import kin_windows_over
+    sheet = _w(3, "Users & Groups", 310, 100, 100, 400, 300, layer=0)
+    assert kin_windows_over([SETTINGS[0], sheet, SETTINGS[1]], 2, {310}) == [1, 3]
+    assert kin_windows_over(SETTINGS, 2, set()) == []
+    assert kin_windows_over(SETTINGS, 99, {310}) == []                 # the window is not on screen
+
+
 def test_bundle_info_reads_the_innermost_bundle_of_that_kind(tmp_path):
     import plistlib
     from claude_human.process import bundle_info

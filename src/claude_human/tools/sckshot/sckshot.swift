@@ -1,6 +1,12 @@
 // sckshot takes one screenshot through ScreenCaptureKit.
 //
-// Usage: sckshot --out <path> [--window <CGWindowID>] [--max-width <N>]
+// Usage: sckshot --out <path> [--window <CGWindowID> [--with <CGWindowID>]...] [--max-width <N>]
+//
+// --with adds a window drawn by a helper of the same application (a menu or a sheet that another
+// process owns) to the picture of --window. The picture is then the display cropped to --window's
+// rectangle, through a filter that holds only --window and the --with windows, so no other
+// application's window can show in it, whatever lies on top. A --with window that is gone by the
+// time of the capture (a menu that closed) is left out.
 //
 // The output format follows the --out extension (.jpg or .jpeg gives JPEG at quality 0.7, anything
 // else gives PNG). --max-width scales the image down to that width, keeping the aspect ratio.
@@ -39,6 +45,7 @@ func scaled(_ img: CGImage, toWidth maxW: Int) -> CGImage {
 struct SckShot {
     static func main() {
         var windowID: CGWindowID? = nil
+        var withIDs: [CGWindowID] = []
         var out = "sckshot.png"
         var maxWidth = 0
         var i = 1
@@ -46,10 +53,11 @@ struct SckShot {
         while i < argv.count {
             switch argv[i] {
             case "--window":    i += 1; if i < argv.count { windowID = CGWindowID(UInt32(argv[i]) ?? 0) }
+            case "--with":      i += 1; if i < argv.count, let v = UInt32(argv[i]) { withIDs.append(CGWindowID(v)) }
             case "--out":       i += 1; if i < argv.count { out = argv[i] }
             case "--max-width": i += 1; if i < argv.count { maxWidth = Int(argv[i]) ?? 0 }
             case "--help", "-h":
-                print("usage: sckshot --out <path> [--window <CGWindowID>] [--max-width <N>]")
+                print("usage: sckshot --out <path> [--window <CGWindowID> [--with <CGWindowID>]...] [--max-width <N>]")
                 exit(0)
             default: break
             }
@@ -72,12 +80,26 @@ struct SckShot {
                     }
                     cfg.width  = max(1, Int(win.frame.width))
                     cfg.height = max(1, Int(win.frame.height))
-                    // without this the window's shadow is captured too, and window and shadow are
-                    // scaled into the window's size: the window filled about 95% of the picture,
-                    // with blank margins, so a point read from the picture was off by that much
-                    if #available(macOS 14.0, *) { cfg.ignoreShadowsSingleWindow = true }
-                    // desktopIndependentWindow captures only that window, wherever it is
-                    filter = SCContentFilter(desktopIndependentWindow: win)
+                    let extra = content.windows.filter { withIDs.contains($0.windowID) && $0.windowID != wid }
+                    if !extra.isEmpty {
+                        // the display, holding only this window and its helpers' windows, cropped
+                        // to this window: SCWindow and SCDisplay frames are both global points with
+                        // the origin at the top left, and sourceRect is relative to the display
+                        guard let disp = content.displays.first(where: { $0.frame.intersects(win.frame) })
+                                ?? content.displays.first else { die("no display") }
+                        cfg.sourceRect = CGRect(x: win.frame.minX - disp.frame.minX,
+                                                y: win.frame.minY - disp.frame.minY,
+                                                width: win.frame.width, height: win.frame.height)
+                        cfg.showsCursor = false
+                        filter = SCContentFilter(display: disp, including: [win] + extra)
+                    } else {
+                        // without this the window's shadow is captured too, and window and shadow
+                        // are scaled into the window's size: the window filled about 95% of the
+                        // picture, with blank margins, so a point read from it was off by that much
+                        if #available(macOS 14.0, *) { cfg.ignoreShadowsSingleWindow = true }
+                        // desktopIndependentWindow captures only that window, wherever it is
+                        filter = SCContentFilter(desktopIndependentWindow: win)
+                    }
                 } else {
                     guard let disp = content.displays.first else { die("no display") }
                     cfg.width = disp.width; cfg.height = disp.height
