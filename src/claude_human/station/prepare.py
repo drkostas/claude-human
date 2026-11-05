@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -75,6 +76,8 @@ BROWSER_TIMEOUT = 6.0
 PLACEMENT_VERBS = frozenset({"open", "wait"})
 INPUT_VERBS = frozenset({"activate", "type", "key", "click", "scroll", "search"})
 PHASES = ("place", "input", "all")
+#: how long the input phase waits for its own window to show after focusing it by id
+SHOW_WAIT = 3.0
 
 
 def phase_of(step: str) -> str:
@@ -207,6 +210,50 @@ class Preparer:
                 check=False, timeout=10)
         self.clock.sleep(0.45)
 
+    def _show_window(self) -> bool:
+        """Focus the recipe's own window by id, which shows its desktop; False when no window is
+        known, yabai is missing or yabai refused."""
+        if self.window is None or not self.yabai:
+            return False
+        r = self.sh([self.yabai, "-m", "window", str(self.window), "--focus"], check=False, timeout=10)
+        return getattr(r, "returncode", 1) == 0
+
+    def _not_shown(self, app: str) -> str:
+        """Why the input phase found no window of `app` on screen, with what the screen showed
+        instead when the recipe's own window is known, so the failure names what took the screen."""
+        if self.window is None:
+            return f"{app}: never opened a window"
+        seen = []
+        if self.yabai:
+            try:
+                r = self.sh([self.yabai, "-m", "query", "--spaces"], check=False, timeout=10,
+                            capture_output=True, text=True)
+                label = next((sp.get("label") for sp in json.loads(r.stdout or "[]")
+                              if sp.get("is-visible")), None)
+                if label:
+                    seen.append(f"{label} is showing")
+            except (ValueError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):
+                pass
+        front = self._front_name()
+        if front:
+            seen.append(f"{front} is in front")
+        where = f" ({', '.join(seen)})" if seen else ""
+        return f"{app}: its window {self.window} is not on the visible desktop{where}"
+
+    def _front_name(self) -> Optional[str]:
+        """The name of the app in front (lsappinfo, which needs no Automation grant), or None."""
+        try:
+            asn = (self.sh(["/usr/bin/lsappinfo", "front"], check=False, timeout=5,
+                           capture_output=True, text=True).stdout or "").strip()
+            if not asn:
+                return None
+            out = self.sh(["/usr/bin/lsappinfo", "info", "-only", "name", asn], check=False,
+                          timeout=5, capture_output=True, text=True).stdout or ""
+        except (OSError, AttributeError, subprocess.TimeoutExpired):
+            return None
+        m = re.search(r'="([^"]+)"', out)
+        return m.group(1) if m else None
+
     def present(self, app: str, phase: str = "all") -> bool:
         """Has the app a window: on any desktop (place phase) or on the visible one (otherwise)."""
         wins = self.all_windows() if phase == "place" else self.screen.windows()
@@ -240,6 +287,15 @@ class Preparer:
             return False
         if self.present(app, phase):
             return True
+        if self._show_window():
+            # the recipe's own window, on a desktop that is not showing: focusing it by id shows that
+            # desktop. `open -a` below raises the app instead, and lets macOS pick which window and
+            # which desktop the person sees
+            deadline = self.clock.time() + SHOW_WAIT
+            while self.clock.time() < deadline:
+                if self.present(app, phase):
+                    return True
+                self.clock.sleep(0.25)
         self.sh(["/usr/bin/open", "-a", app], check=False, timeout=15)
         deadline = self.clock.time() + timeout
         while self.clock.time() < deadline:
@@ -342,7 +398,7 @@ class Preparer:
         self.window = window
         log: list[str] = []
         if not self.ensure_running(app, phase=phase):
-            return [f"{app}: never started" if phase == "place" else f"{app}: never opened a window"]
+            return [f"{app}: never started" if phase == "place" else self._not_shown(app)]
         log.append(f"{app}: process running" if phase == "place" else f"{app}: window present")
         # A wait is for the step after it (a pane that is still animating, a page still loading).
         # In the place phase, a wait that only input steps follow waits for steps this phase does

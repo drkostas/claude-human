@@ -149,6 +149,45 @@ def test_activate_falls_back_to_the_app_without_a_window_or_when_yabai_refuses()
     assert ["/usr/bin/osascript", "-e", 'tell application "Browser" to activate'] in mac.argv
 
 
+def test_the_input_phase_brings_its_known_window_back_before_reopening_the_app():
+    mac, p = rig("System Settings", present=False, elsewhere=True)
+    p.yabai = "/usr/local/bin/yabai"
+    plain = mac.run
+
+    def run(argv, **kw):
+        if argv[:4] == ["/usr/local/bin/yabai", "-m", "window", "4242"] and argv[-1] == "--focus":
+            mac.present = True                       # its desktop is shown again
+            mac.argv.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return plain(argv, **kw)
+    mac.run = p.sh = run
+    out = p.run("System Settings", ["activate", "scroll 0 -700"], window=4242, phase="input")
+    assert succeeded(out) and out[0] == "System Settings: window present"
+    assert ["/usr/local/bin/yabai", "-m", "window", "4242", "--focus"] in mac.argv
+    assert not any(a[:2] == ["/usr/bin/open", "-a"] for a in mac.argv), "the app is not reopened"
+
+
+def test_a_known_window_that_stays_off_screen_says_where_the_screen_is():
+    mac, p = rig("System Settings", present=False, elsewhere=True, reopens=False)
+    p.yabai = "/usr/local/bin/yabai"
+    plain = mac.run
+
+    def run(argv, **kw):
+        if argv[:4] == ["/usr/local/bin/yabai", "-m", "query", "--spaces"]:
+            return subprocess.CompletedProcess(argv, 0, '[{"label": "Home", "is-visible": true},'
+                                                        ' {"label": "task-1", "is-visible": false}]', "")
+        if argv == ["/usr/bin/lsappinfo", "front"]:
+            return subprocess.CompletedProcess(argv, 0, "ASN:0x0-0x1234:\n", "")
+        if argv[:2] == ["/usr/bin/lsappinfo", "info"]:
+            return subprocess.CompletedProcess(argv, 0, '"LSDisplayName"="Mail"\n', "")
+        return plain(argv, **kw)
+    mac.run = p.sh = run
+    out = p.run("System Settings", ["activate"], window=4242, phase="input")
+    assert not succeeded(out)
+    assert out == ["System Settings: its window 4242 is not on the visible desktop "
+                   "(Home is showing, Mail is in front)"]
+
+
 def test_argv_window():
     assert prepare.argv_window(["A", "--window", "42", "activate"]) == (42, ["A", "activate"])
     assert prepare.argv_window(["A", "activate"]) == (None, ["A", "activate"])
