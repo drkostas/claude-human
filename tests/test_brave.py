@@ -52,6 +52,19 @@ def test_a_kept_window_is_found_while_the_browser_has_it(tmp_path):
     assert brave.kept("claude-b", state=tmp_path, open_ids={"200"}) is None
 
 
+def test_a_kept_window_that_is_gone_is_forgotten(tmp_path, monkeypatch):
+    brave.keep("claude-a", "200", 7041, state=tmp_path)
+    assert brave.kept("claude-a", state=tmp_path, open_ids={"100"}) is None
+    assert not (tmp_path / "claude-a.json").exists(), "the record of a closed window is removed"
+    brave.keep("claude-a", "200", 7041, state=tmp_path)
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (1, ""))
+    assert brave.kept("claude-a", state=tmp_path) is None
+    assert (tmp_path / "claude-a.json").exists(), "a window list that could not be read removes nothing"
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (0, "100, 300"))
+    assert brave.kept("claude-a", state=tmp_path) is None
+    assert not (tmp_path / "claude-a.json").exists()
+
+
 def test_outside_tmux_there_is_no_default_key():
     assert brave.default_key(env={}) is None
 
