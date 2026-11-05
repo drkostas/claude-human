@@ -421,6 +421,47 @@ def front_window(raw: Iterable[dict] | None = None) -> int | None:
     return None
 
 
+def fronts(raw: Iterable[dict], wid: int, kin: Iterable[int] = ()) -> bool:
+    """Pure. Whether typed text and keys reach window ``wid``: the frontmost ordinary window
+    (``front_window``) is ``wid`` itself, or a window that belongs to it and lies over it.
+
+    A sheet or dialog of the same process, or of a process in ``kin`` (``kin_pids``: System
+    Settings draws a pane's password sheet in the pane's extension process), takes the keys for
+    its window, so typing into it is typing into the window the person named. A window of another
+    process, or one of the family that is not over ``wid``, is not. ``wid`` missing from the list
+    is never in front."""
+    raw = list(raw)
+    target = next((w for w in raw if w.get("kCGWindowNumber") == wid), None)
+    front = next((w for w in raw if to_windows([w])), None)
+    if target is None or front is None:
+        return False
+    if front is target:
+        return True
+    pid = front.get("kCGWindowOwnerPID")
+    if pid is None or not (pid == target.get("kCGWindowOwnerPID") or pid in frozenset(kin)):
+        return False
+    tb, fb = target.get("kCGWindowBounds") or {}, front.get("kCGWindowBounds") or {}
+    tx, ty = float(tb.get("X", 0)), float(tb.get("Y", 0))
+    fx, fy = float(fb.get("X", 0)), float(fb.get("Y", 0))
+    return (min(tx + float(tb.get("Width", 0)), fx + float(fb.get("Width", 0))) > max(tx, fx)
+            and min(ty + float(tb.get("Height", 0)), fy + float(fb.get("Height", 0))) > max(ty, fy))
+
+
+def in_front(wid: int) -> bool:
+    """Whether typed text and keys reach window ``wid`` on the desktop now (``fronts``, with the
+    extensions that draw part of its application)."""
+    raw = _raw_windows()
+    return fronts(raw, wid, kin=kin_pids(raw, wid))
+
+
+def front_owner() -> str | None:
+    """The application that owns the frontmost ordinary window now, for a refusal to name."""
+    for w in _raw_windows():
+        if to_windows([w]):
+            return str(w.get("kCGWindowOwnerName") or "") or None
+    return None
+
+
 def resolve(app: str | None, wid: int | None) -> int | None:
     """Which window a request means right now.
 

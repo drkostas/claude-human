@@ -201,6 +201,68 @@ def test_typing_into_a_named_window_needs_it_in_front():
     assert posted == []
 
 
+def test_typing_reaches_a_sheet_of_the_named_window():
+    # a password sheet in front of the named window is that window's own step: the screen's
+    # in_front says so, and typing goes through although the front window id is the sheet's
+    class Sheeted(Screen):
+        def __init__(self):
+            super().__init__(front=31)
+            self.asked = []
+
+        def in_front(self, wid):
+            self.asked.append(wid)
+            return True
+    screen, posted = Sheeted(), []
+    s = QuartzInput(screen, post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"]
+    assert screen.asked == [7] and [e["code"] for e in posted] == [36, 36]
+
+
+def test_a_key_is_refused_while_another_apps_window_is_in_front_even_over_the_sheet_rule():
+    # the sheet rule, read through screenshot.fronts on real window lists: the window's own sheet
+    # and its extension's sheet take the keys; another application's window in front never does,
+    # nor does an extension that is not the window's kin, nor a kin window beside the window
+    from claude_human import screenshot as shot
+
+    def pwin(wid, owner, pid, w, h, x, y):
+        return {"kCGWindowNumber": wid, "kCGWindowLayer": 0, "kCGWindowOwnerName": owner,
+                "kCGWindowOwnerPID": pid, "kCGWindowAlpha": 1.0,
+                "kCGWindowBounds": {"X": x, "Y": y, "Width": w, "Height": h}}
+    target = pwin(7, "Notes", 300, 723, 1084, 60, 33)
+    cases = {
+        "own sheet": ([pwin(8, "Notes", 300, 420, 260, 210, 120), target], True),
+        "kin sheet": ([pwin(9, "Notes Helper", 310, 420, 260, 210, 120), target], True),
+        "another app over it": ([pwin(10, "Terminal", 400, 600, 500, 200, 100), target], False),
+        "another app beside it": ([pwin(10, "Terminal", 400, 600, 500, 1000, 100), target], False),
+        "a stranger's sheet": ([pwin(11, "Helper", 320, 420, 260, 210, 120), target], False),
+        "kin, not over it": ([pwin(9, "Notes Helper", 310, 420, 260, 1200, 120), target], False),
+    }
+    for name, (raw, typed) in cases.items():
+        class Live(Screen):
+            def in_front(self, wid, raw=raw):
+                return shot.fronts(raw, wid, kin={310})
+        posted = []
+        s = QuartzInput(Live(), post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+        r = s.do_input({"type": "key", "code": 36, "app": "Notes"})
+        assert r["ok"] is typed and bool(posted) is typed, name
+        if not typed:
+            assert "not in front" in r["detail"], name
+
+
+def test_a_refused_typing_names_what_is_in_front():
+    class Other(Screen):
+        def in_front(self, wid):
+            return False
+
+        def front_owner(self):
+            return "Notes Helper"
+    posted = []
+    s = QuartzInput(Other(front=3), post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    r = s.do_input({"type": "text", "text": "x", "app": "Notes"})
+    assert r["ok"] is False and "not in front" in r["detail"] and r["in_front"] == "Notes Helper"
+    assert posted == []
+
+
 def test_typing_goes_through_once_the_window_is_in_front():
     s, posted = sink(front=7)
     assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"]
