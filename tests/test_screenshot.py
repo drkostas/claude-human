@@ -292,3 +292,32 @@ def test_without_a_helper_window_over_it_the_window_is_captured_alone(monkeypatc
                         lambda wid, m, b, *, env=None, with_ids=(): asked.append(list(with_ids)) or (b"j", 1, 1))
     assert s.capture(22) == (b"j", 1, 1)
     assert asked == [[]]
+
+
+def test_a_sheet_of_the_window_counts_as_the_window_in_front():
+    # the password sheet of a System Settings pane is a window of the pane's extension process,
+    # ordered in front of the settings window and over it; typing reaches the sheet, which is the
+    # window the person means
+    settings = _pwin(22, "System Settings", 300, 723, 1084, x=60, y=33)
+    sheet = _pwin(31, "Users & Groups", 310, 420, 260, x=210, y=120)
+    own_sheet = _pwin(32, "System Settings", 300, 420, 260, x=210, y=120)
+    elsewhere = _pwin(33, "Users & Groups", 310, 420, 260, x=1200, y=120)
+    other = _pwin(40, "Notes", 400, 600, 500, x=200, y=100)
+    assert s.fronts([settings], 22) is True
+    assert s.fronts([sheet, settings], 22, kin={310}) is True
+    assert s.fronts([own_sheet, settings], 22) is True
+    assert s.fronts([sheet, settings], 22) is False, "an extension that is not kin is another app"
+    assert s.fronts([elsewhere, settings], 22, kin={310}) is False, "kin, but not over the window"
+    assert s.fronts([other, settings], 22, kin={310}) is False
+    assert s.fronts([sheet], 22, kin={310}) is False, "the window itself is not on screen"
+    assert s.fronts([], 22) is False
+
+
+def test_in_front_reads_the_live_list_with_its_kin(monkeypatch):
+    settings = _pwin(22, "System Settings", 300, 723, 1084, x=60, y=33)
+    sheet = _pwin(31, "Users & Groups", 310, 420, 260, x=210, y=120)
+    monkeypatch.setattr(s, "_raw_windows", lambda: [sheet, settings])
+    monkeypatch.setattr(s, "kin_pids", lambda r, wid, **kw: frozenset({310}))
+    assert s.in_front(22) is True
+    monkeypatch.setattr(s, "kin_pids", lambda r, wid, **kw: frozenset())
+    assert s.in_front(22) is False

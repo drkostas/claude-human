@@ -201,6 +201,37 @@ def test_typing_into_a_named_window_needs_it_in_front():
     assert posted == []
 
 
+def test_typing_reaches_a_sheet_of_the_named_window():
+    # a password sheet in front of the named window is that window's own step: the screen's
+    # in_front says so, and typing goes through although the front window id is the sheet's
+    class Sheeted(Screen):
+        def __init__(self):
+            super().__init__(front=31)
+            self.asked = []
+
+        def in_front(self, wid):
+            self.asked.append(wid)
+            return True
+    screen, posted = Sheeted(), []
+    s = QuartzInput(screen, post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"]
+    assert screen.asked == [7] and [e["code"] for e in posted] == [36, 36]
+
+
+def test_a_refused_typing_names_what_is_in_front():
+    class Other(Screen):
+        def in_front(self, wid):
+            return False
+
+        def front_owner(self):
+            return "Notes Helper"
+    posted = []
+    s = QuartzInput(Other(front=3), post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    r = s.do_input({"type": "text", "text": "x", "app": "Notes"})
+    assert r["ok"] is False and "not in front" in r["detail"] and r["in_front"] == "Notes Helper"
+    assert posted == []
+
+
 def test_typing_goes_through_once_the_window_is_in_front():
     s, posted = sink(front=7)
     assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"]

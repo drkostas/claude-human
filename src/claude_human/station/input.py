@@ -53,7 +53,8 @@ class QuartzInput:
     the dialog's application name and returns the text.
 
     ``screen`` answers ``screen_locked()``, ``blocked_by()``, ``resolve(app, wid)``,
-    ``window_rect(wid)`` and ``front_window()``. ``claude_human.screenshot`` is the default. ``post`` sends one event (the
+    ``window_rect(wid)`` and ``front_window()``, and may answer ``in_front(wid)`` (a sheet of the
+    window counts) and ``front_owner()``. ``claude_human.screenshot`` is the default. ``post`` sends one event (the
     default posts it to the HID event tap), and ``quartz`` is the Quartz module or a stand-in."""
 
     def __init__(self, screen: Any = None, *, post: Optional[Callable[[Any], None]] = None,
@@ -176,6 +177,18 @@ class QuartzInput:
                     "detail": "that window does not hold that point on the Mac, so nothing was clicked"}
         return {"ok": False, "covered": True, "on_top": owner, "detail": COVERED_DETAIL.format(owner=owner)}
 
+    def _in_front(self, wid: int) -> Optional[bool]:
+        """Whether typed text and keys reach window ``wid``: the screen's ``in_front(wid)`` when it
+        has one (a sheet of the window counts), else ``front_window() == wid``. None when the
+        screen cannot say."""
+        ask = getattr(self.screen, "in_front", None)
+        if callable(ask):
+            return bool(ask(wid))
+        front = getattr(self.screen, "front_window", None)
+        if not callable(front):
+            return None
+        return front() == wid
+
     def raise_window(self, wid: int, *, tries: int = 8, gap: float = 0.25) -> dict:
         """Bring window `wid` to the front with the window manager (yabai, which also switches to its
         desktop), and observe it in front. The `focus` hook stands in for yabai."""
@@ -183,15 +196,15 @@ class QuartzInput:
         if focus is None:
             from ..keys import focus as yabai_focus  # noqa: PLC0415
             focus = yabai_focus
-        front = getattr(self.screen, "front_window", None)
-        if not callable(front):
+        now = self._in_front(wid)
+        if now is None:
             return {"ok": False, "detail": "this screen cannot say which window is in front"}
-        if front() == wid:
+        if now:
             return {"ok": True, "detail": "it was in front already"}
         focus(wid)
         for _ in range(tries):
             self.sleep(gap)
-            if front() == wid:
+            if self._in_front(wid):
                 return {"ok": True, "detail": "brought to the front"}
         return {"ok": False, "detail": "the window did not come to the front"}
 
@@ -322,9 +335,17 @@ class QuartzInput:
             # a station whose window was behind another, they landed in the person's own window.
             # A tap on the window brings it forward, so the answer is "tap it first". A screen that
             # cannot say what is in front refuses rather than guesses.
-            front = getattr(self.screen, "front_window", None)
-            if not callable(front) or front() != wid:
-                return {"ok": False, "detail": FOCUS_DETAIL}
+            # A sheet of that window (its password sheet, drawn by the same app or by the
+            # System Settings pane's extension) takes the keys for it, so it counts as in front.
+            if not self._in_front(wid):
+                out = {"ok": False, "detail": FOCUS_DETAIL}
+                owner = getattr(self.screen, "front_owner", None)
+                if callable(owner):
+                    try:
+                        out["in_front"] = owner()
+                    except Exception:  # noqa: BLE001 - the name only explains the refusal
+                        pass
+                return out
 
         if kind == "text":
             return self._paste(str(msg.get("text", ""))[:2000])
