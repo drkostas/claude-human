@@ -105,8 +105,13 @@ def list_tabs(app: str = APP, window: str | None = None, *, timeout: float = 30,
 
 
 def window_ids(app: str = APP, *, env: Mapping[str, str] | None = None) -> set[str]:
+    return _read_window_ids(app, env=env) or set()
+
+
+def _read_window_ids(app: str = APP, *, env: Mapping[str, str] | None = None) -> set[str] | None:
+    """The app's window ids, or None when the app did not answer (which is not "no windows")."""
     rc, out = osa(f'tell application "{app}" to get id of every window', 10, env=env)
-    return {w.strip() for w in out.split(",") if w.strip().isdigit()} if rc == 0 else set()
+    return {w.strip() for w in out.split(",") if w.strip().isdigit()} if rc == 0 else None
 
 
 def yabai_ids(app: str = APP, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> set[int] | None:
@@ -482,13 +487,21 @@ def default_key(*, env: Mapping[str, str] | None = None) -> str | None:
 
 
 def kept(key: str, *, state: Path = STATE, open_ids: set[str] | None = None, app: str = APP) -> dict | None:
-    """The window `key` kept last time, while the browser still has it: {"window", "yabai"} or None."""
+    """The window `key` kept last time, while the browser still has it: {"window", "yabai"} or None.
+    A record whose window the browser no longer lists is removed, so it never names a closed
+    window. When the window list cannot be read, the record stays."""
+    path = state / f"{key}.json"
     try:
-        got = json.loads((state / f"{key}.json").read_text())
+        got = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    ids = window_ids(app) if open_ids is None else open_ids
-    return got if str(got.get("window")) in ids else None
+    ids = _read_window_ids(app) if open_ids is None else open_ids
+    if ids is None:
+        return None
+    if str(got.get("window")) in ids:
+        return got
+    path.unlink(missing_ok=True)
+    return None
 
 
 def keep(key: str, window: str, yabai: int | None, *, state: Path = STATE) -> None:
