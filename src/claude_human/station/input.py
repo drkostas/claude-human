@@ -54,7 +54,8 @@ class QuartzInput:
 
     ``screen`` answers ``screen_locked()``, ``blocked_by()``, ``resolve(app, wid)``,
     ``window_rect(wid)`` and ``front_window()``, and may answer ``in_front(wid)`` (a sheet of the
-    window counts) and ``front_owner()``. ``claude_human.screenshot`` is the default. ``post`` sends one event (the
+    window counts), ``front_owner()`` and ``on_top_at(wid, x, y)``. Each of those three that a
+    screen lacks is asked of ``claude_human.screenshot``, which is the default. ``post`` sends one event (the
     default posts it to the HID event tap), and ``quartz`` is the Quartz module or a stand-in."""
 
     def __init__(self, screen: Any = None, *, post: Optional[Callable[[Any], None]] = None,
@@ -178,16 +179,31 @@ class QuartzInput:
         return {"ok": False, "covered": True, "on_top": owner, "detail": COVERED_DETAIL.format(owner=owner)}
 
     def _in_front(self, wid: int) -> Optional[bool]:
-        """Whether typed text and keys reach window ``wid``: the screen's ``in_front(wid)`` when it
-        has one (a sheet of the window counts), else ``front_window() == wid``. None when the
-        screen cannot say."""
+        """Whether typed text and keys reach window ``wid``: the screen's ``in_front(wid)`` (a sheet
+        of the window counts), or ``claude_human.screenshot``'s for a screen without one, as
+        ``_covered`` does for ``on_top_at``. None when the window list cannot be read.
+
+        A screen that answered only ``front_window()`` used to be asked ``front_window() == wid``,
+        which a window's own sheet in front never satisfies, so typing into a password sheet was
+        refused while every click on it landed."""
         ask = getattr(self.screen, "in_front", None)
-        if callable(ask):
+        if not callable(ask):
+            from ..screenshot import in_front as ask  # noqa: PLC0415
+        try:
             return bool(ask(wid))
-        front = getattr(self.screen, "front_window", None)
-        if not callable(front):
+        except Exception:  # noqa: BLE001 - a list that cannot be read cannot say the keys are safe
             return None
-        return front() == wid
+
+    def _front_owner(self) -> Optional[str]:
+        """The application in front, for a refusal to name: the screen's ``front_owner()``, or
+        ``claude_human.screenshot``'s for a screen without one. None when it cannot be read."""
+        owner = getattr(self.screen, "front_owner", None)
+        if not callable(owner):
+            from ..screenshot import front_owner as owner  # noqa: PLC0415
+        try:
+            return owner()
+        except Exception:  # noqa: BLE001 - the name only explains the refusal
+            return None
 
     def raise_window(self, wid: int, *, tries: int = 8, gap: float = 0.25) -> dict:
         """Bring window `wid` to the front with the window manager (yabai, which also switches to its
@@ -339,12 +355,9 @@ class QuartzInput:
             # System Settings pane's extension) takes the keys for it, so it counts as in front.
             if not self._in_front(wid):
                 out = {"ok": False, "detail": FOCUS_DETAIL}
-                owner = getattr(self.screen, "front_owner", None)
-                if callable(owner):
-                    try:
-                        out["in_front"] = owner()
-                    except Exception:  # noqa: BLE001 - the name only explains the refusal
-                        pass
+                owner = self._front_owner()
+                if owner is not None:
+                    out["in_front"] = owner
                 return out
 
         if kind == "text":
