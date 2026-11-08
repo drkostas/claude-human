@@ -78,6 +78,13 @@ jobs:
         run: |
           test -f "$ANDROID_HOME/platforms/android-36/android.jar" || \
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
+      # the compiler and libraries the script downloads, kept between runs: without them every pull
+      # request fails while GitHub's release downloads do. The key changes with any pinned version or
+      # checksum in the script, which still checks each file it finds.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/expo-ntfy-compile
+          key: compile-service-${{ hashFiles('js/scripts/compile-service.sh') }}
       - run: npm run compile:service
 
   adb-keeper:
@@ -100,6 +107,14 @@ jobs:
         run: |
           test -f "$ANDROID_HOME/platforms/android-36/android.jar" || \
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
+      # the Kotlin compiler the script downloads, kept between runs (see the kotlin job). With no cache of
+      # its own yet, it takes the kotlin job's, which holds the same zip under the same name, and the
+      # script still checks it against its own SHA-256 before using it
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/expo-ntfy-compile
+          key: compile-adb-keeper-${{ hashFiles('adb-keeper/scripts/compile.sh') }}
+          restore-keys: compile-service-
       - run: npm run compile:kotlin
 
   client:
