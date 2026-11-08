@@ -119,3 +119,48 @@ def test_closing_the_open_chat_presses_only_escape_and_reloads_when_a_chat_stays
     assert "setTimeout(" in js and "location.reload()" in js, "a chat still open is closed by a reload"
     low = js.lower()
     assert "send" not in low and "click" not in low and "keypress" not in low
+
+
+_STAND_IN = r"""
+var got=[];
+function El(name){this.name=name;}
+El.prototype.dispatchEvent=function(e){got.push({on:this.name,type:e.type,o:e.o});return true;};
+function Ev(t,o){this.type=t;this.o=o;}
+var MouseEvent=Ev;var window={PointerEvent:function(t,o){this.type=t;this.o=o;this.pointer=true;}};
+var cell=new El('cell');
+var row=new El('row');row.getBoundingClientRect=function(){return {left:10,top:200,width:300,height:60};};
+row.contains=function(e){return e===cell||e===row;};row.scrolled=false;
+row.scrollIntoView=function(){row.scrolled=true;};
+var span={getAttribute:function(){return WANT;},closest:function(){return row;}};
+var other={getAttribute:function(){return 'Someone else';},closest:function(){return new El('other');}};
+var list={querySelectorAll:function(){return [other,span];}};
+var document={querySelector:function(q){return q==='#pane-side'?list:null;},
+  elementFromPoint:function(x,y){got.push({at:[x,y]});return cell;}};
+var out=SCRIPT;
+console.log(JSON.stringify({out:JSON.parse(out),got:got,scrolled:row.scrolled}));
+"""
+
+
+def test_a_row_is_pressed_with_the_pointer_sequence_a_real_mouse_sends():
+    # WhatsApp Web ignores a bare mousedown, mouseup and click on a row, so a chat never opened
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    title = 'Team "Q4"'
+    prog = _STAND_IN.replace("WANT", json.dumps(title)).replace("SCRIPT", wa.open_chat_js(title))
+    run = subprocess.run([node, "-e", prog], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    res = json.loads(run.stdout)
+    assert res["out"] == {"opened": True} and res["scrolled"] is True
+    assert res["got"][0] == {"at": [160, 230]}, "the element at the row's centre is the one pressed"
+    events = res["got"][1:]
+    assert [e["type"] for e in events] == ["pointerover", "mouseover", "mousemove", "pointerdown",
+                                           "mousedown", "pointerup", "mouseup", "click"]
+    assert all(e["on"] == "cell" for e in events), "only that row's element is pressed"
+    for e in events:
+        o = e["o"]
+        assert o["pointerId"] == 1 and o["pointerType"] == "mouse" and o["isPrimary"] is True
+        assert (o["clientX"], o["clientY"]) == (160, 230) and o["bubbles"] is True
+        assert o["buttons"] == (1 if e["type"] in ("pointerdown", "mousedown") else 0)

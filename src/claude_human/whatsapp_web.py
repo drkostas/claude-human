@@ -135,12 +135,26 @@ return JSON.stringify(out);
 
 def open_chat_js(title: str) -> str:
     """The script that opens the chat whose title is exactly `title`, as JSON: {"opened": bool}. It
-    presses that one row and nothing else, and finds nothing for a title that is not in the list."""
+    presses that one row and nothing else, and finds nothing for a title that is not in the list.
+
+    WhatsApp Web ignores a bare mousedown, mouseup and click on a row: it listens for pointer events
+    on the element under the pointer. So the row is scrolled into view, and the element at its centre
+    gets the whole sequence a real mouse sends (pointerover, mouseover, mousemove, pointerdown,
+    mousedown, pointerup, mouseup, click), from a primary mouse pointer with the button held on the
+    downs. "opened" only says the row was pressed; read ``OPEN_TITLE`` to see that the chat opened."""
     return "(function(){" + _HELPERS + r"""
 var want=""" + json.dumps(title) + r""";var list=chatList();if(!list)return JSON.stringify({opened:false});
 var spans=list.querySelectorAll('span[title]');for(var i=0;i<spans.length;i++){
 if(spans[i].getAttribute('title')!==want)continue;var row=spans[i].closest('[role=listitem],[role=row]')||spans[i];
-['mousedown','mouseup','click'].forEach(function(t){row.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}));});
+if(row.scrollIntoView)row.scrollIntoView({block:'center'});
+var b=row.getBoundingClientRect();var x=b.left+b.width/2,y=b.top+b.height/2;
+var at=document.elementFromPoint(x,y);var el=(at&&row.contains(at))?at:row;
+var P=window.PointerEvent||MouseEvent;
+['pointerover','mouseover','mousemove','pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(t){
+var down=t==='pointerdown'||t==='mousedown';
+var o={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y,button:0,buttons:down?1:0,
+pointerId:1,pointerType:'mouse',isPrimary:true};
+el.dispatchEvent(t.indexOf('pointer')===0?new P(t,o):new MouseEvent(t,o));});
 return JSON.stringify({opened:true});}
 return JSON.stringify({opened:false});
 })()"""
