@@ -210,5 +210,11 @@ def test_a_header_still_showing_the_previous_chat_is_not_the_chat_asked_for():
 
 
 def test_the_title_is_compared_whole_after_folding_spaces_never_as_a_part():
-    assert _shows([[None, "Design  Crew", "auto"]], "Design  Crew") is True
+    nbsp = "\u00a0"
+    assert _shows([[None, "Design" + nbsp + " Crew", "auto"]], "Design Crew") is True, \
+        "text with a no-break space and a space is the title with one space"
+    assert _shows([["Design" + nbsp + "Crew", "x", None]], "Design   Crew") is True, \
+        "and a title attribute with a no-break space is the title with three spaces"
+    assert _shows([[None, " Design Crew\n", "auto"]], "Design Crew") is True, "and spaces at its ends fold away"
+    assert _shows([[None, "DesignCrew", "auto"]], "Design Crew") is False, "but a missing space is another title"
     assert _shows(GROUP, "Design") is False and _shows(GROUP, "Ana") is False
