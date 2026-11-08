@@ -60,6 +60,12 @@ class Screen:
     def front_window(self):
         return self.front
 
+    def in_front(self, wid):
+        return self.front == wid
+
+    def front_owner(self):
+        return None
+
     def screen_locked(self):
         return self.locked
 
@@ -269,12 +275,44 @@ def test_typing_goes_through_once_the_window_is_in_front():
     assert [e["code"] for e in posted] == [36, 36]
 
 
-def test_a_screen_that_cannot_say_what_is_in_front_refuses_typing_into_a_window():
+def test_a_screen_that_cannot_say_what_is_in_front_refuses_typing_into_a_window(monkeypatch):
+    from claude_human import screenshot as shot
+
+    def unreadable(*_a):
+        raise RuntimeError("the window list could not be read")
+    monkeypatch.setattr(shot, "in_front", unreadable)
+    monkeypatch.setattr(shot, "front_owner", unreadable)
+
     class Blind(Screen):
-        front_window = None
+        front_window = in_front = front_owner = None
     posted = []
     s = QuartzInput(Blind(), post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
     assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"] is False and posted == []
+
+
+def test_a_screen_without_in_front_asks_the_package_so_a_sheet_still_takes_the_keys(monkeypatch):
+    # a screen module that answers only front_window() once had typing into a window's own
+    # password sheet refused (the sheet is the front window, never the window itself) while
+    # clicks on it landed, because clicks already fell back to screenshot.on_top_at
+    from claude_human import screenshot as shot
+    asked = []
+    monkeypatch.setattr(shot, "in_front", lambda wid: asked.append(wid) or True)
+    monkeypatch.setattr(shot, "front_owner", lambda: "Notes")
+
+    class Plain(Screen):
+        in_front = front_owner = None
+    posted = []
+    s = QuartzInput(Plain(front=31), post=posted.append, quartz=FakeQuartz(), sleep=lambda s: None)
+    assert s.do_input({"type": "key", "code": 36, "app": "Notes"})["ok"]
+    assert asked == [7] and [e["code"] for e in posted] == [36, 36]
+
+    # and a refusal names the front application from the package too
+    monkeypatch.setattr(shot, "in_front", lambda wid: False)
+    monkeypatch.setattr(shot, "front_owner", lambda: "Terminal")
+    posted.clear()
+    r = s.do_input({"type": "text", "text": "x", "app": "Notes"})
+    assert r["ok"] is False and "not in front" in r["detail"] and r["in_front"] == "Terminal"
+    assert posted == []
 
 
 def test_scroll_in_a_named_window_lands_inside_it():
