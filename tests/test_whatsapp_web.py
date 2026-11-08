@@ -164,3 +164,57 @@ def test_a_row_is_pressed_with_the_pointer_sequence_a_real_mouse_sends():
         assert o["pointerId"] == 1 and o["pointerType"] == "mouse" and o["isPrimary"] is True
         assert (o["clientX"], o["clientY"]) == (160, 230) and o["bubbles"] is True
         assert o["buttons"] == (1 if e["type"] in ("pointerdown", "mousedown") else 0)
+
+
+_HEADER = r"""
+function Span(title, text, dir){this.t=title;this.text=text;this.dir=dir||null;this.innerText=text;}
+Span.prototype.getAttribute=function(n){return n==='title'?this.t:n==='dir'?this.dir:null;};
+var raw=SPANS;var spans=raw===null?null:raw.map(function(s){return new Span(s[0],s[1],s[2]);});
+var header=spans===null?null:{querySelectorAll:function(q){return q==='span'?spans:[];},
+  querySelector:function(q){for(var i=0;i<spans.length;i++){var s=spans[i];
+    if(q==='span[title]'&&s.t!==null)return s;if(q==='span[dir=auto]'&&s.dir==='auto')return s;}return null;}};
+var document={querySelector:function(q){return q==='#main header'?header:null;}};
+console.log(SCRIPT);
+"""
+
+
+def _shows(spans, title):
+    """What open_title_js answers on a stand-in header of (title attribute, text, dir) spans."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    prog = _HEADER.replace("SPANS", json.dumps(spans)).replace("SCRIPT", wa.open_title_js(title))
+    run = subprocess.run([node, "-e", prog], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+#: a group's header: its name has no title attribute, and the member list before it in the
+#: selector's order does (invented names and an example number)
+GROUP = [["Ana, Ben, +1 555 0100, You", "Ana, Ben, +1 555 0100, You", None], [None, "Design Crew", "auto"]]
+
+
+def test_a_group_chat_is_known_open_by_its_name_not_its_member_list():
+    assert _shows(GROUP, "Design Crew") is True
+
+
+def test_a_one_to_one_chat_is_known_open_by_its_name():
+    assert _shows([["Ana Lima", "Ana Lima", "auto"], [None, "online", None]], "Ana Lima") is True
+
+
+def test_a_header_still_showing_the_previous_chat_is_not_the_chat_asked_for():
+    assert _shows([["Old Chat", "Old Chat", "auto"], [None, "last seen today", None]], "Design Crew") is False
+    assert _shows(None, "Design Crew") is False, "and no chat open is not open"
+
+
+def test_the_title_is_compared_whole_after_folding_spaces_never_as_a_part():
+    nbsp = "\u00a0"
+    assert _shows([[None, "Design" + nbsp + " Crew", "auto"]], "Design Crew") is True, \
+        "text with a no-break space and a space is the title with one space"
+    assert _shows([["Design" + nbsp + "Crew", "x", None]], "Design   Crew") is True, \
+        "and a title attribute with a no-break space is the title with three spaces"
+    assert _shows([[None, " Design Crew\n", "auto"]], "Design Crew") is True, "and spaces at its ends fold away"
+    assert _shows([[None, "DesignCrew", "auto"]], "Design Crew") is False, "but a missing space is another title"
+    assert _shows(GROUP, "Design") is False and _shows(GROUP, "Ana") is False

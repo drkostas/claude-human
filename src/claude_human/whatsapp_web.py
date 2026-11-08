@@ -165,6 +165,23 @@ OPEN_TITLE = r"""(function(){var h=document.querySelector('#main header');if(!h)
 var t=h.querySelector('span[title]')||h.querySelector('span[dir=auto]');
 return JSON.stringify(t?(t.getAttribute('title')||t.innerText||'').trim():null);})()"""
 
+
+def open_title_js(title: str) -> str:
+    """True, as JSON, when the open chat's header shows `title`, else false (no chat open, or another).
+
+    Any span of the header counts when its title attribute or its whole text equals `title`, both
+    with whitespace folded (no-break spaces too). Never a part of one, so a member named in a group's
+    member list is not the group. It does not guess which span is the name: a group's header lists
+    its members in a titled span before the name, and ``OPEN_TITLE``, which takes the first titled
+    span, reads that list instead of the group."""
+    return ("(function(){function fold(x){return String(x).replace(/\\u00a0/g,' ').split(/\\s+/)"
+            ".filter(function(w){return w;}).join(' ');}var want=fold(" + json.dumps(title) + ");"
+            "var h=document.querySelector('#main header');if(!h)return JSON.stringify(false);"
+            "var s=h.querySelectorAll('span');for(var i=0;i<s.length;i++){var a=s[i].getAttribute('title');"
+            "if(a!==null&&fold(a)===want)return JSON.stringify(true);"
+            "if(fold(s[i].innerText||s[i].textContent||'')===want)return JSON.stringify(true);}"
+            "return JSON.stringify(false);})()")
+
 #: the messages the open chat has loaded, oldest first, as JSON: [{"id", "raw", "text", "kind"}]
 MESSAGES = r"""(function(){var main=document.querySelector('#main');if(!main)return JSON.stringify(null);
 var seen={};var out=[];var els=main.querySelectorAll('[data-id]');
