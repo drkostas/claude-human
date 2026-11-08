@@ -14,6 +14,17 @@ jobs:
         python: ["3.10", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
+      # 3.10 is not in the runner image, so setup-python downloaded it from GitHub's releases on every
+      # run, and a 504 there failed the job. It uses a build it finds in the tool cache first, so that
+      # folder is kept between runs, keyed by the image's OS so an image upgrade gets a fresh build.
+      - id: image
+        if: matrix.python == '3.10'
+        run: echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+      - if: matrix.python == '3.10'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/Python/3.10*
+          key: setup-python-3.10-${{ steps.image.outputs.os }}-${{ runner.arch }}
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
