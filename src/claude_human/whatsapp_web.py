@@ -34,6 +34,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import time
 
 #: the page
 URL = "https://web.whatsapp.com/"
@@ -182,12 +183,18 @@ def open_title_js(title: str) -> str:
             "if(fold(s[i].innerText||s[i].textContent||'')===want)return JSON.stringify(true);}"
             "return JSON.stringify(false);})()")
 
-#: the messages the open chat has loaded, oldest first, as JSON: [{"id", "raw", "text", "kind"}]
+#: the messages the open chat has loaded, oldest first, as JSON: [{"id", "raw", "text", "kind"}]. A message
+#: is the outermost element in the open chat with a `data-id`. Its id is either WhatsApp's long form
+#: ("false_<chat>_<message>", which says who sent it and in which chat) or a bare message id of letters
+#: and digits, which newer pages use; a bare id counts only on an element that holds a copyable line
+#: (`data-pre-plain-text`) or a message container (`data-testid="msg-container"`)
 MESSAGES = r"""(function(){var main=document.querySelector('#main');if(!main)return JSON.stringify(null);
 var seen={};var out=[];var els=main.querySelectorAll('[data-id]');
-for(var i=0;i<els.length;i++){var e=els[i];var id=e.getAttribute('data-id');if(!id||seen[id]||!/^(true|false)_/.test(id))continue;
-if(e.parentElement&&e.parentElement.closest('[data-id]'))continue;seen[id]=1;
-var c=e.querySelector('[data-pre-plain-text]');var raw=c?c.getAttribute('data-pre-plain-text'):null;
+for(var i=0;i<els.length;i++){var e=els[i];var id=e.getAttribute('data-id');if(!id||seen[id])continue;
+if(e.parentElement&&e.parentElement.closest('[data-id]'))continue;
+var c=e.querySelector('[data-pre-plain-text]');
+if(!/^(true|false)_/.test(id)&&!(/^[0-9A-Za-z]{10,64}$/.test(id)&&(c||e.querySelector('[data-testid="msg-container"]'))))continue;
+seen[id]=1;var raw=c?c.getAttribute('data-pre-plain-text'):null;
 var s=e.querySelector('span.selectable-text')||c;var text=s?(s.innerText||'').trim():'';
 var kind=text?'text':'other';if(!text){var l=e.querySelector('[aria-label]');if(l)kind=(l.getAttribute('aria-label')||'other').slice(0,40);}
 out.push({id:id,raw:raw,text:text,kind:kind});}
@@ -217,6 +224,24 @@ var m=main.querySelector('[data-id]');var p=m;while(p&&p!==main){var s=getComput
 if(p.scrollHeight>p.clientHeight&&/(auto|scroll)/.test(s.overflowY)){p.scrollTop=0;return JSON.stringify({scrolled:true});}
 p=p.parentElement;}return JSON.stringify({scrolled:false});})()"""
 
+
+#: move the open chat up by one step, so the messages above the ones drawn are drawn next, as JSON:
+#: {"found", "depth", "client_height", "scroll_height", "top_before", "top_after"}, numbers only. The
+#: chat is scrolled by the nearest element above its oldest drawn message whose content is taller than
+#: it and that scrolls ("depth" is how many levels above that message it is). A page that draws only the
+#: messages in view draws few of them in a tab that is not shown, so the step is the height of what is
+#: drawn (at most 80% of the scrolled area), and the next window joins this one with nothing skipped
+SCROLL_STEP = r"""(function(){var main=document.querySelector('#main');var no={found:false};if(!main)return JSON.stringify(no);
+var line=main.querySelector('[data-pre-plain-text]')||main.querySelector('[data-id]');if(!line)return JSON.stringify(no);
+var p=line.parentElement,d=1;while(p&&p!==main){var s=getComputedStyle(p);
+if(p.scrollHeight>p.clientHeight+1&&/(auto|scroll)/.test(s.overflowY||''))break;p=p.parentElement;d++;}
+if(!p||p===main)return JSON.stringify(no);
+var drawn=0,els=p.querySelectorAll('[data-id]');for(var i=0;i<els.length;i++){var e=els[i];
+if(e.parentElement&&e.parentElement.closest('[data-id]'))continue;drawn+=e.offsetHeight||0;}
+var step=Math.max(1,Math.min(Math.round(p.clientHeight*0.8),drawn||Math.round(p.clientHeight*0.8)));
+var before=Math.round(p.scrollTop);p.scrollTop=Math.max(0,before-step);
+return JSON.stringify({found:true,depth:d,client_height:Math.round(p.clientHeight),
+scroll_height:Math.round(p.scrollHeight),top_before:before,top_after:Math.round(p.scrollTop)});})()"""
 
 def parse_day_first(raw: str | None, default: bool = True) -> bool:
     """`DAY_FIRST`'s answer as a bool; `default` when the browser puts the year first or did not say
@@ -256,15 +281,22 @@ def parse_chats(raw: str | None) -> list[dict] | None:
              "unread": int(r.get("unread") or 0)} for r in got if isinstance(r, dict) and r.get("title")]
 
 
+_BARE_ID = re.compile(r"^[0-9A-Za-z]{10,64}$")
+
+
 def split_id(data_id: str) -> dict | None:
-    """WhatsApp's message id on the page ("false_15550000000@c.us_3EB0A1B2C3", with the participant at
-    the end in a group) as {"from_me", "chat", "message", "participant"}; None for any other form."""
-    parts = (data_id or "").split("_")
+    """WhatsApp's message id on the page as {"from_me", "chat", "message", "participant"}. The long form
+    ("false_15550000000@c.us_3EB0A1B2C3", with the participant at the end in a group) gives all four. A
+    bare message id ("3EB0A1B2C3D4E5F6A7B8C9"), which newer pages use, gives only "message": who sent it
+    and the chat are None, never a guess. None for any other form, and for an empty id."""
+    data_id = data_id or ""
+    if _BARE_ID.match(data_id):
+        return {"from_me": None, "chat": None, "message": data_id, "participant": None}
+    parts = data_id.split("_")
     if len(parts) < 3 or parts[0] not in ("true", "false") or "@" not in parts[1]:
         return None
     return {"from_me": parts[0] == "true", "chat": parts[1], "message": parts[2],
             "participant": parts[3] if len(parts) > 3 and "@" in parts[3] else None}
-
 
 _PREFIX = re.compile(r"^\[(?P<time>[^,\]]+),\s*(?P<date>[^\]]+)\]\s*(?P<sender>.*?):\s*$", re.S)
 _TIME = re.compile(r"^(?P<h>\d{1,2})[:.](?P<m>\d{2})(?:[:.](?P<s>\d{2}))?\s*(?P<ampm>[ap]\.?\s?m\.?)?$", re.I)
@@ -308,9 +340,11 @@ def parse_prefix(prefix: str | None, *, day_first: bool = True) -> tuple[dt.date
         return None, sender
 
 
-def parse_messages(raw: str | None, *, day_first: bool = True, tz: dt.tzinfo | None = None) -> list[dict] | None:
+def parse_messages(raw: str | None, *, day_first: bool = True, tz: dt.tzinfo | None = None,
+                   chat: str | None = None) -> list[dict] | None:
     """`MESSAGES`'s answer as rows, oldest first: {"id", "chat", "from_me", "sender", "text", "sent_at",
-    "kind", "raw"}. `id` is WhatsApp's message id and `chat` the chat's id, both from the page.
+    "kind", "raw"}. `id` is WhatsApp's message id and `chat` the chat's id, both from the page. A bare
+    id names no chat, so its row takes `chat` (the chat the caller opened), and its `from_me` is None.
     `sent_at` is ISO 8601, with `tz` (the browser's zone) when given, and None for a message with no
     copyable line (a photo without a caption, a deleted message). None when no chat is open."""
     got = _load(raw)
@@ -326,8 +360,84 @@ def parse_messages(raw: str | None, *, day_first: bool = True, tz: dt.tzinfo | N
         when, sender = parse_prefix(r.get("raw"), day_first=day_first)
         if when is not None and tz is not None:
             when = when.replace(tzinfo=tz)
-        rows.append({"id": ids["message"], "chat": ids["chat"], "from_me": ids["from_me"],
+        rows.append({"id": ids["message"], "chat": ids["chat"] or chat, "from_me": ids["from_me"],
                      "sender": sender, "text": r.get("text") or "",
                      "sent_at": when.isoformat() if when else None,
                      "kind": r.get("kind") or "other", "raw": r.get("raw")})
     return rows
+
+
+#: how many steps' gains `collect` reports
+GAINS_KEPT = 20
+#: why `collect` stopped: enough messages, the chat's top reached, steps that brought nothing new, no
+#: element that scrolls, the most steps taken, or no chat open
+STOPS = ("enough", "top", "idle", "no_scroller", "max_steps", "no_chat")
+
+
+def _merge(have: list[dict], window: list[dict]) -> int:
+    """Add `window`'s rows that `have` lacks, by id, in place: those before the first row `have`
+    already holds are older and go in front, the rest after. Returns how many were added."""
+    known = {r["id"] for r in have}
+    new = [r for r in window if r["id"] not in known]
+    if not new:
+        return 0
+    first = next((i for i, r in enumerate(window) if r["id"] in known), len(window))
+    older = [r for r in window[:first] if r["id"] not in known]
+    newer = [r for r in window[first:] if r["id"] not in known]
+    have[:0] = older
+    have.extend(newer)
+    return len(new)
+
+
+def collect(js, want: int, *, max_steps: int = 20, wait_s: float = 2.0, idle_steps: int = 3,
+            sleep=time.sleep) -> tuple[str | None, dict]:
+    """The open chat's messages read across scroll steps and merged by id, as (`MESSAGES`-style JSON,
+    oldest first, or None when no chat is open; how it collected). A page that draws only the messages
+    in view holds few of them at once, so one read of `MESSAGES` misses the rest. This reads, moves
+    up one step (`SCROLL_STEP`), waits `wait_s` for the page to draw, and reads again, until there are
+    `want` messages, the chat's top is reached, `idle_steps` steps in a row brought nothing new, or
+    `max_steps` were taken. `js` runs a script in the tab and returns its string.
+
+    The second value has numbers only, besides "stopped" (one of STOPS): "first" (messages in the first
+    read), "scroller" (1 when an element that scrolls was found), its "depth" above the oldest drawn
+    message, "client_height" and "scroll_height", "steps" taken and "gained", the new messages each
+    step brought (the first GAINS_KEPT steps)."""
+    how = {"first": 0, "scroller": 0, "depth": None, "client_height": None, "scroll_height": None,
+           "steps": 0, "gained": [], "stopped": "no_chat"}
+    got = _load(js(MESSAGES))
+    if not isinstance(got, list):
+        return None, how
+    have: list[dict] = []
+    _merge(have, [r for r in got if isinstance(r, dict) and r.get("id")])
+    how["first"] = len(have)
+    idle = 0
+    while True:
+        if len(have) >= want:
+            how["stopped"] = "enough"
+            break
+        if how["steps"] >= max_steps:
+            how["stopped"] = "max_steps"
+            break
+        step = _load(js(SCROLL_STEP))
+        if not isinstance(step, dict) or not step.get("found"):
+            how["stopped"] = "no_scroller"
+            break
+        how["scroller"] = 1
+        for k in ("depth", "client_height", "scroll_height"):
+            v = step.get(k)
+            how[k] = v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+        how["steps"] += 1
+        moved = step.get("top_after") != step.get("top_before")
+        sleep(wait_s)
+        got = _load(js(MESSAGES))
+        n = _merge(have, [r for r in got if isinstance(r, dict) and r.get("id")]) if isinstance(got, list) else 0
+        if len(how["gained"]) < GAINS_KEPT:
+            how["gained"].append(n)
+        idle = 0 if n else idle + 1
+        if not moved and not n:
+            how["stopped"] = "top"
+            break
+        if idle >= idle_steps:
+            how["stopped"] = "idle"
+            break
+    return json.dumps(have), how
