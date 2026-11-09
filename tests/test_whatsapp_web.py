@@ -98,14 +98,15 @@ def test_the_scripts_carry_their_values_as_json_and_refuse_a_number_that_is_not_
                 "5550000000"):   # without its +, the form reads another country's code
         with pytest.raises(ValueError):
             wa.fill_number_js(bad)
-    for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP,
+    for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP, wa.SCROLL_STEP,
                    wa.DAY_FIRST, wa.CLOSE_CHAT, wa.open_chat_js("A"), wa.fill_number_js("+15550000000")):
         assert script.startswith("(function(){") and script.rstrip().endswith("})()"), \
             "each is one expression, so it runs wherever an expression's value can be read back"
 
 
 def test_nothing_here_types_a_code_or_sends():
-    for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.USE_HERE, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP):
+    for script in (wa.STATE, wa.LINK_BY_NUMBER, wa.USE_HERE, wa.CHATS, wa.MESSAGES, wa.OPEN_TITLE, wa.SCROLL_UP,
+                   wa.SCROLL_STEP):
         low = script.lower()
         assert "send" not in low and "keydown" not in low and "keypress" not in low
 
@@ -218,3 +219,150 @@ def test_the_title_is_compared_whole_after_folding_spaces_never_as_a_part():
     assert _shows([[None, " Design Crew\n", "auto"]], "Design Crew") is True, "and spaces at its ends fold away"
     assert _shows([[None, "DesignCrew", "auto"]], "Design Crew") is False, "but a missing space is another title"
     assert _shows(GROUP, "Design") is False and _shows(GROUP, "Ana") is False
+
+
+def test_a_message_id_is_read_in_its_long_form_as_a_bare_id_or_not_at_all():
+    assert wa.split_id("false_15550000001@c.us_3EB0AAA1")["chat"] == "15550000001@c.us"
+    assert wa.split_id("3EB0A1B2C3D4E5F6A7B8C9") == \
+        {"from_me": None, "chat": None, "message": "3EB0A1B2C3D4E5F6A7B8C9", "participant": None}, \
+        "a bare id names no chat and no sender, so both stay unknown"
+    for bad in ("", None, "3EB0", "3EB0 A1B2C3D4E5F6", "conv-msg-1"):
+        assert wa.split_id(bad) is None
+
+
+def test_a_bare_id_row_takes_the_chat_the_caller_opened_and_never_a_guess_at_who_sent_it():
+    raw = json.dumps([{"id": "3EB0A1B2C3D4E5F6A7B8C9", "raw": "[10:01, 05/11/2026] Ana: ", "text": "Hello",
+                       "kind": "text"}])
+    row = wa.parse_messages(raw, chat="120363000000000001@g.us")[0]
+    assert row["id"] == "3EB0A1B2C3D4E5F6A7B8C9" and row["chat"] == "120363000000000001@g.us"
+    assert row["from_me"] is None and row["sender"] == "Ana"
+    assert wa.parse_messages(raw)[0]["chat"] is None
+
+
+#: a stand-in page in the shape a newer WhatsApp Web draws in a tab that is not shown: each drawn message
+#: is a wrapper of 87 px (data-virtualized) around a node with a bare id, whose copyable line sits 9
+#: levels below it under a msg-container; the element that scrolls is above the wrappers, and setting
+#: its scrollTop draws the DRAWN messages that end at the bottom of the view. Invented names and text.
+_PAGE = r"""
+var H=87,N=COUNT,DRAWN=PERDRAW,CLIENT=600,SCROLLS=SCROLLS_OK;
+function El(tag,attrs,cls){this.tag=tag;this.attrs=attrs||{};this.cls=cls||[];this.children=[];
+this.parentElement=null;this.innerText='';this.offsetHeight=0;this.clientHeight=0;this.scrollHeight=0;this.style={};}
+El.prototype.add=function(c){c.parentElement=this;this.children.push(c);return c;};
+El.prototype.getAttribute=function(n){return n in this.attrs?this.attrs[n]:null;};
+El.prototype.matches=function(q){if(q==='#main')return this.attrs.id==='main';
+if(q==='span.selectable-text')return this.tag==='span'&&this.cls.indexOf('selectable-text')>=0;
+var m=/^\[([a-z-]+)(?:="([^"]*)")?\]$/.exec(q);if(!m)throw new Error('selector '+q);
+return m[2]===undefined?(m[1] in this.attrs):this.attrs[m[1]]===m[2];};
+El.prototype.querySelectorAll=function(q){var out=[];(function walk(e){for(var i=0;i<e.children.length;i++){
+var c=e.children[i];if(c.matches(q))out.push(c);walk(c);}})(this);return out;};
+El.prototype.querySelector=function(q){return this.querySelectorAll(q)[0]||null;};
+El.prototype.closest=function(q){var e=this;while(e){if(e.matches(q))return e;e=e.parentElement;}return null;};
+function id(i){var h=(0x3EB0000000+i).toString(16).toUpperCase();while(h.length<22)h='A'+h;return h;}
+var main=new El('div',{id:'main'});main.add(new El('header'));
+var list=main.add(new El('div'));list.style.overflowY=SCROLLS?'auto':'visible';list.clientHeight=CLIENT;
+list.scrollHeight=SCROLLS?N*H:CLIENT;var top=SCROLLS?N*H-CLIENT:0;
+function draw(){list.children=[];var last=Math.min(N-1,Math.floor((top+CLIENT-1)/H));
+for(var i=Math.max(0,last-DRAWN+1);i<=last;i++){
+var w=list.add(new El('div',{'data-virtualized':'true'}));w.offsetHeight=H;w.clientHeight=H;w.scrollHeight=H;
+var m=w.add(new El('div',{'data-id':id(i)}));m.offsetHeight=H;var p=m;
+for(var k=1;k<=8;k++)p=p.add(new El('div',k===2?{'data-testid':'msg-container'}:{}));
+var line=p.add(new El('div',{'data-pre-plain-text':'[10:'+(i<10?'0':'')+(i%60)+', 05/11/2026] Ana: '}));
+var s=line.add(new El('span',{},['selectable-text']));s.innerText='Message '+i;}}
+Object.defineProperty(list,'scrollTop',{get:function(){return top;},set:function(v){top=Math.max(0,Math.min(v,list.scrollHeight-CLIENT));draw();}});
+draw();
+var document={querySelector:function(q){return q==='#main'?main:null;}};
+function getComputedStyle(e){return {overflowY:e.style.overflowY||'visible'};}
+var rl=require('readline').createInterface({input:process.stdin});
+rl.on('line',function(l){var out;try{out=eval(JSON.parse(l));}catch(e){out=JSON.stringify({error:String(e)});}
+process.stdout.write(JSON.stringify(out)+'\n');});
+"""
+
+
+class _Tab:
+    """A node process holding _PAGE; calling it runs a script there and returns the script's string."""
+
+    def __init__(self, count, per_draw, scrolls=True):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node is not installed")
+        prog = (_PAGE.replace("COUNT", str(count)).replace("PERDRAW", str(per_draw))
+                .replace("SCROLLS_OK", "true" if scrolls else "false"))
+        self.p = subprocess.Popen([node, "-e", prog], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+    def __call__(self, script):
+        self.p.stdin.write(json.dumps(script) + "\n")
+        self.p.stdin.flush()
+        return json.loads(self.p.stdout.readline())
+
+    def close(self):
+        self.p.stdin.close()
+        self.p.wait(timeout=10)
+
+
+def _ids(raw):
+    return [r["id"] for r in json.loads(raw)]
+
+
+def test_messages_reads_a_bare_id_far_above_its_line_on_the_newer_page():
+    tab = _Tab(30, 1)
+    try:
+        rows = wa.parse_messages(tab(wa.MESSAGES), chat="120363000000000001@g.us")
+    finally:
+        tab.close()
+    assert len(rows) == 1, "the one message the hidden tab draws is read"
+    assert len(rows[0]["id"]) == 22 and rows[0]["from_me"] is None and rows[0]["sender"] == "Ana"
+    assert rows[0]["text"] == "Message 29" and rows[0]["chat"] == "120363000000000001@g.us"
+
+
+@pytest.mark.parametrize("per_draw", [1, 7])
+def test_collect_gathers_messages_by_id_while_the_drawn_window_moves(per_draw):
+    tab = _Tab(30, per_draw)
+    try:
+        raw, how = wa.collect(tab, 20, max_steps=40, wait_s=0, sleep=lambda s: None)
+        everything = _ids(raw)
+    finally:
+        tab.close()
+    texts = [r["text"] for r in json.loads(raw)]
+    assert len(everything) >= 20 and len(set(everything)) == len(everything), "each message once"
+    want = [f"Message {i}" for i in range(30 - len(texts), 30)]
+    assert texts == want, "oldest first, and no message between two windows is skipped"
+    assert how["stopped"] == "enough" and how["scroller"] == 1 and how["first"] == per_draw
+    assert how["depth"] == 11, "nine levels to the id, one to its wrapper, one to the list"
+    assert how["client_height"] == 600 and how["scroll_height"] == 30 * 87
+    assert all(isinstance(n, int) for n in how["gained"]) and how["steps"] == len(how["gained"])
+    if per_draw == 1:
+        assert how["gained"] == [1] * 19, "a tab that draws one message moves one message a step"
+
+
+def test_collect_stops_at_the_top_with_every_message():
+    tab = _Tab(12, 7)
+    try:
+        raw, how = wa.collect(tab, 50, wait_s=0, sleep=lambda s: None)
+    finally:
+        tab.close()
+    assert [r["text"] for r in json.loads(raw)] == [f"Message {i}" for i in range(12)]
+    assert how["stopped"] == "top"
+
+
+def test_collect_says_when_nothing_scrolls_and_keeps_what_it_read():
+    tab = _Tab(5, 3, scrolls=False)
+    try:
+        raw, how = wa.collect(tab, 20, wait_s=0, sleep=lambda s: None)
+    finally:
+        tab.close()
+    assert len(_ids(raw)) == 3 and how["stopped"] == "no_scroller" and how["scroller"] == 0 and how["steps"] == 0
+
+
+def test_collect_with_no_chat_open_reads_nothing():
+    raw, how = wa.collect(lambda s: "null", 20, sleep=lambda s: None)
+    assert raw is None and how["stopped"] == "no_chat" and how["first"] == 0
+
+
+def test_collect_reports_numbers_only_besides_its_stop():
+    raw, how = wa.collect(lambda s: "[]" if s == wa.MESSAGES else '{"found":true,"depth":"x","top_before":5,"top_after":5}',
+                          3, sleep=lambda s: None)
+    assert how["stopped"] in wa.STOPS and how["depth"] is None
+    for k, v in how.items():
+        assert k == "stopped" or v is None or isinstance(v, (int, list))
