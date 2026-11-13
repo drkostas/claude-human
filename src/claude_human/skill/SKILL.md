@@ -68,6 +68,10 @@ A sudoers file with mode 0644 is ignored by sudo without any message, so the `ch
   It copies Python.app's launcher, gives the copy its own Mach-O UUID, links it to the framework through the opt path, and signs it with the first Apple Development identity. The UUID matters because macOS applies Local Network rules by a binary's UUID: a copy that kept Python.app's UUID, under a bundle id nobody has allowed yet, cuts every program running that launcher off the LAN, with `No route to host` and no prompt. It rebuilds only when it is not current, so call it at every install. Do not wrap `exec python3` in a bundle (exec replaces the process image, so python3 is the binary asking) and do not copy bin/python3 into one (same bytes, same verdict).
 - A Mac upgrade can also disable Screen Sharing. That matters only for the person's own remote viewing, since Screen Sharing input never reaches the lock screen (see the catalogue).
 
+## Asking a helper app that holds its own grant
+
+A helper app with a grant of its own (Location, for example) must be started through LaunchServices, or macOS judges the program that started it. Use `launch.ask_app(app, [..., "--out", launch.OUT], timeout=30)`, never a bare `open -W` followed by a wait for the file. macOS can leave the new process suspended (state T) and never resume it, and `open -W` then returns at once. `ask_app` ends the copy it started (by pid, found by the answer file's path) when no answer came, and its `outcome` says "suspended", "silent" or "no answer", so the caller can record why it has no reading.
+
 ## Screenshots
 
 ```bash
