@@ -321,3 +321,37 @@ def test_in_front_reads_the_live_list_with_its_kin(monkeypatch):
     assert s.in_front(22) is True
     monkeypatch.setattr(s, "kin_pids", lambda r, wid, **kw: frozenset())
     assert s.in_front(22) is False
+
+
+class _Server:
+    """A window server with one window on the desktop that shows and two on other desktops."""
+    kCGWindowListOptionAll = 0
+    kCGWindowListOptionOnScreenOnly = 1
+    kCGWindowListExcludeDesktopElements = 16
+    kCGNullWindowID = 0
+    shown = [dict(win(1, "Notes", 900, 700, title="today"), kCGWindowIsOnscreen=True)]
+    elsewhere = [win(2, "Browser", 1200, 800, title="docs"), win(3, "Terminal", 800, 600),
+                 win(4, "Browser", 1200, 30), win(5, "Menu", 400, 400, layer=25)]
+
+    @classmethod
+    def CGWindowListCopyWindowInfo(cls, opts, wid):
+        return list(cls.shown) if opts & cls.kCGWindowListOptionOnScreenOnly else cls.shown + cls.elsewhere
+
+
+def test_windows_lists_the_desktop_that_shows_and_all_desktops_lists_every_one(monkeypatch):
+    monkeypatch.setattr(s, "_quartz", lambda: _Server)
+    assert [w["id"] for w in s.windows()] == [1]
+    assert "on_screen" not in s.windows()[0]
+    every = s.windows(all_desktops=True)
+    assert [(w["id"], w["on_screen"]) for w in every] == [(2, False), (1, True), (3, False)]
+
+
+def test_windows_elsewhere_counts_ordinary_windows_on_other_desktops(monkeypatch):
+    monkeypatch.setattr(s, "_quartz", lambda: _Server)
+    assert s.windows_elsewhere() == 2
+
+    class Empty(_Server):
+        shown, elsewhere = [], []
+
+    monkeypatch.setattr(s, "_quartz", lambda: Empty)
+    assert s.windows_elsewhere() == 0

@@ -75,7 +75,8 @@ A helper app with a grant of its own (Location, for example) must be started thr
 ## Screenshots
 
 ```bash
-claude-human windows                                        # JSON list of ordinary windows
+claude-human windows                                        # JSON list of ordinary windows on the desktop that shows
+claude-human windows --all                                  # every desktop's windows, each with on_screen
 claude-human screenshot --out shot.png                      # the main display
 claude-human screenshot --out app.jpg --app Safari --max-width 1200
 claude-human state                                          # {"locked", "auth_prompt", "blocked_by"}

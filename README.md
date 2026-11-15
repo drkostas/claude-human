@@ -47,7 +47,8 @@ It rebuilds only when the bundle is not current, so it is safe to run at every i
 ## Screenshots
 
 ```bash
-claude-human windows                                   # the ordinary windows on screen, as JSON
+claude-human windows                                   # the ordinary windows on the desktop that shows, as JSON
+claude-human windows --all                             # every desktop's windows, each with on_screen
 claude-human screenshot --out screen.png               # the main display
 claude-human screenshot --out safari.jpg --app Safari --max-width 1200
 claude-human state                                     # locked? password panel up? a system dialog holding focus?

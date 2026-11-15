@@ -2,7 +2,7 @@
 
     claude-human build-tools [--out DIR] [--only sckshot|vhid] [--identity ID] [--bundle-id ID]
     claude-human python-app OUT.app --bundle-id ID [--name NAME] [--exe NAME] [--python PY] [--identity ID]
-    claude-human windows
+    claude-human windows [--all]
     claude-human screenshot --out FILE [--window ID | --app NAME] [--max-width N]
     claude-human state
     claude-human unlock          (password on stdin)
@@ -68,7 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--python", help="the Python to run (default /opt/homebrew/bin/python3)")
     pa.add_argument("--identity", help='"auto" (default), "-" for ad-hoc, or an identity name')
 
-    sub.add_parser("windows", help="list the ordinary on-screen windows as JSON")
+    pw = sub.add_parser("windows", help="list the ordinary windows on the desktop that shows, as JSON")
+    pw.add_argument("--all", action="store_true",
+                    help="every desktop's windows, each with on_screen (False on another desktop, "
+                         "minimised or hidden)")
 
     sub.add_parser("brave", help="run JavaScript on a page in the person's signed-in browser "
                                  "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...), "
@@ -422,7 +425,12 @@ def main(argv: list[str] | None = None) -> int:
     if cmd in ("windows", "screenshot", "state"):
         from . import screenshot  # noqa: PLC0415 - needs Quartz
         if cmd == "windows":
-            print(json.dumps(screenshot.windows(), indent=2))
+            wins = screenshot.windows(all_desktops=args.all)
+            print(json.dumps(wins, indent=2))
+            if not wins and not args.all:
+                print(f"no window on the current desktop; this lists the current desktop only, and "
+                      f"{screenshot.windows_elsewhere()} window(s) are on other desktops, minimised or "
+                      f"hidden (claude-human windows --all lists them)", file=sys.stderr)
             return 0
         if cmd == "state":
             print(json.dumps({"locked": screenshot.screen_locked(),
