@@ -127,6 +127,13 @@ def test_a_wait_that_runs_out_names_the_holder(tmp_path):
         p.wait()
 
 
+#: how long a lock may take to come free once nothing holds it. A busy machine schedules a process
+#: late, and margins of one and two seconds failed under a load of 18 to 26 on ten cores. Each test
+#: below gives its take() a far longer timeout, so a lock that is not freed waits that out and fails.
+SLACK_S = 5.0
+TAKE_S = 30
+
+
 def test_a_killed_holder_lets_go_with_its_process(tmp_path):
     path = tmp_path / "cli.lock"
     p, out = holder(tmp_path, path, "doomed", 60.0)
@@ -134,8 +141,8 @@ def test_a_killed_holder_lets_go_with_its_process(tmp_path):
     p.send_signal(signal.SIGKILL)
     p.wait()
     t = time.monotonic()
-    held, why = SessionLock(path, poll_s=0.02).take("next", 5)
-    assert held is not None and time.monotonic() - t < 2
+    held, why = SessionLock(path, poll_s=0.02).take("next", TAKE_S)
+    assert held is not None and time.monotonic() - t < SLACK_S
     SessionLock(path).release(held)
 
 
@@ -185,8 +192,8 @@ def test_a_waiter_that_went_away_does_not_hold_the_line(tmp_path):
         {"next": 1, "waiting": [{"n": 0, "pid": 999999, "act": "gone", "beat": 0}]}) + "\n")
     lock = SessionLock(path, poll_s=0.02)
     t = time.monotonic()
-    held, _ = lock.take("now", 2)
-    assert held is not None and time.monotonic() - t < 1
+    held, _ = lock.take("now", TAKE_S)
+    assert held is not None and time.monotonic() - t < SLACK_S
     lock.release(held)
     assert json.loads(Path(str(path) + ".queue").read_text())["waiting"] == []
 
