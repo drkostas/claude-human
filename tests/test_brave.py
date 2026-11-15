@@ -505,6 +505,13 @@ def test_no_prompt_is_no_block(monkeypatch):
     assert brave.blocked_by() == "UserNotificationCenter"
 
 
+#: how far past its own limit a timed run may end before a test calls it a run that does not stop. A
+#: busy machine oversleeps every sleep and schedules a process late, and a margin of one second failed
+#: under a load of 18 to 26 on ten cores. A run that waits without end, as each AppleScript call once
+#: waited its own 30 s, is still far past this.
+SLACK_S = 5.0
+
+
 def test_a_new_window_waits_by_the_clock_not_by_a_count_of_slow_listings():
     import time
     calls = []
@@ -515,7 +522,7 @@ def test_a_new_window_waits_by_the_clock_not_by_a_count_of_slow_listings():
         return {"100"}
     t = time.monotonic()
     assert brave.new_window(ids=slow_ids, yids=lambda: None, make=lambda: None, wait=0.2, step=0.01) == (None, None)
-    assert time.monotonic() - t < 1.0 and len(calls) < 20
+    assert time.monotonic() - t < 0.2 + SLACK_S and len(calls) < 20
 
 
 def _hang(monkeypatch):
@@ -545,14 +552,14 @@ def test_the_timeout_holds_for_the_whole_run_when_brave_answers_nothing(monkeypa
         assert "timed out after 1.5 s" in str(e)
     else:
         raise AssertionError("a run against a hung browser did not time out")
-    assert time.monotonic() - t < 1.5 + 1.0, time.monotonic() - t
+    assert time.monotonic() - t < 1.5 + SLACK_S, time.monotonic() - t
     assert calls and max(calls) <= 1.5
     monkeypatch.setattr(brave, "blocked_by", lambda: None)
     js = tmp_path / "x.js"
     js.write_text("1")
     t = time.monotonic()
     assert brave.main(["https://example.org/", str(js), "--timeout", "1"]) == 1
-    assert time.monotonic() - t < 2.0 and "timed out after 1 s" in capsys.readouterr().err
+    assert time.monotonic() - t < 1 + SLACK_S and "timed out after 1 s" in capsys.readouterr().err
     assert brave._deadline is None
 
 
