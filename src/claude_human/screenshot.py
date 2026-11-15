@@ -336,9 +336,28 @@ def parse_sckshot_output(stdout: bytes | str) -> tuple[int, int] | None:
 
 # ----------------------------------------------------------------------------- windows
 
-def windows() -> list[dict]:
-    """Every ordinary on-screen window: ``{id, app, title, x, y, width, height}``."""
-    return to_windows(_raw_windows())
+def _all_raw_windows() -> list[dict]:
+    q = _quartz()
+    return list(q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionAll, q.kCGNullWindowID) or [])
+
+
+def windows(*, all_desktops: bool = False) -> list[dict]:
+    """Every ordinary window on the desktop that shows now: ``{id, app, title, x, y, width, height}``.
+
+    macOS reports a window as on screen only while its desktop shows, so on an empty desktop this is
+    an empty list even while other desktops hold many windows. With ``all_desktops`` it is every
+    ordinary window the window server has, each with ``on_screen``: False for a window on another
+    desktop, minimised, or hidden with its application."""
+    if not all_desktops:
+        return to_windows(_raw_windows())
+    raw = _all_raw_windows()
+    shown = {int(w.get("kCGWindowNumber")) for w in raw if w.get("kCGWindowIsOnscreen")}
+    return [dict(w, on_screen=w["id"] in shown) for w in to_windows(raw)]
+
+
+def windows_elsewhere() -> int:
+    """How many ordinary windows are not on the desktop that shows now."""
+    return sum(1 for w in windows(all_desktops=True) if not w["on_screen"])
 
 
 def window_ids() -> set[int] | None:

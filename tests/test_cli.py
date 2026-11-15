@@ -121,3 +121,24 @@ def test_python_app_passes_its_options_to_the_build_script(tmp_path):
     env = cli.python_app_env(args)
     assert env["CLAUDE_HUMAN_BUNDLE_ID"] == "dev.x.a" and env["CLAUDE_HUMAN_APP_NAME"] == "A agent"
     assert env["CLAUDE_HUMAN_EXE"] == "a-agent" and "CLAUDE_HUMAN_PYTHON" not in env
+
+
+def test_an_empty_window_list_says_it_shows_the_current_desktop_only(monkeypatch, capsys):
+    from claude_human import screenshot
+    monkeypatch.setattr(screenshot, "windows", lambda all_desktops=False: [] if not all_desktops else [{"id": 7}])
+    monkeypatch.setattr(screenshot, "windows_elsewhere", lambda: 12)
+    assert cli.main(["windows"]) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "[]"
+    assert "current desktop only" in out.err and "12" in out.err and "--all" in out.err
+    assert cli.main(["windows", "--all"]) == 0
+    out = capsys.readouterr()
+    assert '"id": 7' in out.out and out.err == ""
+
+
+def test_a_window_list_with_windows_says_nothing_more(monkeypatch, capsys):
+    from claude_human import screenshot
+    monkeypatch.setattr(screenshot, "windows", lambda all_desktops=False: [{"id": 1}])
+    monkeypatch.setattr(screenshot, "windows_elsewhere", lambda: pytest.fail("not asked when windows show"))
+    assert cli.main(["windows"]) == 0
+    assert capsys.readouterr().err == ""
