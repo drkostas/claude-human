@@ -21,6 +21,8 @@ Rules the server keeps whatever the auth says.
 - A stream for an app that cannot be found ends. It never falls back to the whole display, because
   that would show every other window to someone who was given one.
 - A refusal says only "unauthorized" to the caller. The reason goes to the server's log.
+- An auth that raises ``Unavailable`` (it could not be asked just now) is refused as well, but with a
+  503 "unavailable", so the page tells the person to try again rather than that the session expired.
 """
 from __future__ import annotations
 
@@ -133,6 +135,12 @@ class Handler(BaseHTTPRequestHandler):
         self.st.log(f"401 {self.command} {self.path.split('?')[0]}: {why}")
         self._send(401, {"error": "unauthorized"})
 
+    def _busy(self, why: str) -> None:
+        """A refusal because the auth could not be asked just now (``Unavailable``). It grants nothing, as a 401
+        does, but it answers 503, so the view says the Mac is busy and to try again, not that the session expired."""
+        self.st.log(f"503 {self.command} {self.path.split('?')[0]}: {why}")
+        self._send(503, {"error": "unavailable"})
+
     def _authed(self) -> Optional[_Access]:
         presented = self._bearer()
         if not presented:
@@ -141,7 +149,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             grant = self.st.auth.check(presented)
         except Exception as e:  # noqa: BLE001 - an auth that cannot answer grants nothing
-            self._refuse(f"the auth could not answer ({type(e).__name__}: {e})")
+            if isinstance(e, Unavailable):
+                self._busy(f"the auth could not be asked ({e})")
+            else:
+                self._refuse(f"the auth could not answer ({type(e).__name__}: {e})")
             return None
         if grant is None:
             self._refuse("bearer present, not accepted")
@@ -155,8 +166,10 @@ class Handler(BaseHTTPRequestHandler):
             # A station whose app cannot be read is not a station with no app. None would mean the
             # whole display, the widest access, reached through the narrowest failure. The same
             # holds for its window: unreadable is not "any window of the app".
-            kind = "unavailable" if isinstance(e, Unavailable) else type(e).__name__
-            self._refuse(f"could not read the station's app or window ({kind}: {e})")
+            if isinstance(e, Unavailable):
+                self._busy(f"could not read the station's app or window (unavailable: {e})")
+            else:
+                self._refuse(f"could not read the station's app or window ({type(e).__name__}: {e})")
             return None
         return _Access(grant, app, int(window) if window else None)
 
