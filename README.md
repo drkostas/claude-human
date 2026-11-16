@@ -220,6 +220,25 @@ the tab that shows an address through the browser's debugging socket, forwarded 
 its value as JSON. It needs USB debugging on, as every adb command does. A test that pinches a page reads
 the result this way: the page's own state, where an element sits, the browser's zoom.
 
+## Installing an APK over a weak link
+
+```bash
+claude-human android install --serial 192.0.2.10:5555 app-release.apk --package com.example.app
+claude-human android install --serial 192.0.2.10:5555 --clear
+```
+
+`adb install` sends the whole file in one session, and over a slow mobile link or a VPN that session can
+drop part way. adb then holds the device as offline, and every later try fails at once until the
+connection is made again. `android install` sends the APK in pieces of 4 MiB (`--piece-kb`) into a
+folder of its own on the phone (0700, `--folder`), checks each piece by its md5, and after a piece that
+did not arrive disconnects the device and connects it again before the next try (`--tries`, `--piece-s`).
+The pieces stay between runs, so a run after a failure sends only what is missing. It joins them on the
+phone, checks the whole file by its md5, and runs `pm install` there in the background (`--install-s`),
+so a link that drops during the install does not stop it. With `--package` it then checks the installed
+copy by its md5. The folder is removed once the install succeeds, and `--clear` removes the pieces a
+failed run left. An APK can carry secrets of the app it builds, which is why the folder and each piece
+are readable by the shell user only.
+
 ## New photos on a phone
 
 ```bash

@@ -95,7 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
                                    "pinch with two fingers behind the same checks "
                                    "(android pinch --serial S --package P X Y --in|--out [--slow]); or open "
                                    "a page in the phone's Chromium browser and run a script in it "
-                                   "(android browser --serial S --package P [--open URL] [--url U --eval JS])")
+                                   "(android browser --serial S --package P [--open URL] [--url U --eval JS]); "
+                                   "or install an APK over a weak link a piece at a time, keeping what arrived "
+                                   "(android install --serial S APK [--package P] [--clear])")
 
     s = sub.add_parser("screenshot", help="capture the screen or one window with sckshot")
     s.add_argument("--out", required=True, help="output file (.png, or .jpg/.jpeg for JPEG)")

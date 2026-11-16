@@ -155,6 +155,21 @@ claude-human android browser --serial HOST:PORT --package com.android.chrome --u
 - Read the result after each gesture with `--eval`, and record the screen with `adb shell
   screenrecord` as evidence. Change the code and run it again until every reading passes.
 
+## Installing an APK over a weak link
+
+```bash
+claude-human android install --serial HOST:PORT app-release.apk --package com.example.app
+```
+
+- Use it instead of `adb install` for a phone reached over mobile data or a VPN. A streamed install that
+  drops leaves adb holding the device as offline, and every later `adb install` fails at once with
+  "failed to get feature set: device offline". `adb connect` alone does not bring it back; a
+  `disconnect` first does, and `android install` does both after each piece that did not arrive.
+- A failed run keeps the pieces that arrived on the phone, so run it again rather than starting over.
+  `--clear` removes them when the APK will not be installed after all, which matters when the APK
+  carries a secret.
+- It installs only. Starting the app after it is a separate step with its own checks (`android launch`).
+
 ## Typing at the lock screen and into password panels
 
 The lock screen and SecurityAgent panels take input only from hardware. Synthetic key events, synthetic clicks and Screen Sharing input are all dropped there. The Karabiner virtual keyboard is seen as a physical keyboard, so `vhid_type` can type where nothing else can.
