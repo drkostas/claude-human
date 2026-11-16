@@ -182,8 +182,17 @@ def visible_label(*, yabai: str = YABAI, env: Mapping[str, str] | None = None) -
 def focus(index: int, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> bool:
     """Show the desktop at `index`; True once it is actually the visible one. The only function here
     that moves the user's screen: give it one caller, and have that caller ask first. Verified,
-    because macOS ignores a focus request during a space animation and yabai still exits 0."""
-    _space("--focus", str(index), yabai=yabai, env=env)
+    because macOS ignores a focus request during a space animation and yabai still exits 0.
+
+    A desktop that is already the visible one is shown, so it is True. yabai answers that request
+    with an error ("cannot focus an already focused space"), and raising on it made a caller that
+    shows the same desktop again (a person coming back to a view) fail with the desktop in front.
+    The check below decides, as for any other focus."""
+    try:
+        _space("--focus", str(index), yabai=yabai, env=env)
+    except RuntimeError as e:
+        if "already focused" not in str(e):
+            raise
     return any(s["visible"] and s["index"] == index for s in spaces(yabai=yabai, env=env))
 
 

@@ -37,6 +37,10 @@ class FakeYabai:
             elif len(rest) == 2 and rest[1] == "--destroy":
                 self.spaces = [s for s in self.spaces if s["label"] != rest[0]]
             elif rest[0] == "--focus":
+                if any(s["is-visible"] and str(s["index"]) == rest[1] for s in self.spaces):
+                    # what yabai answers when the desktop asked for is already the visible one
+                    r.returncode, r.stderr = 1, "cannot focus an already focused space."
+                    return r
                 for s in self.spaces:
                     s["is-visible"] = str(s["index"]) == rest[1]
         return r
@@ -88,6 +92,22 @@ def test_label_for_makes_a_stable_label_from_the_uuid(fake):
 def test_focus_is_verified(fake):
     assert desktops.focus(2) is True
     assert desktops.visible_label() == ""                  # U2 has no label
+
+
+def test_focusing_the_desktop_already_shown_is_true(fake):
+    # yabai refuses to focus the visible desktop again, and that is not a failure to show it
+    assert desktops.focus(1) is True
+    assert desktops.focus(2) is True and desktops.focus(2) is True
+
+
+def test_any_other_focus_error_still_raises(fake, monkeypatch):
+    class R:
+        returncode, stdout, stderr = 1, "", "could not locate space with mission-control index '9'."
+    real = fake.run
+    monkeypatch.setattr(desktops.subprocess, "run",
+                        lambda cmd, **k: R() if cmd[2:4] == ["space", "--focus"] else real(cmd, **k))
+    with pytest.raises(RuntimeError, match="could not locate"):
+        desktops.focus(9)
 
 
 def test_an_unreadable_answer_raises_instead_of_reading_empty(monkeypatch):
