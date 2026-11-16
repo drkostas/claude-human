@@ -23,6 +23,7 @@ DEFAULTS = {
     "name": "The station",
     "offline": "Lost the connection to the Mac.",
     "waiting": "Waiting for the token for this window.",
+    "busy": "The Mac is busy for a moment, so that did not reach it. Please tap again.",
 }
 
 _IDENT = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
@@ -192,6 +193,9 @@ _TEMPLATE = """<!doctype html><html><head><meta charset=utf-8>
    var url='/stream?'+(app?('app='+encodeURIComponent(app)+'&'):'')+(win?('window='+win+'&'):'')+'fps=8';
    fetch(url,{headers:auth()}).then(function(r){
      if(r.status===401){ streaming=false; fail('This session expired. Go back and open the task again.'); return; }
+     // 503 is a station that could not ask its auth just now: nothing was granted, and nothing expired either,
+     // so the page says so and asks again by itself
+     if(r.status===503){ streaming=false; fail('@@BUSY@@'); setTimeout(startStream,2000); return; }
      if(!r.ok||!r.body){ streaming=false; fail('The picture could not start (HTTP '+r.status+').'); return; }
      var reader=r.body.getReader(), buf=new Uint8Array(0), prev=null;
      var CRLF2=new Uint8Array([13,10,13,10]), dec=new TextDecoder();
@@ -271,6 +275,8 @@ _TEMPLATE = """<!doctype html><html><head><meta charset=utf-8>
          if(j && j.blocked) fail(j.detail);
        }).catch(function(){});
        if(r.status===401) fail('This session expired. Go back and open the task again.');
+       // the picture keeps running: only this gesture was refused, because the station was busy
+       else if(r.status===503) fail('@@BUSY@@');
        else if(!r.ok) fail('@@NAME@@ could not act on that (HTTP '+r.status+').');
        else ok();
      })

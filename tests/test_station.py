@@ -9,7 +9,7 @@ import pytest
 
 from claude_human.station import Grant, StationAuth, TokenAuth, Unavailable, make_server
 from claude_human.station.auth import load_or_create_token
-from claude_human.station.view import render
+from claude_human.station.view import DEFAULTS, render
 
 JPEG = b"\xff\xd8fakejpeg\xff\xd9"
 
@@ -63,6 +63,8 @@ class FakeAuth(StationAuth):
             return Grant(master=True)
         if secret == "boom":
             raise RuntimeError("database down")
+        if secret == "busy":
+            raise Unavailable("connection refused")
         if secret.startswith("pinned-"):
             return Grant(master=False, station=secret[7:], holder="person:a")
         return None
@@ -158,11 +160,30 @@ def test_an_auth_that_raises_grants_nothing(station):
 
 
 def test_an_unreadable_app_is_refused_not_widened(station):
-    port, screen, _s, auth, _l = station
+    port, screen, sink, auth, logs = station
     auth.app_error = Unavailable("no answer")
-    assert req(port, "GET", "/shot", token="pinned-Notes")[0] == 401
-    assert req(port, "POST", "/input", token="pinned-Notes", body={"type": "click"})[0] == 401
-    assert screen.framed == []
+    # refused, and said as busy: the grant did not expire, the auth could not be asked
+    assert req(port, "GET", "/shot", token="pinned-Notes")[0] == 503
+    assert req(port, "POST", "/input", token="pinned-Notes", body={"type": "click"})[0] == 503
+    assert screen.framed == [] and sink.got == []
+    assert logs[-1].startswith("503 POST /input") and "no answer" in logs[-1]
+
+
+def test_an_auth_that_cannot_be_asked_is_busy_not_expired(station):
+    port, screen, sink, _a, logs = station
+    code, _h, body = req(port, "POST", "/input", token="busy", body={"type": "click"})
+    assert code == 503 and json.loads(body) == {"error": "unavailable"}
+    assert sink.got == [] and screen.framed == []
+    assert logs[-1].startswith("503 POST /input") and "connection refused" in logs[-1]
+    # any other failure of the auth is still a plain refusal
+    assert req(port, "POST", "/input", token="boom", body={"type": "click"})[0] == 401
+
+
+def test_the_view_says_busy_for_a_503_and_keeps_its_picture():
+    html = render()
+    assert "r.status===503" in html and DEFAULTS["busy"].replace("'", "\\'") in html
+    assert "setTimeout(startStream" in html
+    assert "This session expired" in html
 
 
 # ----------------------------------------------------------------------------- frames
@@ -430,7 +451,7 @@ def test_a_window_that_cannot_be_read_is_a_refusal(window_station):
     port, _screen, _sink, auth = window_station
     auth.window_error = Unavailable("database down")
     code, _h, _b = req(port, "GET", "/shot", token="pinned-Safari")
-    assert code == 401
+    assert code == 503
 
 
 def test_without_window_for_a_pin_is_the_app_as_before(station):
