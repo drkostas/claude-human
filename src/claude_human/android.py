@@ -446,6 +446,9 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["browser"]:
         from claude_human import android_browser   # noqa: PLC0415
         return android_browser.main(argv[1:])
+    if argv[:1] == ["install"]:
+        from claude_human import android_install   # noqa: PLC0415
+        return android_install.main(argv[1:])
     p = argparse.ArgumentParser(prog="claude-human android")
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tap", help="tap an app only once its window has focus, no banner or call is "
