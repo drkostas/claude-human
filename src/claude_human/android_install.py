@@ -12,6 +12,11 @@ whole file by its md5, and runs `pm install` there in the background, so the ins
 link either. With --package it then checks that the installed copy is the same file. On success the folder is
 removed. After a failure the pieces stay for the next run, and --clear removes them.
 
+An install on the phone can wait for a person. Google Play Protect may show a dialog about an app it has not seen
+before, and the install goes on only once someone answers it on the phone. A run that finds an install of the same
+file still running there waits for that one and starts no second install, and a run that ends while a dialog holds
+the install names the dialog. With --package, a phone that already runs this file is a success with nothing sent.
+
     claude-human android install --serial HOST:PORT APK [--package NAME] [--folder /data/local/tmp/apk-install]
         [--piece-kb 4096] [--tries 4] [--piece-s 120] [--install-s 300] [--clear] [--json]
 
@@ -40,6 +45,11 @@ TRIES = 4
 PIECE_S = 120.0
 INSTALL_S = 300.0
 EVERY = 3.0
+#: how often a waiting install looks for a dialog that holds it
+LOOK_S = 30.0
+#: dialogs that hold an install until someone answers them on the phone: a text that names the dialog in
+#: `dumpsys window`'s mFocusedApp or mCurrentFocus line, and what to call it
+PROMPTS = (("protectdialogs", "a Google Play Protect dialog"),)
 
 #: adb: run(argv, timeout=seconds) -> (exit code, what it printed on both streams)
 Runner = Callable[..., tuple[int, str]]
@@ -104,6 +114,62 @@ def _shell(serial: str, run: Runner, command: str, timeout: float = 60.0) -> tup
     return run(["-s", serial, "shell", command], timeout=timeout)
 
 
+def start_command(here: str, size: int) -> str:
+    """The shell line that starts `pm install` on the phone in the background and answers "started" at once.
+
+    Only the install goes into the background, in braces and with its own input and output. A background list
+    (`cd ... && rm ... && setsid ... &`) is a shell of its own that keeps adb's output open until the install ends,
+    so adb answered only then, and an install that waited for a dialog read as one that never started."""
+    q = shlex.quote(here)
+    return (f"cd {q} && rm -f install.out && "
+            f"{{ setsid sh -c 'pm install -r -S {size} < app.apk > install.out 2>&1' < /dev/null > /dev/null 2>&1 & }}"
+            f" && echo started")
+
+
+def running_command(here: str) -> str:
+    """The shell line that prints "running <pid>" for each process of the shell user that reads `here`/app.apk as
+    its input, which is what a `pm install` started by start_command does until it ends. It needs no file of its
+    own, so it also finds an install that an older run started."""
+    apk = shlex.quote(f"{here}/app.apk")
+    return (f"for p in /proc/[0-9]*; do [ \"$(readlink $p/fd/0 2>/dev/null)\" = {apk} ] && "
+            f"echo \"running ${{p#/proc/}}\"; done; true")
+
+
+def running(serial: str, run: Runner, here: str) -> str | None:
+    """The pid of an install of `here`/app.apk still running on the phone, or None."""
+    _code, out = _shell(serial, run, running_command(here))
+    pids = sorted(int(m) for m in re.findall(r"^running (\d+)$", out, re.M))
+    return str(pids[0]) if pids else None
+
+
+def prompt_shown(text: str) -> str | None:
+    """What to call the dialog in `dumpsys window`'s focus lines that holds an install (one of PROMPTS), or None.
+    The focused app counts as well as the focused window: while the phone is locked the window in focus is the
+    lock screen's, and the dialog is still the app in front."""
+    for line in text.splitlines():
+        if "mFocusedApp" in line or "mCurrentFocus" in line:
+            for key, name in PROMPTS:
+                if key in line:
+                    return name
+    return None
+
+
+def _prompt(serial: str, run: Runner) -> str | None:
+    _code, out = _shell(serial, run, "dumpsys window | grep -E 'mFocusedApp|mCurrentFocus'", timeout=30)
+    return prompt_shown(out)
+
+
+def installed_md5(serial: str, run: Runner, package: str) -> tuple[str, str | None]:
+    """(the path of `package`'s APK on the phone, its md5), with "" and None for what the phone did not say."""
+    _code, out = _shell(serial, run, f"pm path {shlex.quote(package)}")
+    path = next((line.strip()[len("package:"):] for line in out.splitlines()
+                 if line.strip().startswith("package:")), "")
+    if not path:
+        return "", None
+    _code, got = _shell(serial, run, f"md5sum {shlex.quote(path)}")
+    return path, md5_lines(got).get(path.rsplit("/", 1)[-1])
+
+
 def reconnect(serial: str, run: Runner) -> bool:
     """Drop and make again the connection to a device reached over the network (HOST:PORT): adb keeps one that
     went offline, and `adb connect` alone answers "already connected" to it. A USB serial is only asked."""
@@ -128,18 +194,19 @@ def clear(serial: str, folder: str = FOLDER, *, adb: str = ADB, env: Mapping[str
 
 def install(serial: str, apk: str, *, package: str | None = None, folder: str = FOLDER, piece: int = PIECE,
             tries: int = TRIES, piece_s: float = PIECE_S, install_s: float = INSTALL_S, every: float = EVERY,
-            adb: str = ADB, env: Mapping[str, str] | None = None, run: Runner | None = None,
+            look_s: float = LOOK_S, adb: str = ADB, env: Mapping[str, str] | None = None, run: Runner | None = None,
             sleep=time.sleep, clock=time.monotonic, say: Callable[[str], None] = print) -> dict:
     """Send `apk` to the phone in pieces, keep what arrived, join and check it there, and install it.
-    Answers {outcome: success | failure | refused, why, md5, size, pieces, sent, reused, failed_tries}."""
+    Answers {outcome: success | failure | refused, why, md5, size, pieces, sent, reused, failed_tries, waiting_for},
+    where waiting_for names a dialog on the phone that holds the install, or is None."""
     if not os.path.isfile(apk):
         return {"outcome": "refused", "why": f"no file at {apk}"}
     run = run or _runner(adb, env)
     size, md5 = os.path.getsize(apk), md5_of(apk)
     here = f"{folder.rstrip('/')}/{md5}"
-    q, qf = shlex.quote(here), shlex.quote(folder.rstrip("/"))
+    q = shlex.quote(here)
     report = {"outcome": "failure", "why": "", "serial": serial, "apk": apk, "md5": md5, "size": size,
-              "pieces": 0, "sent": 0, "reused": 0, "failed_tries": 0}
+              "pieces": 0, "sent": 0, "reused": 0, "failed_tries": 0, "waiting_for": None}
 
     def fail(why: str) -> dict:
         report["why"] = why
@@ -148,11 +215,71 @@ def install(serial: str, apk: str, *, package: str | None = None, folder: str = 
     code, state = run(["-s", serial, "get-state"], timeout=20)
     if not (code == 0 and state.strip() == "device") and not reconnect(serial, run):
         return fail("the device does not answer over adb")
+    if package and installed_md5(serial, run, package)[1] == md5:
+        # an install that waited for someone's answer may have ended after the run that started it
+        pid = running(serial, run, here)
+        if not pid:
+            _shell(serial, run, f"rm -rf {q}")
+        report.update(outcome="success",
+                      why=f"{package} already runs this file (md5 {md5[:12]}), so nothing was sent"
+                          + (f"; an install of it still runs on the phone (pid {pid})" if pid else ""))
+        return report
+    pid = running(serial, run, here)
+    if pid:
+        # its pm install reads app.apk, so joining the pieces again would change the file under it
+        say(f"an install of this file is still running on the phone (pid {pid}); waiting for it instead of "
+            f"starting another")
+    else:
+        failed = _send_and_start(serial, apk, here, size, md5, piece, tries, piece_s, every, run, sleep, clock, say,
+                                 report)
+        if failed:
+            return fail(failed)
+        say("joined and checked on the phone; installing there")
+    deadline, answer, prompt, look_at = clock() + install_s, None, None, clock() + look_s
+    while clock() < deadline:
+        sleep(every)
+        code, out = _shell(serial, run, f"cat {q}/install.out 2>/dev/null")
+        if code != 0:
+            reconnect(serial, run)
+            continue
+        answer = installed_line(out)
+        if answer:
+            break
+        if clock() >= look_at:
+            look_at = clock() + look_s
+            seen = _prompt(serial, run)
+            if seen and seen != prompt:
+                say(f"the install waits for someone to answer {seen} on the phone")
+            prompt = seen
+    if answer is None:
+        prompt = _prompt(serial, run) or prompt
+        if prompt:
+            report["waiting_for"] = prompt
+            return fail(f"the install waits for someone to answer {prompt} on the phone; it goes on once that is "
+                        f"answered, and the file stays for the next run")
+        return fail(f"the install did not answer within {install_s:.0f} s; it can still finish on the phone, and "
+                    f"the file stays for the next run")
+    if answer != "Success":
+        return fail(f"the phone refused the install: {answer[:200]}")
+    if package and installed_md5(serial, run, package)[1] != md5:
+        return fail(f"{package} is installed, but its copy on the phone is not this file")
+    _shell(serial, run, f"rm -rf {q}")
+    report.update(outcome="success",
+                  why=f"installed {os.path.basename(apk)} ({report['sent']} pieces sent, {report['reused']} already "
+                      f"there){', and checked ' + package + ' by its md5' if package else ''}")
+    return report
+
+
+def _send_and_start(serial: str, apk: str, here: str, size: int, md5: str, piece: int, tries: int, piece_s: float,
+                    every: float, run: Runner, sleep, clock, say: Callable[[str], None], report: dict) -> str | None:
+    """Send what is missing of `apk` into `here` on the phone, join it there, check it, and start pm install.
+    Counts into `report`, and answers why it failed, or None once the install has started."""
+    q, qf = shlex.quote(here), shlex.quote(here.rsplit("/", 1)[0])
     # this APK's folder, private to the shell user; any other APK's pieces are removed first
     code, out = _shell(serial, run, f"mkdir -p {q} && chmod 700 {qf} {q} && "
                                     f"for d in {qf}/*; do [ \"$d\" = {q} ] || rm -rf \"$d\"; done; echo ready")
     if code != 0 or "ready" not in out:
-        return fail(f"could not make {here} on the phone: {out.strip()[-200:]}")
+        return f"could not make {here} on the phone: {out.strip()[-200:]}"
     with tempfile.TemporaryDirectory(prefix="apk-pieces-") as tmp:
         os.chmod(tmp, 0o700)
         parts = split(apk, tmp, piece)
@@ -179,49 +306,20 @@ def install(serial: str, apk: str, *, package: str | None = None, folder: str = 
                 if not reconnect(serial, run):
                     sleep(every)
             else:
-                return fail(f"piece {i} of {len(parts)} did not arrive in {tries} tries; the "
-                            f"{report['sent'] + report['reused']} pieces already there stay for the next run")
+                return (f"piece {i} of {len(parts)} did not arrive in {tries} tries; the "
+                        f"{report['sent'] + report['reused']} pieces already there stay for the next run")
     # join on the phone and check the whole file
     code, out = _shell(serial, run, f"cd {q} && cat piece.* > app.apk && chmod 600 piece.* app.apk && "
                                     f"md5sum app.apk", timeout=120)
     if md5_lines(out).get("app.apk") != md5:
         _shell(serial, run, f"rm -f {q}/*")
-        return fail("the pieces joined on the phone do not make this file (md5 differs); they were removed, so the "
-                    "next run sends them again")
+        return ("the pieces joined on the phone do not make this file (md5 differs); they were removed, so the "
+                "next run sends them again")
     # install there, in the background, so a link that drops now does not stop it
-    code, out = _shell(serial, run, f"cd {q} && rm -f install.out && "
-                                    f"setsid sh -c 'pm install -r -S {size} < app.apk > install.out 2>&1' "
-                                    f"< /dev/null > /dev/null 2>&1 & echo started")
+    code, out = _shell(serial, run, start_command(here, size))
     if "started" not in out:
-        return fail(f"could not start the install on the phone: {out.strip()[-200:]}")
-    say("joined and checked on the phone; installing there")
-    deadline, answer = clock() + install_s, None
-    while clock() < deadline:
-        sleep(every)
-        code, out = _shell(serial, run, f"cat {q}/install.out 2>/dev/null")
-        if code != 0:
-            reconnect(serial, run)
-            continue
-        answer = installed_line(out)
-        if answer:
-            break
-    if answer is None:
-        return fail(f"the install did not answer within {install_s:.0f} s; it can still finish on the phone, and "
-                    f"the file stays for the next run")
-    if answer != "Success":
-        return fail(f"the phone refused the install: {answer[:200]}")
-    if package:
-        _code, out = _shell(serial, run, f"pm path {shlex.quote(package)}")
-        path = next((line.strip()[len("package:"):] for line in out.splitlines()
-                     if line.strip().startswith("package:")), "")
-        _code, got = _shell(serial, run, f"md5sum {shlex.quote(path)}") if path else (1, "")
-        if not path or md5_lines(got).get(path.rsplit("/", 1)[-1]) != md5:
-            return fail(f"{package} is installed, but its copy on the phone is not this file")
-    _shell(serial, run, f"rm -rf {q}")
-    report.update(outcome="success",
-                  why=f"installed {os.path.basename(apk)} ({report['sent']} pieces sent, {report['reused']} already "
-                      f"there){', and checked ' + package + ' by its md5' if package else ''}")
-    return report
+        return f"could not start the install on the phone: {out.strip()[-200:]}"
+    return None
 
 
 def main(argv: list[str]) -> int:

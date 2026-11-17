@@ -168,6 +168,9 @@ claude-human android install --serial HOST:PORT app-release.apk --package com.ex
 - A failed run keeps the pieces that arrived on the phone, so run it again rather than starting over.
   `--clear` removes them when the APK will not be installed after all, which matters when the APK
   carries a secret.
+- When it says the install waits for someone to answer a Google Play Protect dialog, that dialog is the
+  person's to answer on the phone, so never press it for them. Run the command again later. It finds the
+  install still running and waits for it rather than starting a second one.
 - It installs only. Starting the app after it is a separate step with its own checks (`android launch`).
 
 ## Typing at the lock screen and into password panels
