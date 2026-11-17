@@ -6,6 +6,9 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -14,6 +17,12 @@ from claude_human import android, android_install
 SERIAL = "192.0.2.7:5555"
 FOLDER = "/data/local/tmp/apk-install"
 PKG = "com.example.app"
+HOME = ("  mCurrentFocus=Window{1a2b3c u0 com.example.launcher/com.example.launcher.Home}\n"
+        "  mFocusedApp=ActivityRecord{4d5e6f u0 com.example.launcher/.Home t2}\n")
+#: what a phone that dozes behind its lock screen while Play Protect asks about an install says
+LOCKED_PROTECT = ("  mCurrentFocus=Window{68defeb u0 NotificationShade}\n"
+                  "  mFocusedApp=ActivityRecord{146710967 u0 com.android.vending/"
+                  "com.google.android.finsky.protectdialogs.activity.PlayProtectDialogsActivity t4715}\n")
 
 
 def md5(b: bytes) -> str:
@@ -25,11 +34,12 @@ class Phone:
     first) that fail with a protocol fault and leave the device offline until a disconnect and a connect.
     `answer` is what pm install writes once it has been polled `slow` times. Every call is kept."""
 
-    def __init__(self, *, drop=(), answer="Success", slow=1, installed=None, corrupt=False):
+    def __init__(self, *, drop=(), answer="Success", slow=1, installed=None, corrupt=False, focus=HOME):
         self.files: dict[str, bytes] = {}
         self.dirs: dict[str, int] = {}
         self.drop, self.answer, self.slow, self.installed, self.corrupt = set(drop), answer, slow, installed, corrupt
-        self.offline, self.pushes, self.polls, self.calls = False, 0, 0, []
+        self.offline, self.pushes, self.polls, self.calls, self.focus = False, 0, 0, [], focus
+        self.starts, self.reading = 0, {}             # pm installs started; {app.apk path: pid} while one runs
 
     def ls(self, folder):
         return sorted(p for p in self.files if p.rsplit("/", 1)[0] == folder)
@@ -89,16 +99,25 @@ class Phone:
             for p in self.ls(m.group(1)):
                 del self.files[p]
             return 0, ""
-        m = re.match(r"^cd (\S+) && rm -f install\.out && setsid sh -c 'pm install -r -S (\d+) < app\.apk > "
-                     r"install\.out 2>&1' < /dev/null > /dev/null 2>&1 & echo started$", cmd)
+        m = re.match(r"^cd (\S+) && rm -f install\.out && \{ setsid sh -c 'pm install -r -S (\d+) < app\.apk > "
+                     r"install\.out 2>&1' < /dev/null > /dev/null 2>&1 & \} && echo started$", cmd)
         if m:
             assert int(m.group(2)) == len(self.files[m.group(1) + "/app.apk"])
-            self.polls = 0
+            self.polls, self.starts = 0, self.starts + 1
+            self.reading[m.group(1) + "/app.apk"] = 4242
             return 0, "started\n"
+        m = re.match(r'^for p in /proc/\[0-9\]\*; do \[ "\$\(readlink \$p/fd/0 2>/dev/null\)" = (\S+) \] && '
+                     r'echo "running \$\{p#/proc/\}"; done; true$', cmd)
+        if m:
+            pid = self.reading.get(m.group(1))
+            return 0, f"running {pid}\n" if pid else ""
+        if cmd == "dumpsys window | grep -E 'mFocusedApp|mCurrentFocus'":
+            return 0, self.focus
         m = re.match(r"^cat (\S+)/install\.out 2>/dev/null$", cmd)
         if m:
             self.polls += 1
             if self.answer is not None and self.polls >= self.slow:
+                self.reading.pop(m.group(1) + "/app.apk", None)
                 if self.answer == "Success" and self.installed is None:
                     self.installed = md5(self.files[m.group(1) + "/app.apk"])
                 return 0, self.answer + "\n"
@@ -248,3 +267,89 @@ def test_the_cli_answers_json_and_its_exit_codes(apk, capsys, monkeypatch):
     assert code == 0 and result["outcome"] == "success" and result["pieces"] == 3, result
     assert android.main(["install", "--serial", SERIAL, apk + ".gone"]) == 2
     assert "NOT INSTALLED: no file at" in capsys.readouterr().out
+
+
+def test_the_start_answers_at_once_while_the_install_still_runs(tmp_path):
+    """adb answers a shell command only once nothing holds its output open. A start line whose background part
+    kept it open answered only when the install ended, so an install that waited longer than the call's limit
+    read as "could not start", and the next run started a second install beside the first."""
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "pm").write_text("#!/bin/sh\ncat > /dev/null\nsleep 4\necho Success\n")
+    (tools / "setsid").write_text('#!/bin/sh\nexec "$@"\n')
+    for t in tools.iterdir():
+        t.chmod(0o755)
+    here = tmp_path / "here"
+    here.mkdir()
+    (here / "app.apk").write_bytes(b"0123456789")
+    start = time.monotonic()
+    r = subprocess.run(["/bin/sh", "-c", android_install.start_command(str(here), 10)], capture_output=True,
+                       text=True, timeout=30, env={"PATH": f"{tools}:/usr/bin:/bin"})
+    took = time.monotonic() - start
+    assert r.stdout.strip() == "started" and took < 2.5, (took, r.stdout, r.stderr)
+    out = here / "install.out"
+    for _ in range(100):                               # the install itself goes on and answers in its file
+        if out.exists() and "Success" in out.read_text():
+            break
+        time.sleep(0.1)
+    assert "Success" in out.read_text()
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd") or sys.platform == "darwin", reason="needs /proc")
+def test_the_running_check_finds_a_process_that_reads_the_file(tmp_path):
+    here = tmp_path / "here"
+    here.mkdir()
+    (here / "app.apk").write_bytes(b"0123456789")
+    with open(here / "app.apk", "rb") as fh:
+        reader = subprocess.Popen(["sleep", "30"], stdin=fh)
+    try:
+        r = subprocess.run(["/bin/sh", "-c", android_install.running_command(str(here))], capture_output=True,
+                           text=True, timeout=30)
+        assert f"running {reader.pid}" in r.stdout.splitlines(), r.stdout
+    finally:
+        reader.kill()
+        reader.wait()
+    r = subprocess.run(["/bin/sh", "-c", android_install.running_command(str(here))], capture_output=True, text=True,
+                       timeout=30)
+    assert r.returncode == 0 and "running" not in r.stdout
+
+
+def test_a_run_that_finds_the_install_still_running_waits_for_it_and_starts_no_other(apk):
+    phone = Phone(answer=None)
+    first, _said = run_install(phone, apk, install_s=30)
+    assert first["outcome"] == "failure" and phone.starts == 1, first
+    pushes = phone.pushes
+    phone.answer = "Success"                           # someone answered on the phone in the meantime
+    again, said = run_install(phone, apk, package=PKG)
+    assert again["outcome"] == "success", again
+    assert phone.starts == 1 and phone.pushes == pushes, "nothing sent and no second install started"
+    assert any("still running on the phone (pid 4242); waiting for it instead of starting another" in s
+               for s in said), said
+
+
+def test_a_play_protect_dialog_is_named_while_the_lock_screen_has_the_focus(apk):
+    phone = Phone(answer=None, focus=LOCKED_PROTECT)
+    out, said = run_install(phone, apk, install_s=90, look_s=30)
+    assert out["outcome"] == "failure" and out["waiting_for"] == "a Google Play Protect dialog", out
+    assert out["why"].startswith("the install waits for someone to answer a Google Play Protect dialog on the "
+                                 "phone"), out
+    assert said.count("the install waits for someone to answer a Google Play Protect dialog on the phone") == 1
+    assert phone.files, "the file stays for the next run"
+
+
+def test_an_install_with_no_dialog_still_reads_as_one_that_did_not_answer(apk):
+    out, _said = run_install(Phone(answer=None), apk, install_s=30)
+    assert out["waiting_for"] is None and "did not answer within 30 s" in out["why"], out
+
+
+def test_only_the_focus_lines_name_a_dialog():
+    assert android_install.prompt_shown(LOCKED_PROTECT) == "a Google Play Protect dialog"
+    assert android_install.prompt_shown(HOME) is None
+    assert android_install.prompt_shown("  mLastFocus=...protectdialogs.activity.PlayProtectDialogsActivity\n") is None
+
+
+def test_a_phone_that_already_runs_this_file_gets_nothing_sent(apk):
+    phone = Phone(installed=android_install.md5_of(apk))
+    out, _said = run_install(phone, apk, package=PKG)
+    assert out["outcome"] == "success" and "already runs this file" in out["why"], out
+    assert phone.pushes == 0 and phone.starts == 0

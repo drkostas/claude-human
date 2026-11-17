@@ -239,6 +239,12 @@ copy by its md5. The folder is removed once the install succeeds, and `--clear` 
 failed run left. An APK can carry secrets of the app it builds, which is why the folder and each piece
 are readable by the shell user only.
 
+An install on the phone can wait for a person. Google Play Protect may ask about an app it has not seen
+before, and the install goes on only once someone answers on the phone. A run that ends while such a
+dialog holds the install says so (`waiting_for` with `--json`), and the next run finds that install still
+running, waits for it and starts no second one. With `--package`, a phone that already runs the file is a
+success with nothing sent.
+
 ## New photos on a phone
 
 ```bash
