@@ -67,7 +67,8 @@ else
   (cd "$HERE" && node -e '
     const p = require("./app.plugin.js");
     const o = p.resolveOptions({ name: "Example", scheme: "example", android: { package: "org.example.app" } },
-                               { url: "https://ntfy.example.org/alerts", subTextTagPrefix: "area:" });
+                               { url: "https://ntfy.example.org/alerts", subTextTagPrefix: "area:",
+                                 startReportUrl: "https://reports.example.org/start", startReportEveryMinutes: 15 });
     process.stdout.write(p.renderKotlin(o));') > "$W/src/NtfyService.kt"
   (cd "$HERE" && node -e '
     const r = require("./plugin/withNotificationRelay.js");

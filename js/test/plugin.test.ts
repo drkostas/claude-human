@@ -308,3 +308,65 @@ describe("an access token for a server that requires authentication", () => {
   });
 });
 
+
+describe("the start report", () => {
+  const url = "https://n.example.org/a";
+  const report = "https://reports.example.org/start";
+  // built at run time, so no scanner reads a literal as a real token
+  const token = ["tk", "example", "report", "0123"].join("_");
+
+  it("is off without a URL: the build field is empty and the service returns before it sends", async () => {
+    const { gradle, kotlin } = await prebuild({ url }, { EXPO_PUBLIC_NTFY_START_REPORT_URL: undefined });
+    expect(gradle).toContain('buildConfigField("String", "NTFY_START_REPORT_URL", "\\"\\"")');
+    expect(gradle).toContain('buildConfigField("String", "NTFY_START_REPORT_TOKEN", "\\"\\"")');
+    expect(kotlin).toContain("if (url.isBlank()) return");
+    expect(kotlin).toContain("private const val REPORT_EVERY_MS = 0L");
+  });
+
+  it("sends the seconds the phone has run, counting sleep, each time the socket opens", async () => {
+    const { gradle, kotlin } = await prebuild({ url, startReportUrl: report, startReportToken: token });
+    expect(gradle).toContain(`buildConfigField("String", "NTFY_START_REPORT_URL", "\\"${report}\\"")`);
+    expect(gradle).toContain(`buildConfigField("String", "NTFY_START_REPORT_TOKEN", "\\"${token}\\"")`);
+    expect(kotlin).toContain("val url = BuildConfig.NTFY_START_REPORT_URL");
+    expect(kotlin).toContain('.put("uptime_s", SystemClock.elapsedRealtime() / 1000.0)');
+    expect(kotlin).toContain('req.header("Authorization", "Bearer $token")');
+    expect(kotlin).not.toContain(token);
+    // the first report after a restart comes with the first connection, and a socket that drops
+    // is not reported as open until it opens again
+    const open = kotlin.slice(kotlin.indexOf("override fun onOpen("), kotlin.indexOf("override fun onMessage("));
+    expect(open).toContain("connected = true");
+    expect(open).toContain('reportStart("connected")');
+    const failed = kotlin.slice(kotlin.indexOf("override fun onFailure("), kotlin.indexOf("private fun reportStart("));
+    expect(failed.match(/connected = false/g)).toHaveLength(2);
+  });
+
+  it("repeats on a schedule only when asked, and only while the socket is open", async () => {
+    const { kotlin } = await prebuild({ url, startReportUrl: report, startReportEveryMinutes: 15 });
+    expect(kotlin).toContain("private const val REPORT_EVERY_MS = 900000L");
+    expect(kotlin).toContain('if (!stopping && connected) reportStart("again")');
+    expect(kotlin).toMatch(/repeatStartReport\(\)\n\s+connect\(\)/);
+  });
+
+  it("takes the URL and the token from the environment variables it names", async () => {
+    const out = await prebuild({ url, startReportUrlEnv: "REPORT_URL", startReportTokenEnv: "REPORT_TOKEN" },
+      { REPORT_URL: report, REPORT_TOKEN: token });
+    expect(out.gradle).toContain(`"NTFY_START_REPORT_URL", "\\"${report}\\"")`);
+    expect(out.gradle).toContain(`"NTFY_START_REPORT_TOKEN", "\\"${token}\\"")`);
+  });
+
+  it("refuses a URL that is not http(s), that is the build machine, or BuildConfig cannot hold", () => {
+    expect(() => plugin.resolveOptions(BASE, { url, startReportUrl: "ftp://r.example.org/a" })).toThrow(/http/);
+    expect(() => plugin.resolveOptions(BASE, { url, startReportUrl: "http://localhost:8787/start" })).toThrow(/localhost/);
+    expect(() => plugin.resolveOptions(BASE, { url, startReportUrl: 'https://r.example.org/a"b' })).toThrow(/BuildConfig/);
+    expect(() => plugin.resolveOptions(BASE, { url, startReportToken: 'a"b' })).toThrow(/BuildConfig/);
+    expect(plugin.resolveOptions(BASE, { url }).startReportUrl).toBe("");
+  });
+
+  it("refuses a schedule that is not whole minutes, and two options that name one field", () => {
+    for (const bad of [-1, 1.5, 1441, "15"]) {
+      expect(() => plugin.resolveOptions(BASE, { url, startReportEveryMinutes: bad })).toThrow(/startReportEveryMinutes/);
+    }
+    expect(() => plugin.resolveOptions(BASE, { url, startReportUrlBuildConfigField: "NTFY_TOKEN" })).toThrow(/differ/);
+    expect(plugin.resolveOptions(BASE, { url, startReportEveryMinutes: 1440 }).startReportEveryMinutes).toBe(1440);
+  });
+});

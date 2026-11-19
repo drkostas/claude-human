@@ -21,6 +21,18 @@
  *   tokenEnv          default "EXPO_PUBLIC_NTFY_TOKEN"
  *   tokenBuildConfigField  name of the BuildConfig field that carries the token (default "NTFY_TOKEN").
  *                     Give the app a token that may only read its topics: it is part of the build.
+ *   startReportUrl    an endpoint the service tells how long the phone has been running (see below);
+ *                     default: the environment variable named by startReportUrlEnv, and no report when
+ *                     that is unset
+ *   startReportUrlEnv default "EXPO_PUBLIC_NTFY_START_REPORT_URL"
+ *   startReportUrlBuildConfigField  default "NTFY_START_REPORT_URL"
+ *   startReportToken  a token sent to that endpoint as "Authorization: Bearer <token>" (default: the
+ *                     environment variable named by startReportTokenEnv; none when that is unset).
+ *                     It is part of the build, so give it only the right to make this report.
+ *   startReportTokenEnv default "EXPO_PUBLIC_NTFY_START_REPORT_TOKEN"
+ *   startReportTokenBuildConfigField  default "NTFY_START_REPORT_TOKEN"
+ *   startReportEveryMinutes  repeat the report this often while the socket is open, from 1 to 1440
+ *                     (default 0: report only when the socket opens)
  *   defaultTitle      title for a message without one (default: expo.name)
  *   linkPrefix        a message's click URL opens the app only when it starts with this
  *                     (default: "<expo.scheme>://", or no links when the app has no scheme)
@@ -47,6 +59,13 @@
  *                     key and shows nothing, for a sender to take back a notice that no longer
  *                     needs the person (default "": no message removes one)
  *   logTag            Android log tag (default "NtfyService")
+ *
+ * The start report is a POST of {"uptime_s": <seconds the phone has run, counting sleep>, "why":
+ * "connected" | "again"} to startReportUrl, sent each time the socket opens (the first one after a
+ * restart comes as soon as the phone is on a network) and every startReportEveryMinutes while it stays
+ * open. The receiver works out the moment the phone started from its own clock, so a phone whose clock
+ * is wrong still reads right, and a changed moment means the phone restarted. A report that fails is
+ * logged and dropped. With no URL, nothing is sent.
  *
  * The Android prebuild fails when the URL is missing or points at the build machine itself (localhost,
  * 127.0.0.1, ::1): a phone given that address connects to itself and never receives anything.
@@ -97,6 +116,29 @@ function checkTopicUrl(url, source) {
   return url;
 }
 
+/** The start report URL, checked. Empty when there is none, which turns the report off. Throws when it
+ *  is not an http(s) URL, points at the build machine itself, or holds a character BuildConfig cannot hold. */
+function checkStartReportUrl(url, source) {
+  if (!url) return "";
+  let parsed = null;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    parsed = null;
+  }
+  if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+    throw new Error(`expo-ntfy: the start report URL from ${source} (${JSON.stringify(url)}) is not an http(s) URL.`);
+  }
+  if (isLoopbackHost(parsed.hostname)) {
+    throw new Error(`expo-ntfy: refusing to build with the start report at ${url}. A phone cannot reach the ` +
+      "build machine as localhost. Use an address that the phone can reach.");
+  }
+  if (/["\\$\s]/.test(url)) {
+    throw new Error(`expo-ntfy: the start report URL contains a character that cannot go into BuildConfig: ${url}`);
+  }
+  return url;
+}
+
 /** The access token, checked. Empty when there is none; throws on a character BuildConfig cannot hold. */
 function checkToken(token, source) {
   const t = token || "";
@@ -110,6 +152,8 @@ function resolveOptions(config, options = {}, env = process.env) {
   const name = config.name || "App";
   const urlEnv = options.urlEnv || "EXPO_PUBLIC_NTFY_URL";
   const tokenEnv = options.tokenEnv || "EXPO_PUBLIC_NTFY_TOKEN";
+  const startReportUrlEnv = options.startReportUrlEnv || "EXPO_PUBLIC_NTFY_START_REPORT_URL";
+  const startReportTokenEnv = options.startReportTokenEnv || "EXPO_PUBLIC_NTFY_START_REPORT_TOKEN";
   const pkg = options.package || (config.android && config.android.package);
   if (!pkg || !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(pkg)) {
     throw new Error(`expo-ntfy: set expo.android.package or the "package" option (got ${JSON.stringify(pkg)})`);
@@ -121,6 +165,13 @@ function resolveOptions(config, options = {}, env = process.env) {
     buildConfigField: options.buildConfigField || "NTFY_TOPIC_URL",
     token: checkToken(options.token || env[tokenEnv], options.token ? 'the "token" option' : tokenEnv),
     tokenBuildConfigField: options.tokenBuildConfigField || "NTFY_TOKEN",
+    startReportUrl: checkStartReportUrl(options.startReportUrl || env[startReportUrlEnv],
+      options.startReportUrl ? 'the "startReportUrl" option' : startReportUrlEnv),
+    startReportUrlBuildConfigField: options.startReportUrlBuildConfigField || "NTFY_START_REPORT_URL",
+    startReportToken: checkToken(options.startReportToken || env[startReportTokenEnv],
+      options.startReportToken ? 'the "startReportToken" option' : startReportTokenEnv),
+    startReportTokenBuildConfigField: options.startReportTokenBuildConfigField || "NTFY_START_REPORT_TOKEN",
+    startReportEveryMinutes: options.startReportEveryMinutes !== undefined ? options.startReportEveryMinutes : 0,
     defaultTitle: options.defaultTitle || name,
     linkPrefix: options.linkPrefix !== undefined ? options.linkPrefix : (scheme ? `${scheme}://` : ""),
     ongoingChannelId: options.ongoingChannelId || "ntfy_connection",
@@ -146,13 +197,24 @@ function resolveOptions(config, options = {}, env = process.env) {
     clearTag: options.clearTag || "",
     logTag: options.logTag || "NtfyService",
   };
-  for (const k of ["buildConfigField", "tokenBuildConfigField"]) {
+  const fields = ["buildConfigField", "tokenBuildConfigField", "startReportUrlBuildConfigField",
+    "startReportTokenBuildConfigField"];
+  for (const k of fields) {
     if (!/^[A-Z_][A-Z0-9_]*$/.test(o[k])) {
       throw new Error(`expo-ntfy: ${k} must be an upper case identifier (got ${o[k]})`);
     }
   }
   if (o.tokenBuildConfigField === o.buildConfigField) {
     throw new Error("expo-ntfy: tokenBuildConfigField and buildConfigField must differ");
+  }
+  if (new Set(fields.map((k) => o[k])).size !== fields.length) {
+    throw new Error(`expo-ntfy: the four BuildConfig field names must differ (got ${fields.map((k) => o[k]).join(", ")})`);
+  }
+  // minutes between repeated start reports, written into the service as a number
+  if (!Number.isInteger(o.startReportEveryMinutes) || o.startReportEveryMinutes < 0 ||
+      o.startReportEveryMinutes > 1440) {
+    throw new Error("expo-ntfy: startReportEveryMinutes must be a whole number of minutes from 0 to 1440 " +
+      `(got ${JSON.stringify(o.startReportEveryMinutes)})`);
   }
   const channels = ["ongoingChannelId", "alertChannelId", "alarmChannelId", "silentChannelId"];
   for (const k of channels) {
@@ -191,9 +253,12 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -206,6 +271,10 @@ import java.util.concurrent.TimeUnit
  * A message is posted on one of three channels by its ntfy priority (an alarm, a chime, or no
  * sound). It folds to its title and first line, pulls down to the whole message, and carries a
  * button for each of its view actions that links into the app.
+ *
+ * When the config names a start report URL, the service also tells that endpoint how long the phone
+ * has been running each time the socket opens (the first time after a restart is as soon as the phone
+ * is on a network) and, when asked to, every few minutes while the socket stays open.
  */
 class NtfyService : Service() {
     companion object {
@@ -229,11 +298,14 @@ class NtfyService : Service() {
         private const val CLEAR_TAG = ${kt(o.clearTag)}
         private const val TAG = ${kt(o.logTag)}
         var topicUrl: String = BuildConfig.${o.buildConfigField}
+        /** how often a start report is repeated while the socket is open; 0 reports only when it opens */
+        private const val REPORT_EVERY_MS = ${o.startReportEveryMinutes * 60000}L
     }
 
     private var client: OkHttpClient? = null
     private var ws: WebSocket? = null
     private var stopping = false
+    @Volatile private var connected = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -251,6 +323,7 @@ class NtfyService : Service() {
         } else {
             startForeground(ONGOING_ID, ongoingNotification())
         }
+        repeatStartReport()
         connect()
     }
 
@@ -337,13 +410,66 @@ class NtfyService : Service() {
         val token = BuildConfig.${o.tokenBuildConfigField}
         if (token.isNotBlank()) req.header("Authorization", "Bearer $token")
         ws = c.newWebSocket(req.build(), object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                connected = true
+                reportStart("connected")
+            }
             override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "socket failed: " + t.message)
+                connected = false
                 reconnectSoon()
             }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = reconnectSoon()
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                connected = false
+                reconnectSoon()
+            }
         })
+    }
+
+    /**
+     * Tells the start report endpoint how long the phone has been running, in seconds, counting the
+     * time it slept (SystemClock.elapsedRealtime). The receiver subtracts it from its own clock to
+     * get the moment the phone started, so a phone whose own clock is wrong still reads right. The
+     * report goes out on its own thread and a failure is logged and dropped: the next one is the retry.
+     * Does nothing when the build has no start report URL.
+     */
+    private fun reportStart(why: String) {
+        val url = BuildConfig.${o.startReportUrlBuildConfigField}
+        if (url.isBlank()) return
+        Thread {
+            try {
+                val body = JSONObject()
+                    .put("uptime_s", SystemClock.elapsedRealtime() / 1000.0)
+                    .put("why", why)
+                    .toString()
+                val req = Request.Builder().url(url)
+                    .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                val token = BuildConfig.${o.startReportTokenBuildConfigField}
+                if (token.isNotBlank()) req.header("Authorization", "Bearer $token")
+                val c = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).build()
+                c.newCall(req.build()).execute().use { r ->
+                    if (!r.isSuccessful) Log.w(TAG, "start report: HTTP " + r.code)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "start report failed: " + e.message)
+            }
+        }.start()
+    }
+
+    /** One more report every REPORT_EVERY_MS while the socket is open, when the build asks for them. */
+    private fun repeatStartReport() {
+        if (REPORT_EVERY_MS <= 0) return
+        Thread {
+            while (!stopping) {
+                try {
+                    Thread.sleep(REPORT_EVERY_MS)
+                } catch (e: InterruptedException) {
+                    return@Thread
+                }
+                if (!stopping && connected) reportStart("again")
+            }
+        }.start()
     }
 
     private fun reconnectSoon() {
@@ -518,6 +644,9 @@ function patchAppGradle(src, o) {
   }
   g = putField(g, o.buildConfigField, o.url);
   if (o.tokenBuildConfigField) g = putField(g, o.tokenBuildConfigField, o.token || "");
+  // empty when the build has no start report, which the service reads as "send none"
+  if (o.startReportUrlBuildConfigField) g = putField(g, o.startReportUrlBuildConfigField, o.startReportUrl || "");
+  if (o.startReportTokenBuildConfigField) g = putField(g, o.startReportTokenBuildConfigField, o.startReportToken || "");
   if (!/buildConfig\s+true/.test(g)) {
     if (/buildFeatures\s*\{/.test(g)) {
       if (!/buildConfig\s+true/.test(g)) g = g.replace(/buildFeatures\s*\{/, "buildFeatures {\n        buildConfig true");
@@ -636,6 +765,7 @@ module.exports.withNtfyForegroundService = withNtfyForegroundService;
 module.exports.resolveOptions = resolveOptions;
 module.exports.checkTopicUrl = checkTopicUrl;
 module.exports.checkToken = checkToken;
+module.exports.checkStartReportUrl = checkStartReportUrl;
 module.exports.isLoopbackHost = isLoopbackHost;
 module.exports.renderKotlin = renderKotlin;
 module.exports.patchAppGradle = patchAppGradle;
