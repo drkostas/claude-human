@@ -45,6 +45,13 @@ The topic URL comes from `EXPO_PUBLIC_NTFY_URL` at prebuild time, or from the `u
 | `token` | the value of `tokenEnv`, or none |
 | `tokenEnv` | `EXPO_PUBLIC_NTFY_TOKEN` |
 | `tokenBuildConfigField` | `NTFY_TOKEN` |
+| `startReportUrl` | the value of `startReportUrlEnv`, or no start report |
+| `startReportUrlEnv` | `EXPO_PUBLIC_NTFY_START_REPORT_URL` |
+| `startReportUrlBuildConfigField` | `NTFY_START_REPORT_URL` |
+| `startReportToken` | the value of `startReportTokenEnv`, or none |
+| `startReportTokenEnv` | `EXPO_PUBLIC_NTFY_START_REPORT_TOKEN` |
+| `startReportTokenBuildConfigField` | `NTFY_START_REPORT_TOKEN` |
+| `startReportEveryMinutes` | `0`, which reports only when the socket opens |
 | `defaultTitle` | `expo.name` |
 | `linkPrefix` | `<expo.scheme>://`, or no links when there is no scheme |
 | `alertChannelId`, `alertChannelName`, `alertChannelDescription` | `ntfy_messages`, `expo.name`, a short text |
@@ -62,6 +69,16 @@ What it writes at prebuild.
 - The URL and the access token as BuildConfig fields (the token field is empty when there is none). Both are replaced on every build, so building again corrects a wrong one.
 - A call in `MainActivity.onCreate` that starts the service.
 - The manifest entries for the service (type `specialUse`), the receiver, and the permissions `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK` and `ACCESS_NOTIFICATION_POLICY`.
+
+### Telling a server that the phone started
+
+A phone that restarts leaves nothing on the network to say so. With a start report URL, the service posts to it each time its socket opens, which after a restart is as soon as the phone is on a network, and every `startReportEveryMinutes` while the socket stays open:
+
+```json
+{"uptime_s": 4521.3, "why": "connected"}
+```
+
+`uptime_s` is how long the phone has run in seconds, counting the time it slept (`SystemClock.elapsedRealtime`). Subtract it from your own clock to get the moment the phone started. Using the receiver's clock means a phone whose own clock is wrong still reads right, and a moment that moved by more than the report's delay means the phone restarted. `why` is `connected` for a report sent when the socket opened and `again` for a scheduled one. The request carries `Authorization: Bearer <token>` when `startReportToken` or `EXPO_PUBLIC_NTFY_START_REPORT_TOKEN` is set. Like the ntfy token it is part of the app you ship, so give it only the right to make this report. A report that fails is logged and dropped, since the next one is the retry. With no URL, nothing is sent and the build fields are empty.
 
 ### A server that requires authentication
 
