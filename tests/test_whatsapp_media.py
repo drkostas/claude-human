@@ -215,3 +215,15 @@ def test_nothing_here_presses_types_or_shows_anything():
 ])
 def test_a_file_name_is_made_safe_to_write(raw, want):
     assert wm.safe_name(raw) == want
+
+
+def test_a_file_name_holding_every_marker_word_stays_whole_and_the_script_runs(tab):
+    import re
+    markers = sorted(set(re.findall(r"__WA_[A-Z]+__", wm._START + wm.POLL + wm.CHUNK_JS + wm.CLEAR)))
+    assert len(markers) >= 10
+    name = "Invoice " + " ".join(markers) + " TOKEN CHATID MSGID FNAME MAXB SERVERS INFOS MHOST OFFSET SIZE.pdf"
+    script = wm.start_js("0123abcd", GROUP, name=name)
+    assert json.dumps(name) in script, "the name is carried as it was given"
+    tab.add(f"false_{GROUP}@g.us_3EB0KKKKKKKKKKKKKKKK13_1@lid", type="document", name=name, text="kept whole", t=1)
+    got = _fetch(tab, GROUP, name=name)
+    assert got["ok"] and got["data"] == b"kept whole" and got["meta"]["filename"] == name

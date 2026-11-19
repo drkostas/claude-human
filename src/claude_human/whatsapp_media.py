@@ -74,7 +74,7 @@ _CHAT = re.compile(r"^[0-9A-Za-z.:-]{3,64}$")
 _MESSAGE_ID = re.compile(r"^[0-9A-Za-z]{8,64}$")
 _TOKEN = re.compile(r"^[0-9a-f]{8,32}$")
 
-_START = r"""(function(){var T=TOKEN,CHAT=CHATID,ID=MSGID,NAME=FNAME,MAX=MAXB,SV=SERVERS,INFO=INFOS,HOST=MHOST;
+_START = r"""(function(){var T=__WA_TOKEN__,CHAT=__WA_CHAT__,ID=__WA_ID__,NAME=__WA_NAME__,MAX=__WA_MAX__,SV=__WA_SERVERS__,INFO=__WA_INFO__,HOST=__WA_HOST__;
 var W=window.__waMedia=window.__waMedia||{};W[T]={state:'running'};
 function b64(s){var b=atob(s);var u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u}
 function same(a,b){if(a.length!==b.length)return false;for(var i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true}
@@ -118,14 +118,23 @@ function each(st,range,f){return new Promise(function(ok,no){var c=st.openCursor
 }catch(e){fail('script',{error:String(e&&e.name||e).slice(0,80)})}})();
 return JSON.stringify({started:true});})()"""
 
-POLL = r"""(function(){var W=window.__waMedia||{};var x=W[TOKEN];if(!x)return JSON.stringify({state:'none'});
+POLL = r"""(function(){var W=window.__waMedia||{};var x=W[__WA_TOKEN__];if(!x)return JSON.stringify({state:'none'});
 var o={};for(var k in x){if(k!=='data')o[k]=x[k]}return JSON.stringify(o);})()"""
 
-CHUNK_JS = r"""(function(){var W=window.__waMedia||{};var x=W[TOKEN];if(!x||!x.data)return JSON.stringify(null);
-var part=x.data.subarray(OFFSET,OFFSET+SIZE);var s='';for(var i=0;i<part.length;i+=8192){s+=String.fromCharCode.apply(null,part.subarray(i,i+8192))}
+CHUNK_JS = r"""(function(){var W=window.__waMedia||{};var x=W[__WA_TOKEN__];if(!x||!x.data)return JSON.stringify(null);
+var part=x.data.subarray(__WA_OFFSET__,__WA_OFFSET__+__WA_SIZE__);var s='';for(var i=0;i<part.length;i+=8192){s+=String.fromCharCode.apply(null,part.subarray(i,i+8192))}
 return JSON.stringify(btoa(s));})()"""
 
-CLEAR = r"""(function(){var W=window.__waMedia||{};delete W[TOKEN];return JSON.stringify({cleared:true});})()"""
+CLEAR = r"""(function(){var W=window.__waMedia||{};delete W[__WA_TOKEN__];return JSON.stringify({cleared:true});})()"""
+
+
+_MARKER = re.compile(r"__WA_[A-Z]+__")
+
+
+def _fill(template: str, values: dict[str, str]) -> str:
+    """Put each value in place of its marker in one pass, so a value is never scanned again: a file
+    name that holds another marker's word stays as it is. A marker with no value is an error."""
+    return _MARKER.sub(lambda m: values[m.group(0)], template)
 
 
 def _token(token: str) -> str:
@@ -147,26 +156,26 @@ def start_js(token: str, chat: str, *, message_id: str | None = None, name: str 
         raise ValueError("a message id is 8 to 64 letters and digits")
     if name is not None and not (0 < len(str(name)) <= 255):
         raise ValueError("a file name is 1 to 255 characters")
-    return (_START.replace("TOKEN", _token(token), 1).replace("CHATID", json.dumps(chat), 1)
-            .replace("MSGID", json.dumps(message_id), 1).replace("FNAME", json.dumps(name), 1)
-            .replace("MAXB", str(int(max_bytes)), 1).replace("SERVERS", json.dumps(list(SERVERS)), 1)
-            .replace("INFOS", json.dumps(INFO), 1).replace("MHOST", json.dumps(MEDIA_HOST), 1))
+    return _fill(_START, {"__WA_TOKEN__": _token(token), "__WA_CHAT__": json.dumps(chat),
+                          "__WA_ID__": json.dumps(message_id), "__WA_NAME__": json.dumps(name),
+                          "__WA_MAX__": str(int(max_bytes)), "__WA_SERVERS__": json.dumps(list(SERVERS)),
+                          "__WA_INFO__": json.dumps(INFO), "__WA_HOST__": json.dumps(MEDIA_HOST)})
 
 
 def poll_js(token: str) -> str:
     """The script that says how the fetch under `token` went, without the file's bytes."""
-    return POLL.replace("TOKEN", _token(token))
+    return _fill(POLL, {"__WA_TOKEN__": _token(token)})
 
 
 def chunk_js(token: str, offset: int, size: int = CHUNK) -> str:
     """The script that returns `size` bytes of the fetched file from `offset`, as base64."""
-    return (CHUNK_JS.replace("TOKEN", _token(token)).replace("OFFSET", str(max(0, int(offset))))
-            .replace("SIZE", str(max(1, int(size)))))
+    return _fill(CHUNK_JS, {"__WA_TOKEN__": _token(token), "__WA_OFFSET__": str(max(0, int(offset))),
+                            "__WA_SIZE__": str(max(1, int(size)))})
 
 
 def clear_js(token: str) -> str:
     """The script that drops the fetched file from the page."""
-    return CLEAR.replace("TOKEN", _token(token))
+    return _fill(CLEAR, {"__WA_TOKEN__": _token(token)})
 
 
 def _load(raw):
