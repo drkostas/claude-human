@@ -202,7 +202,9 @@ def json_object(raw: bytes) -> dict:
         return {}
     try:
         body = json.loads(raw)
-    except ValueError:    # a JSONDecodeError, and the UnicodeDecodeError of bytes that are not text
+    except (ValueError, RecursionError):
+        # a JSONDecodeError, the UnicodeDecodeError of bytes that are not text, and the RecursionError that a body
+        # of nested brackets raises (150 KB of "[" is enough, far under the default cap)
         raise BodyRefused(400, "the body is not JSON") from None
     if not isinstance(body, dict):
         raise BodyRefused(400, "the body must be one JSON object")

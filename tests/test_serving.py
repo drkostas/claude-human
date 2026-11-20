@@ -146,6 +146,12 @@ def test_json_object_is_one_object_or_a_400():
         with pytest.raises(serving.BodyRefused) as e:
             serving.json_object(bad)
         assert e.value.status == 400, bad
+    # nested brackets deep enough raise RecursionError in json.loads, which is not a ValueError, and 150 KB is well under the default cap
+    for deep in (b"[" * 150_000, b"[" * 200_000 + b"]" * 200_000):
+        assert len(deep) < serving.DEFAULT_CAP
+        with pytest.raises(serving.BodyRefused) as e:
+            serving.json_object(deep)
+        assert e.value.status == 400 and e.value.reason == "the body is not JSON"
     assert issubclass(serving.BodyRefused, ValueError)
 
 
