@@ -233,6 +233,19 @@ def _window_cmd(window_id: int, *args: str, yabai: str = YABAI, env: Mapping[str
         return None
 
 
+def focus_window(window_id: int, *, yabai: str = YABAI, env: Mapping[str, str] | None = None) -> bool:
+    """Bring one window to the front, on its own desktop: True once yabai says it has the focus. Like
+    `focus`, it moves the user's screen, so give it one caller that asks first. A click sent through a
+    screen-sharing view lands only on a window in front on the visible desktop, which is what this is for.
+    Verified, because yabai can exit 0 while macOS refuses the focus."""
+    _window_cmd(window_id, "--focus", yabai=yabai, env=env)
+    try:
+        w = query("--windows", yabai=yabai, env=env)
+    except RuntimeError:
+        return False
+    return any(x.get("id") == int(window_id) and x.get("has-focus") for x in w)
+
+
 #: how move_window's reason starts when yabai has lost the window (see `lost`)
 LOST = "yabai has lost this window"
 
