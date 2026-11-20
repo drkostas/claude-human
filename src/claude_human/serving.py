@@ -1,4 +1,5 @@
-"""serving.py — a local HTTP server that finishes the requests it is answering before it stops.
+"""serving.py — a local HTTP server that finishes the requests it is answering before it stops, and
+a request body read with a limit.
 
 A service manager stops a server with SIGTERM, and Python's default answer to SIGTERM ends the
 process at once. A `ThreadingHTTPServer` answers each request on a daemon thread, so every request
@@ -17,16 +18,34 @@ repeated here, because its effect is unknown.
     serve_until_stopped(MyServer(("127.0.0.1", 8000), Handler), drain_s=10)
 
     answer = retry_refused(lambda: urllib.request.urlopen(url, timeout=5).read())
+
+A handler that reads a request body takes the size from the caller's Content-Length, so a caller
+decides how much the handler reads, and a value that is not a number raises inside the handler
+where nothing answers it. `read_body` checks the header first and refuses with a status to send
+back (`BodyRefused`: 400 for a header that is not a whole number or a body that ends early, 413
+for a body over the cap), and `json_object` turns the bytes into one JSON object or refuses with
+a 400.
+
+    def do_POST(self):
+        try:
+            body = serving.json_object(serving.read_body(self, cap=4096))
+        except serving.BodyRefused as e:
+            self.close_connection = True      # what the caller sent beyond the cap stays unread
+            return self.send_error(e.status, e.reason)
 """
 from __future__ import annotations
 
 import errno
+import json
 import signal
 import threading
 import time
 from typing import Callable, Optional, TypeVar
 
 T = TypeVar("T")
+
+#: the bytes `read_body` reads when no cap is given: one mebibyte, which holds any JSON a small API takes
+DEFAULT_CAP = 1 << 20
 
 #: seconds a stopping server waits for the requests it is answering
 DRAIN_S = 10.0
@@ -136,3 +155,55 @@ def retry_refused(call: Callable[[], T], *, tries: int = 4, wait_s: float = 2.0,
                 raise
             sleep(wait_s)
     raise AssertionError("unreachable")
+
+
+class BodyRefused(ValueError):
+    """A request body a handler will not read. `status` is the HTTP status to answer with (400 or
+    413), and `reason` says why in words that are safe to send back to the caller."""
+
+    def __init__(self, status: int, reason: str):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+def content_length(value: Optional[str], cap: Optional[int] = DEFAULT_CAP) -> int:
+    """The number of body bytes a Content-Length header value announces. A missing or empty value
+    is 0. Anything but ASCII digits (a sign, a decimal point, a hexadecimal number, digits of
+    another script) raises `BodyRefused(400)`, and a number above `cap` raises `BodyRefused(413)`
+    before any byte is read. `cap=None` sets no limit."""
+    text = (value or "").strip()
+    if not text:
+        return 0
+    if not (text.isascii() and text.isdigit()):
+        raise BodyRefused(400, "Content-Length must be a whole number of bytes")
+    # a number of more than 15 digits is over any cap, and int() of a very long one raises
+    if len(text) > 15 or (cap is not None and int(text) > cap):
+        raise BodyRefused(413, f"the body is over {cap} bytes" if cap is not None else "the body is too large")
+    return int(text)
+
+
+def read_body(handler, cap: Optional[int] = DEFAULT_CAP) -> bytes:
+    """The request body of a `BaseHTTPRequestHandler`, at most `cap` bytes (`cap=None` sets no
+    limit). Raises `BodyRefused` for a Content-Length that is not a whole number (400), above
+    `cap` (413), or announced and not delivered (400). A refusal leaves the body unread on the
+    connection, so answer and close it (`handler.close_connection = True`)."""
+    n = content_length(handler.headers.get("Content-Length"), cap)
+    raw = handler.rfile.read(n) if n else b""
+    if len(raw) < n:
+        raise BodyRefused(400, "the body ended before its Content-Length")
+    return raw
+
+
+def json_object(raw: bytes) -> dict:
+    """`raw` as one JSON object. An empty body is `{}`. A body that is not JSON, or is JSON of
+    another shape (a list, a number, null), raises `BodyRefused(400)`."""
+    if not raw.strip():
+        return {}
+    try:
+        body = json.loads(raw)
+    except ValueError:    # a JSONDecodeError, and the UnicodeDecodeError of bytes that are not text
+        raise BodyRefused(400, "the body is not JSON") from None
+    if not isinstance(body, dict):
+        raise BodyRefused(400, "the body must be one JSON object")
+    return body
