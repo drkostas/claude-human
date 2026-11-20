@@ -17,8 +17,6 @@ any window; a pinned grant reaches only its own).
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -114,20 +112,13 @@ CLICK_SETTLE_S = 1.5
 
 
 def _read_shot(window: int, read: Callable, **kw) -> Optional[list[dict]]:
-    """The text lines of a full shot of `window` (claude_human.ocr.lines by default), or None."""
+    """The text lines of a full shot of `window` (claude_human.ocr.lines_of by default), or None. The
+    picture stays in memory: it can show what a person typed into the window, so it is never written to
+    a file, and it is gone when this returns."""
     got = shot(window, full=True, **kw)
     if not got:
         return None
-    fd, path = tempfile.mkstemp(suffix=".jpg")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(got[0])
-        return read(path)
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    return read(got[0])
 
 
 def _inside(found: list[dict], box: tuple[float, float, float, float]) -> list[dict]:
@@ -151,7 +142,7 @@ def click_words(window: int, words: str, *, token: str,
     and "changed" (whether the text inside the box differs after `settle` seconds). A click whose box
     did not change is not ok, because the press may have landed on nothing."""
     from claude_human import ocr   # noqa: PLC0415
-    read = read or ocr.lines
+    read = read or ocr.lines_of
     kw = {"token": token, "station": station, "timeout": timeout, "opener": opener}
     before = _read_shot(window, read, **kw)
     if before is None:

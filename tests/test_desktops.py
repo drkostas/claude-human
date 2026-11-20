@@ -14,6 +14,8 @@ class FakeYabai:
             {"uuid": "U1", "index": 1, "label": "one", "is-visible": True},
             {"uuid": "U2", "index": 2, "label": "", "is-visible": False}]
         self.create_works = create_works
+        self.windows = [{"id": 7, "space": 2, "has-focus": False}, {"id": 8, "space": 1, "has-focus": True}]
+        self.focus_works = True
         self.commands = []
 
     def run(self, cmd, **k):
@@ -24,6 +26,12 @@ class FakeYabai:
         self.commands.append(args)
         if args[:2] == ["query", "--spaces"]:
             r.stdout = json.dumps(self.spaces)
+        elif args[:2] == ["query", "--windows"]:
+            r.stdout = json.dumps(self.windows)
+        elif args[:1] == ["window"] and args[2:] == ["--focus"]:
+            if self.focus_works:
+                for w in self.windows:
+                    w["has-focus"] = str(w["id"]) == args[1]
         elif args[:1] == ["space"]:
             rest = args[1:]
             if rest == ["--create"]:
@@ -155,3 +163,10 @@ def test_when_no_display_answers_the_first_error_is_raised(monkeypatch):
     monkeypatch.setattr(desktops.subprocess, "run", f.run)
     with pytest.raises(RuntimeError, match="unreadable"):
         desktops.spaces()
+
+
+def test_focus_window_is_true_only_once_yabai_says_the_window_has_the_focus(fake):
+    assert desktops.focus_window(7) is True
+    assert ["window", "7", "--focus"] in fake.commands
+    fake.focus_works = False
+    assert desktops.focus_window(8) is False, "an exit 0 with the focus elsewhere is not a focus"

@@ -123,6 +123,7 @@ def test_lines_reads_a_drawn_picture_with_its_place(tmp_path):
     got = ocr.lines(path)
     assert [d["text"] for d in got] == ["Parcel Co", "Bottom line"], "top first: the origin is the top left"
     assert got[0]["y"] < 0.3 < 0.6 < got[1]["y"]
+    assert ocr.lines_of(path.read_bytes()) == got, "the same picture read from memory gives the same lines"
 
 
 # --- click_words: read the window, click the one matching line inside a box, read it again
@@ -145,11 +146,11 @@ def station_stub():
 
 
 def reads(*pages):
-    """A stand-in for ocr.lines that answers each read with the next page of lines."""
+    """A stand-in for ocr.lines_of that answers each read with the next page of lines."""
     left = list(pages)
 
-    def read(path):
-        assert open(path, "rb").read() == b"\xff\xd8jpeg", "it reads the picture the station sent"
+    def read(data):
+        assert data == b"\xff\xd8jpeg", "it reads the picture the station sent, as bytes in memory"
         return left.pop(0)
     return read
 
@@ -196,3 +197,21 @@ def test_click_words_keeps_the_stations_refusal_and_needs_a_picture():
         raise urllib.error.HTTPError(req.full_url, 404, "no", {}, io.BytesIO(b"{}"))
     missing = client.click_words(5, "Save and Continue", token="t", opener=no_shot, read=reads())
     assert not missing["ok"] and missing["found"] == 0 and "could not be captured" in missing["detail"]
+
+
+def test_click_words_writes_no_picture_to_disk(monkeypatch):
+    """A shot can show what a person typed, so it is read in memory and never saved, even for a moment."""
+    import tempfile
+
+    def no_files(*a, **k):
+        raise AssertionError("a shot was written to a file")
+    monkeypatch.setattr(tempfile, "mkstemp", no_files)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", no_files)
+    inputs, opener = station_stub()
+    got = client.click_words(5, "save and continue", token="t", within=FRAME, opener=opener, sleep=lambda s: None,
+                             read=reads([BUTTON], [{"text": "Thank you", "x": 0.6, "y": 0.7, "w": 0.2, "h": 0.04}]))
+    assert got["ok"] and got["found"] == 1
+
+
+def test_lines_of_something_unreadable_in_memory_is_none():
+    assert ocr.lines_of(b"not a picture") in (None, [])

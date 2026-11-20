@@ -1,6 +1,6 @@
 """Read the text lines in a picture, with where each one is, through macOS's Vision framework.
 
-`lines(path)` gives each recognised line as {"text", "x", "y", "w", "h"}, the box as fractions of the
+`lines(path)` (or `lines_of(data)` for a picture held in memory) gives each recognised line as {"text", "x", "y", "w", "h"}, the box as fractions of the
 picture with its origin at the top left (Vision's own origin is the bottom left), in reading order:
 top to bottom, then left to right. A caller that has a window's picture can then find a label by
 its words and press the middle of its box through whatever clicks in that window.
@@ -28,15 +28,33 @@ def lines(image_path: str | os.PathLike, *, accurate: bool = False) -> list[dict
     read it (not on macOS, or not a picture). `accurate` asks Vision for its slower, more careful
     recognition."""
     try:
-        import Vision
         from Foundation import NSURL
+    except ImportError:
+        return None
+    return _recognize(lambda Vision: Vision.VNImageRequestHandler.alloc().initWithURL_options_(
+        NSURL.fileURLWithPath_(str(image_path)), None), accurate)
+
+
+def lines_of(data: bytes, *, accurate: bool = False) -> list[dict] | None:
+    """`lines` for a picture held in memory (JPEG or PNG bytes). Nothing is written to disk, so a
+    picture that may show personal values (a form a person just filled) never leaves the process."""
+    try:
+        from Foundation import NSData
+    except ImportError:
+        return None
+    return _recognize(lambda Vision: Vision.VNImageRequestHandler.alloc().initWithData_options_(
+        NSData.dataWithBytes_length_(bytes(data), len(data)), None), accurate)
+
+
+def _recognize(make_handler, accurate: bool) -> list[dict] | None:
+    try:
+        import Vision
     except ImportError:
         return None
     try:
         req = Vision.VNRecognizeTextRequest.alloc().init()
         req.setRecognitionLevel_(0 if accurate else 1)
-        handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(
-            NSURL.fileURLWithPath_(str(image_path)), None)
+        handler = make_handler(Vision)
         ok, _ = handler.performRequests_error_([req], None)
         if not ok:
             return None
