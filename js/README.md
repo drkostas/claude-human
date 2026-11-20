@@ -97,6 +97,21 @@ A message's click URL opens the app only when it starts with `linkPrefix`. A not
 - With `subTextTagPrefix` set (for example `"area:"`), the first tag that starts with it is shown, without the prefix, next to the app's name in the notification's header.
 - Android fixes a channel's sound when the channel is created. The person can still change each channel's sound in the app's notification settings.
 
+## Secrets the JavaScript reads, kept out of its bundle
+
+A token read from `process.env.EXPO_PUBLIC_...` is copied into the JavaScript bundle at build time. When the app updates its JavaScript over the air (expo-updates), every update is then a file that carries the token, and it has to carry the token of the build that is installed. The `build-secrets` plugin keeps such secrets in the native part instead:
+
+```json
+["@drkostas/expo-ntfy/build-secrets", { "secrets": { "apiToken": "MY_APP_API_TOKEN" } }]
+```
+
+```ts
+import { buildSecret } from "@drkostas/expo-ntfy/secrets";
+const token = buildSecret("apiToken");   // undefined on the web, or when the build wrote none
+```
+
+At prebuild it writes each secret into `android/app/src/main/res/values/build_secrets.xml` (mode 0600, kept from the resource shrinker), and a small Expo module of this package reads it by name. The options name environment variables, never values, so the app config, which an exported update carries, holds no secret. A variable that is unset or empty fails the prebuild. The secrets are still part of the APK, as a BuildConfig field would be, so give each one only what that build needs.
+
 ## Forwarding other apps' notifications
 
 A second config plugin, `@drkostas/expo-ntfy/notification-relay`, adds an Android notification listener that sends each new notification of the apps you name to an HTTPS endpoint as JSON. An assistant can then read messages from apps that offer no API, as they arrive, while the phone is locked and asleep.
