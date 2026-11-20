@@ -165,6 +165,8 @@ claude-human android install --serial HOST:PORT app-release.apk --package com.ex
   drops leaves adb holding the device as offline, and every later `adb install` fails at once with
   "failed to get feature set: device offline". `adb connect` alone does not bring it back; a
   `disconnect` first does, and `android install` does both after each piece that did not arrive.
+  It then reads the piece's md5 again before it sends the piece again: adb can say "failed to read copy
+  response: EOF" for a piece that arrived whole.
 - A failed run keeps the pieces that arrived on the phone, so run it again rather than starting over.
   `--clear` removes them when the APK will not be installed after all, which matters when the APK
   carries a secret.
