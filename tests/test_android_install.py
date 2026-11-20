@@ -32,12 +32,16 @@ def md5(b: bytes) -> str:
 class Phone:
     """adb as android_install uses it, over a file system kept in a dict. `drop` lists the pushes (1 for the
     first) that fail with a protocol fault and leave the device offline until a disconnect and a connect.
+    `whole_eof` lists pushes that write the whole file and still exit 1 with "failed to read copy response: EOF",
+    and `unread` pushes that exit 0 while the next md5sum of their file gets no answer.
     `answer` is what pm install writes once it has been polled `slow` times. Every call is kept."""
 
-    def __init__(self, *, drop=(), answer="Success", slow=1, installed=None, corrupt=False, focus=HOME):
+    def __init__(self, *, drop=(), whole_eof=(), unread=(), answer="Success", slow=1, installed=None, corrupt=False,
+                 focus=HOME):
         self.files: dict[str, bytes] = {}
         self.dirs: dict[str, int] = {}
         self.drop, self.answer, self.slow, self.installed, self.corrupt = set(drop), answer, slow, installed, corrupt
+        self.whole_eof, self.unread, self.silent = set(whole_eof), set(unread), set()
         self.offline, self.pushes, self.polls, self.calls, self.focus = False, 0, 0, [], focus
         self.starts, self.reading = 0, {}             # pm installs started; {app.apk path: pid} while one runs
 
@@ -66,6 +70,11 @@ class Phone:
             if self.corrupt and argv[4].endswith("piece.0001"):
                 data = data[:-1] + b"!"
             self.files[argv[4]] = data
+            if self.pushes in self.whole_eof:
+                self.offline = True
+                return 1, "adb: error: failed to read copy response: EOF\n"
+            if self.pushes in self.unread:
+                self.silent.add(argv[4])
             return 0, f"{argv[3]}: 1 file pushed, 0 skipped.\n"
         assert argv[2] == "shell", argv
         return self.shell(argv[3])
@@ -87,6 +96,9 @@ class Phone:
             p = m.group(1)
             if p == "/data/app/x/base.apk":
                 return 0, f"{self.installed}  {p}\n"
+            if p in self.silent:
+                self.silent.discard(p)
+                return 1, ""
             return (0, f"{md5(self.files[p])}  {p}\n") if p in self.files else (1, "")
         m = re.match(r"^cd (\S+) && cat piece\.\* > app\.apk && chmod 600 piece\.\* app\.apk && md5sum app\.apk$", cmd)
         if m:
@@ -141,9 +153,11 @@ def apk(tmp_path):
 
 def run_install(phone, apk, **k):
     t = [0.0]
+    phone.slept = []
 
     def sleep(s):
         t[0] += s
+        phone.slept.append(s)
     said = []
     out = android_install.install(SERIAL, apk, run=phone, piece=4096, sleep=sleep, clock=lambda: t[0],
                                   say=said.append, **k)
@@ -168,7 +182,54 @@ def test_a_dropped_piece_brings_the_device_back_and_is_sent_again(apk):
     assert out["outcome"] == "success" and out["failed_tries"] == 1 and out["sent"] == 3, out
     i = next(n for n, c in enumerate(phone.calls) if c[:1] == ["disconnect"])
     assert phone.calls[i + 1][:1] == ["connect"], "a connection adb holds as offline is dropped, then made again"
-    assert any("piece 2 of 3 did not arrive (try 1 of 4, exit 134): adb F file_sync_client" in s for s in said)
+    assert any("piece 2 of 3 did not arrive (try 1 of 4, exit 134): adb F file_sync_client" in s
+               and s.endswith("; on the phone: no md5") for s in said), said
+
+
+def test_the_first_piece_a_run_sends_gets_more_tries_than_the_rest(apk):
+    phone = Phone(drop={1, 2, 3, 4, 5})               # the first push fails five times and the sixth arrives
+    out, said = run_install(phone, apk, tries=3)
+    assert out["outcome"] == "success" and out["failed_tries"] == 5 and out["sent"] == 3, out
+    assert any(s.startswith("piece 1 of 3 did not arrive (try 5 of 6, exit 134)") for s in said), said
+    later = Phone(drop={2, 3, 4})                     # a piece after it keeps its own three
+    out, _said = run_install(later, apk, tries=3)
+    assert out["outcome"] == "failure" and "piece 2 of 3 did not arrive in 3 tries" in out["why"], out
+
+
+def test_the_extra_tries_go_to_the_first_piece_sent_when_the_first_is_already_there(apk):
+    phone = Phone(drop={1, 2, 3})
+    here = f"{FOLDER}/{android_install.md5_of(apk)}"
+    with open(apk, "rb") as f:
+        phone.files[f"{here}/piece.0000"] = f.read(4096)
+    out, said = run_install(phone, apk, tries=3)
+    assert out["outcome"] == "success" and (out["reused"], out["sent"], out["failed_tries"]) == (1, 2, 3), out
+    assert any(s.startswith("piece 2 of 3 did not arrive (try 3 of 6") for s in said), said
+
+
+def test_each_further_try_waits_longer_than_the_one_before(apk):
+    phone = Phone(drop={2, 3, 4})
+    out, _said = run_install(phone, apk, tries=4, every=3.0)
+    assert out["outcome"] == "success" and out["failed_tries"] == 3, out
+    assert phone.slept[:3] == [3.0, 6.0, 9.0], phone.slept
+
+
+def test_a_piece_that_arrived_whole_while_adb_said_eof_is_not_sent_again(apk):
+    """adb can lose the link after the last byte of a push, while it waits for the phone's answer, and say
+    "failed to read copy response: EOF" for a file that is whole on the phone. The md5 decides."""
+    phone = Phone(whole_eof={1})
+    out, said = run_install(phone, apk)
+    assert out["outcome"] == "success" and (out["failed_tries"], out["read_again"]) == (0, 1), out
+    assert phone.pushes == 3, "the piece that arrived is not pushed a second time"
+    assert any(s.startswith("piece 1 of 3 sent") and s.endswith("its md5 matched on a second read (adb said exit 1)")
+               for s in said), said
+
+
+def test_a_push_that_exited_0_is_read_again_before_it_counts_as_lost(apk):
+    phone = Phone(unread={1})                          # the read right after the push gets no answer
+    out, said = run_install(phone, apk)
+    assert out["outcome"] == "success" and (out["failed_tries"], out["read_again"]) == (0, 1), out
+    assert phone.pushes == 3, "the piece that arrived is not pushed a second time"
+    assert any(s.startswith("piece 1 of 3 sent") and s.endswith("(adb said exit 0)") for s in said), said
 
 
 def test_what_arrived_stays_and_the_next_run_sends_only_the_rest(apk):
@@ -217,8 +278,13 @@ def test_an_installed_copy_that_is_not_this_file_is_a_failure(apk):
 
 def test_a_changed_piece_fails_its_own_check_and_is_sent_again(apk):
     phone = Phone(corrupt=True)
-    out, _said = run_install(phone, apk, tries=1)
+    out, said = run_install(phone, apk, tries=1)
     assert out["outcome"] == "failure" and "piece 2 of 3 did not arrive in 1 tries" in out["why"], out
+    with open(apk, "rb") as f:
+        f.seek(4096)
+        want = md5(f.read(4096))
+    assert any(s.startswith("piece 2 of 3 did not arrive (try 1 of 1, exit 0)") and f", not {want[:12]}" in s
+               and "on the phone: md5 " in s for s in said), said
 
 
 def test_a_stray_piece_spoils_the_join_so_the_pieces_go_and_the_next_run_sends_them_again(apk):
@@ -267,6 +333,14 @@ def test_the_cli_answers_json_and_its_exit_codes(apk, capsys, monkeypatch):
     assert code == 0 and result["outcome"] == "success" and result["pieces"] == 3, result
     assert android.main(["install", "--serial", SERIAL, apk + ".gone"]) == 2
     assert "NOT INSTALLED: no file at" in capsys.readouterr().out
+
+
+def test_the_cli_passes_the_first_pieces_extra_tries(apk, capsys, monkeypatch):
+    phone = Phone(drop={1})
+    monkeypatch.setattr(android_install, "_runner", lambda adb, env: phone)
+    monkeypatch.setattr(android_install.time, "sleep", lambda s: None)
+    code = android.main(["install", "--serial", SERIAL, apk, "--piece-kb", "4", "--tries", "1", "--first-extra", "0"])
+    assert code == 1 and "piece 1 of 3 did not arrive in 1 tries" in capsys.readouterr().out
 
 
 def test_the_start_answers_at_once_while_the_install_still_runs(tmp_path):

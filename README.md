@@ -231,7 +231,10 @@ claude-human android install --serial 192.0.2.10:5555 --clear
 drop part way. adb then holds the device as offline, and every later try fails at once until the
 connection is made again. `android install` sends the APK in pieces of 4 MiB (`--piece-kb`) into a
 folder of its own on the phone (0700, `--folder`), checks each piece by its md5, and after a piece that
-did not arrive disconnects the device and connects it again before the next try (`--tries`, `--piece-s`).
+did not arrive disconnects the device, connects it again and reads the piece's md5 once more before the
+next try (`--tries`, `--piece-s`). The md5 decides, not adb's exit code, because a push can arrive whole
+while adb says "failed to read copy response: EOF". Each further try waits a little longer, and the first
+piece a run sends gets more tries (`--first-extra`), since the first push after a quiet link fails most often.
 The pieces stay between runs, so a run after a failure sends only what is missing. It joins them on the
 phone, checks the whole file by its md5, and runs `pm install` there in the background (`--install-s`),
 so a link that drops during the install does not stop it. With `--package` it then checks the installed
