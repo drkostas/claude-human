@@ -172,3 +172,92 @@ def test_the_signer_keeps_the_key_off_the_disk(tmp_path, monkeypatch):
     assert "/dev/stdin" in args and given == key.encode()
     assert named == [b"data"]
     assert eu.verify(b"data", sig, cert)
+
+
+def two_updates(tmp_path):
+    key, cert = make_key(tmp_path)
+    dist, store = make_export(tmp_path), tmp_path / "store"
+    sign = eu.openssl_signer(key)
+    first = eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE, sign=sign, certificate=cert,
+                       created_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    (dist / "_expo/static/js/android/index-1.hbc").write_bytes(b"a newer bundle")
+    (dist / "metadata.json").write_text((dist / "metadata.json").read_text() + " ")
+    second = eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE, sign=sign, certificate=cert,
+                        created_at=datetime(2025, 1, 2, tzinfo=timezone.utc))
+    return store, sign, cert, first, second
+
+
+def offered(store):
+    """The manifest offered now, its bytes, and its signature."""
+    (part,) = parts(*eu.manifest_response(store, platform="android", runtime_version="r1"))
+    body = part.get_payload(decode=True)
+    return json.loads(body), body, part["expo-signature"][len('sig="'):-len('", keyid="main"')]
+
+
+def store_files(store):
+    return sorted((str(p.relative_to(store)), p.read_bytes()) for p in store.rglob("*") if p.is_file())
+
+
+def test_a_rollback_is_a_new_update_with_the_earlier_files_and_a_later_created_at(tmp_path):
+    store, sign, cert, first, second = two_updates(tmp_path)
+    listed = eu.updates(store, "android", "r1")
+    assert [u["id"] for u in listed] == [second["id"], first["id"]]
+    assert [u["offered"] for u in listed] == [True, False] and all(u["signed"] for u in listed)
+    earlier = json.loads((store / "android" / "r1" / first["id"] / "manifest.json").read_bytes())
+    replaced = json.loads((store / "android" / "r1" / second["id"] / "manifest.json").read_bytes())
+    at = datetime(2025, 1, 3, 4, 5, 6, 789000, tzinfo=timezone.utc)
+    back = eu.republish(store, "android", "r1", first["id"], sign=sign, certificate=cert, created_at=at)
+    assert (back["copied"], back["replaced"], back["created_at"]) == (first["id"], second["id"], "2025-01-03T04:05:06.789Z")
+    m, body, sig = offered(store)
+    assert m["id"] == back["id"] and back["id"] not in (first["id"], second["id"])
+    assert str(uuid.UUID(m["id"])) == m["id"]
+    assert m["createdAt"] == back["created_at"] and m["createdAt"] > replaced["createdAt"]
+    assert m["launchAsset"] == earlier["launchAsset"] and m["assets"] == earlier["assets"]
+    assert m["launchAsset"]["hash"] == eu.asset_hash(b"the bundle")
+    assert {k: v for k, v in m.items() if k not in ("id", "createdAt")} == \
+        {k: v for k, v in earlier.items() if k not in ("id", "createdAt")}
+    assert eu.verify(body, sig, cert)
+    assert eu.latest(store, "android", "r1") == back["id"]
+    # forward again is the same step, from the update the rollback replaced
+    on = eu.republish(store, "android", "r1", second["id"], sign=sign, certificate=cert)
+    m2, body2, sig2 = offered(store)
+    assert on["replaced"] == back["id"] and m2["createdAt"] > m["createdAt"]
+    assert m2["launchAsset"]["hash"] == eu.asset_hash(b"a newer bundle") and eu.verify(body2, sig2, cert)
+    assert [u["id"] for u in eu.updates(store, "android", "r1")] == [on["id"], back["id"], second["id"], first["id"]]
+
+
+def test_a_signer_the_certificate_refuses_stores_nothing_and_leaves_latest(tmp_path):
+    store, _, cert, first, second = two_updates(tmp_path)
+    other_key, _ = make_key(tmp_path, "other")
+    before = store_files(store)
+    with pytest.raises(ValueError, match="would refuse it"):
+        eu.republish(store, "android", "r1", first["id"], sign=eu.openssl_signer(other_key), certificate=cert)
+    assert store_files(store) == before
+    assert eu.latest(store, "android", "r1") == second["id"]
+
+
+def test_a_rollback_is_refused_when_its_update_would_not_load(tmp_path):
+    store, sign, cert, first, second = two_updates(tmp_path)
+    _, other_cert = make_key(tmp_path, "other")
+    before = store_files(store)
+    # a createdAt that is not later than the update offered now
+    for at in (datetime(2025, 1, 2, tzinfo=timezone.utc), datetime(2024, 12, 31, tzinfo=timezone.utc)):
+        with pytest.raises(ValueError, match="never loads an update older"):
+            eu.republish(store, "android", "r1", first["id"], sign=sign, certificate=cert, created_at=at)
+    # the earlier update's own checks: its signature, its id, a plain name, its files
+    with pytest.raises(ValueError, match="certificate verifies"):
+        eu.republish(store, "android", "r1", first["id"], sign=sign, certificate=other_cert)
+    with pytest.raises(ValueError, match="no stored update"):
+        eu.republish(store, "android", "r1", str(uuid.uuid4()), sign=sign, certificate=cert)
+    with pytest.raises(ValueError, match="plain name"):
+        eu.republish(store, "android", "r1", "../r2", sign=sign, certificate=cert)
+    assert store_files(store) == before
+    (store / "android" / "r1" / first["id"] / "signature").unlink()
+    with pytest.raises(ValueError, match="certificate verifies"):
+        eu.republish(store, "android", "r1", first["id"], sign=sign, certificate=cert)
+    (store / "assets" / eu.asset_hash(b"a newer bundle")).write_bytes(b"changed on disk")
+    with pytest.raises(ValueError, match="not stored with its hash"):
+        eu.republish(store, "android", "r1", second["id"], sign=sign, certificate=cert)
+    assert eu.latest(store, "android", "r1") == second["id"]
+    assert sorted(p.name for p in (store / "android" / "r1").iterdir()) == sorted(["latest", first["id"], second["id"]])
+    assert eu.updates(store, "android", "r2") == [] and eu.updates(store, "web", "r1") == []

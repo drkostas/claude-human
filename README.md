@@ -460,6 +460,7 @@ status, headers, body = eu.asset_response("store", asset_hash)
 - The program that answers the app reads stored bytes only, so it never holds the private key. Nothing in an answer is made per request but the multipart boundary.
 - The app names the manifest's address in `updates.url`, and `updates.codeSigningCertificate` and `updates.codeSigningMetadata` (`{"keyid": "main", "alg": "rsa-v1_5-sha256"}`) turn the signature check on. Such a client refuses a manifest with no signature or a wrong one, and keeps the bundle it has.
 - A runtime version or a platform that is not a plain name is a 400, and an asset is answered only by a hash its bytes still have.
+- `republish(store, platform, runtime, update_id, sign=..., certificate=...)` is how a bad bundle is rolled back. A client never loads an update older than the one it runs, nor one it already has, so naming the earlier update again would change nothing. This makes a new update from the earlier one's files, with a new id and a createdAt later than the update offered now. It checks the earlier update first (its manifest, every file by its hash, and its stored signature against the certificate), signs the new manifest once, checks that signature too, and only then names it as the one offered. A failed check stores nothing and leaves the offered one as it was. The same call goes forward again. `updates(store, platform, runtime)` lists what is stored, newest first.
 
 ## Phone notifications without Firebase
 
