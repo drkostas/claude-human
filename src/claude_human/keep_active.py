@@ -13,12 +13,19 @@ resets the counter, types nothing and has no meaning in any program.
     in a state file, taps when the window is open and the last tap is older than the interval, and says what
     it did. It never taps while another process types through the virtual keyboard (it takes the same lock
     as ``unlock`` and does not wait), so a tap never lands in the middle of typing.
-  - The state file holds the drawn window and every tap's time, so a caller can tell its own taps from a
-    person's input, and can tell that a day was missed.
+  - The state file holds the drawn window, every tap's time and the person's idle time just before the last
+    tap, so a caller can tell its own taps from a person's input, and can tell that a day was missed.
+  - ``person_idle`` turns the system's idle reading into the person's own. After a tap the system reads as if
+    someone had just used the Mac, so a program that asks "is anyone here" would be told yes. When the last input
+    was the tap, the person's idle time is the reading plus what it was before the tap (a lower bound, and exact
+    when no one has touched the Mac since). Input after the tap shows as it is.
+  - Given an ``idle`` reader, ``step`` taps only when the person's idle time has reached the interval, so a tap is
+    never needed while someone is using the Mac, and a tap never hides input from the last interval.
 
     claude-human keep-active --start 09:00 --end 19:00 [--spread 60] [--interval 240] [--state FILE]
     claude-human keep-active --off          (a day with no window)
-    claude-human keep-active --idle         (print the idle seconds and exit)
+    claude-human keep-active --idle         (print the system's idle seconds and exit)
+    claude-human keep-active --person-idle  (the same with this module's taps left out)
 """
 from __future__ import annotations
 
@@ -87,6 +94,27 @@ def idle_seconds() -> Optional[float]:
         return None
 
 
+#: how close the idle reading must be to the age of the last tap for that tap to be the last input
+TAP_SLACK_S = 10.0
+
+
+def person_idle(raw: Optional[float], state_path: str | os.PathLike, *, now: dt.datetime | None = None,
+                slack_s: float = TAP_SLACK_S) -> Optional[float]:
+    """The idle seconds of the person, given the system's reading `raw`. When the last input was this module's
+    tap (the reading is about as old as the tap, within `slack_s`), it is the reading plus the person's idle time
+    just before that tap. Otherwise the reading is the person's, and None stays None."""
+    if raw is None:
+        return None
+    last = _load(Path(state_path).expanduser()).get("last_tap")
+    try:
+        at = dt.datetime.fromisoformat(last["at"])
+        before = float(last["idle_before"])
+        age = ((now or dt.datetime.now(at.tzinfo)) - at).total_seconds()
+    except (TypeError, KeyError, ValueError):
+        return raw
+    return raw + before if abs(raw - age) <= slack_s else raw
+
+
 def tap(*, helper: str | os.PathLike | None = None, sudo: bool = True, wait_s: float = 0.0,
         run: Callable | None = None, env: Mapping[str, str] | None = None,
         lock: unlock.SessionLock | None = None, timeout: float = 30.0) -> tuple[bool, str]:
@@ -135,11 +163,14 @@ def _save(path: Path, state: dict) -> None:
 
 def step(now: dt.datetime, *, start: str | dt.time | None, end: str | dt.time | None, state_path: str | os.PathLike,
          spread_min: int = SPREAD_MIN, interval_s: int = INTERVAL_S, rng: random.Random | None = None,
-         do_tap: Callable[[], tuple[bool, str]] | None = None) -> dict:
+         do_tap: Callable[[], tuple[bool, str]] | None = None,
+         idle: Callable[[], Optional[float]] | None = None) -> dict:
     """One pass. `now` carries the zone the hours are in. `start` and `end` are the hours for `now`'s date, or
     both None for a day with no window. Returns {"did": ..., "window": [start, end] or None, ...} where `did` is one
-    of "off", "outside", "waiting", "tapped", "busy" or "failed". A tap is recorded in the state file with its time,
-    and the window drawn for a date stays the same for every later pass that day, whatever hours are given then."""
+    of "off", "outside", "waiting", "active", "tapped", "busy" or "failed". A tap is recorded in the state file with its
+    time, and the window drawn for a date stays the same for every later pass that day, whatever hours are given
+    then. With `idle` (a reader of the system's idle seconds, such as `idle_seconds`) a pass taps only when the person's
+    idle time has reached `interval_s`, and says "active" otherwise, since the Mac is already in use."""
     path = Path(state_path).expanduser()
     state = _load(path)
     day = now.date().isoformat()
@@ -157,10 +188,17 @@ def step(now: dt.datetime, *, start: str | dt.time | None, end: str | dt.time | 
     last = state["taps"][-1] if state["taps"] else None
     if last is not None and (now - dt.datetime.fromisoformat(last)).total_seconds() < interval_s:
         return {"did": "waiting", "window": window, "last_tap": last}
+    person = None
+    if idle is not None:
+        person = person_idle(idle(), path, now=now)
+        if person is not None and person < interval_s:
+            return {"did": "active", "window": window, "idle_s": round(person, 1)}
     ok, detail = (do_tap or tap)()
     if not ok:
         return {"did": "busy" if detail.startswith("busy") else "failed", "window": window, "detail": detail}
     state["taps"].append(now.isoformat(timespec="seconds"))
+    if person is not None:
+        state["last_tap"] = {"at": now.isoformat(), "idle_before": person}
     _save(path, state)
     return {"did": "tapped", "window": window, "taps_today": sum(t[:10] == day for t in state["taps"])}
 
@@ -170,7 +208,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--start", help="the day's first hour, HH:MM in this Mac's time zone")
     p.add_argument("--end", help="the day's last hour, HH:MM")
     p.add_argument("--off", action="store_true", help="this day has no window")
-    p.add_argument("--idle", action="store_true", help="print the idle seconds and exit")
+    p.add_argument("--idle", action="store_true", help="print the system's idle seconds and exit")
+    p.add_argument("--person-idle", action="store_true",
+                   help="print the person's idle seconds, with this module's taps left out, and exit")
     p.add_argument("--spread", type=int, default=SPREAD_MIN, help="minutes either side of each hour (default 60)")
     p.add_argument("--interval", type=int, default=INTERVAL_S, help="seconds between taps (default 240)")
     p.add_argument("--state", default=DEFAULT_STATE, help="where the drawn window and the taps are kept")
@@ -180,13 +220,17 @@ def main(argv: list[str]) -> int:
         v = idle_seconds()
         print("unknown" if v is None else round(v, 1))
         return 0 if v is not None else 1
+    if a.person_idle:
+        v = person_idle(idle_seconds(), a.state)
+        print("unknown" if v is None else round(v, 1))
+        return 0 if v is not None else 1
     if a.off == bool(a.start or a.end) or bool(a.start) != bool(a.end):
         p.error("give --start and --end together, or --off")
     now = dt.datetime.now().astimezone()
     try:
         out = step(now, start=None if a.off else a.start, end=None if a.off else a.end, state_path=a.state,
                    spread_min=a.spread, interval_s=a.interval,
-                   do_tap=lambda: tap(helper=a.vhid))
+                   do_tap=lambda: tap(helper=a.vhid), idle=idle_seconds)
     except WindowError as e:
         print(f"keep-active: {e}", file=sys.stderr)
         return 2

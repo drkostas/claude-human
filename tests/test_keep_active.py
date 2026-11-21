@@ -138,3 +138,53 @@ def test_a_helper_that_fails_or_cannot_start_is_a_failure_with_words(tmp_path):
     assert not ok and "failed" in detail and "no" in detail
     ok, detail = ka.tap(helper=tmp_path / "missing", sudo=False, lock=lock)
     assert not ok and "could not run" in detail
+
+
+def test_person_idle_leaves_the_taps_out_and_shows_a_person_after_the_tap(tmp_path):
+    state = tmp_path / "state.json"
+    assert ka.person_idle(None, state, now=at(12)) is None
+    assert ka.person_idle(55.0, state, now=at(12)) == 55.0            # no tap recorded yet
+    state.write_text(json.dumps({"last_tap": {"at": at(12).isoformat(), "idle_before": 400.0}}))
+    assert ka.person_idle(100.0, state, now=at(12) + dt.timedelta(seconds=100)) == 500.0   # the tap was the last input
+    assert ka.person_idle(95.0, state, now=at(12) + dt.timedelta(seconds=100)) == 495.0    # within the slack
+    assert ka.person_idle(20.0, state, now=at(12) + dt.timedelta(seconds=100)) == 20.0     # a person typed after it
+    assert ka.person_idle(900.0, state, now=at(12) + dt.timedelta(seconds=100)) == 900.0   # older than the tap
+    state.write_text("not json")
+    assert ka.person_idle(100.0, state, now=at(12)) == 100.0
+
+
+def test_a_day_of_taps_never_makes_the_person_look_present(tmp_path):
+    """The system's idle reading is set back to 0 by each tap. The person's idle time must keep growing."""
+    state = tmp_path / "state.json"
+    clock = {"last_input": at(7)}          # the person's last input, before the day
+
+    def raw(now):
+        return (now - clock["last_input"]).total_seconds()
+
+    seen = []
+    for m in range(7 * 60, 21 * 60):
+        now = at(0, 0) + dt.timedelta(minutes=m)
+
+        def do_tap(now=now):
+            clock["last_input"] = now      # the virtual keyboard resets the counter
+            return True, "tapped"
+
+        out = ka.step(now, start="09:00", end="19:00", state_path=state, spread_min=0, do_tap=do_tap,
+                      idle=lambda now=now: raw(now))
+        seen.append((now, out["did"], ka.person_idle(raw(now), state, now=now)))
+    assert any(d == "tapped" for _, d, _ in seen)
+    window = [(n, p) for n, d, p in seen if n >= at(9, 5)]
+    assert all(p >= 240 for _, p in window)                            # never under the interval
+    ps = [p for _, _, p in seen]
+    assert ps == sorted(ps)                                             # and it only grows
+
+
+def test_a_person_at_the_mac_gets_no_tap_and_is_seen(tmp_path):
+    state = tmp_path / "state.json"
+    taps = []
+    out = ka.step(at(12), start="09:00", end="19:00", state_path=state, spread_min=0,
+                  do_tap=lambda: taps.append(1) or (True, "tapped"), idle=lambda: 30.0)
+    assert out["did"] == "active" and taps == []
+    out = ka.step(at(12, 1), start="09:00", end="19:00", state_path=state, spread_min=0,
+                  do_tap=lambda: taps.append(1) or (True, "tapped"), idle=lambda: 600.0)
+    assert out["did"] == "tapped" and json.loads(state.read_text())["last_tap"]["idle_before"] == 600.0
