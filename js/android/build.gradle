@@ -1,0 +1,15 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.ntfy'
+version = '0.7.0'
+
+android {
+  namespace "expo.modules.ntfy"
+  defaultConfig {
+    versionCode 1
+    versionName '0.7.0'
+  }
+}
