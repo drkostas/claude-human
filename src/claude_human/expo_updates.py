@@ -13,11 +13,15 @@ standard input, so the key is never written to a file.
                      expo_client=config, sign=sign, certificate=certificate_pem)
     status, headers, body = manifest_response("store", platform="android", runtime_version=rv)
     status, headers, body = asset_response("store", asset_hash)
+    republish("store", "android", rv, earlier_id, sign=sign, certificate=certificate_pem)   # a rollback
 
 The app's config names the manifest's address in `updates.url`, the certificate in
 `updates.codeSigningCertificate`, and `updates.codeSigningMetadata` as {"keyid": "main", "alg":
 "rsa-v1_5-sha256"}. A client that checks signatures refuses a manifest without one, or with one its
 certificate does not verify, and keeps the bundle it has. Asset addresses are `<base_url>/assets/<hash>`.
+
+A client never loads an update older than the one it runs, so a rollback is a new update made from an earlier
+one's files, with a later createdAt (`republish`), not the earlier update named as `latest` again.
 
 The store:
 
@@ -231,6 +235,94 @@ def latest(store: str | os.PathLike, platform: str, runtime_version: str) -> str
         return _safe("update id", value)
     except (OSError, ValueError):
         return None
+
+
+def updates(store: str | os.PathLike, platform: str, runtime_version: str) -> list[dict]:
+    """Every update stored for `runtime_version` on `platform`, newest first by its createdAt: its id, createdAt,
+    whether it is signed and whether it is the one offered now."""
+    try:
+        root = Path(store) / _platform(platform) / _safe("runtime version", runtime_version)
+    except ValueError:
+        return []
+    offered = latest(store, platform, runtime_version)
+    out = []
+    for folder in (root.iterdir() if root.is_dir() else []):
+        if not folder.is_dir() or not _SAFE.match(folder.name):
+            continue
+        try:
+            m = json.loads((folder / "manifest.json").read_bytes())
+        except (OSError, ValueError):
+            continue
+        out.append({"id": folder.name, "created_at": m.get("createdAt"), "signed": (folder / "signature").exists(),
+                    "offered": folder.name == offered})
+    return sorted(out, key=lambda u: str(u["created_at"] or ""), reverse=True)
+
+
+def _parse_created(value: object) -> datetime | None:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def republish(store: str | os.PathLike, platform: str, runtime_version: str, update_id: str, *,
+              sign: Callable[[bytes], str], certificate: str, keyid: str = "main", created_at: datetime | None = None,
+              openssl: str = "openssl", env: Mapping[str, str] | None = None) -> dict:
+    """Offer an earlier stored update again, as a new update: the way to roll back (or forward again).
+
+    A client never loads an update whose createdAt is older than the one it runs, nor one whose id it already has, so
+    naming the earlier update as `latest` again would change nothing on a device. This makes a new update instead,
+    with the earlier one's launch asset, assets, metadata and extra, a new id (made from the earlier id and the new
+    createdAt) and createdAt now, or `created_at`. It must be later than the createdAt of the update offered now.
+
+    The earlier update is checked first. Its manifest must parse and name this id and runtime version, every file it
+    lists must be stored with its hash, and its stored signature must verify against `certificate`, so the key signs
+    again only what it signed before. The new manifest is signed once and verified against `certificate` before
+    anything is stored, and `latest` names it only then. Any failed check raises ValueError and leaves the store and
+    `latest` as they were. Returns the new id, the id it copied, the id it replaced, and its createdAt."""
+    root = Path(store) / _platform(platform) / _safe("runtime version", runtime_version)
+    folder = root / _safe("update id", update_id)
+    try:
+        body = (folder / "manifest.json").read_bytes()
+        manifest = json.loads(body)
+    except (OSError, ValueError):
+        raise ValueError(f"no stored update {update_id} for {platform} {runtime_version}") from None
+    if not isinstance(manifest, dict) or manifest.get("id") != update_id \
+            or manifest.get("runtimeVersion") != runtime_version:
+        raise ValueError(f"the stored manifest of {update_id} names another id or runtime version")
+    for asset in [manifest.get("launchAsset") or {}] + list(manifest.get("assets") or []):
+        h = asset.get("hash") if isinstance(asset, dict) else None
+        status = asset_response(store, h)[0] if isinstance(h, str) else 400
+        if status != 200:
+            raise ValueError(f"{update_id} lists a file that is not stored with its hash ({h!r})")
+    value = (folder / "signature").read_text().strip() if (folder / "signature").exists() else ""
+    m = re.fullmatch(r'sig="([A-Za-z0-9+/=]+)"(?:, .*)?', value)
+    if not m or not verify(body, m.group(1), certificate, openssl=openssl, env=env):
+        raise ValueError(f"{update_id} has no signature the certificate verifies, so it is not signed again")
+    before = latest(store, platform, runtime_version)
+    created = _created(created_at)
+    if before is not None:
+        try:
+            offered_at = _parse_created(json.loads((root / before / "manifest.json").read_bytes()).get("createdAt"))
+        except (OSError, ValueError, AttributeError):
+            offered_at = None
+        if offered_at is None:
+            raise ValueError(f"the createdAt of {before}, the update offered now, cannot be read, so a later one "
+                             "cannot be chosen")
+        if _parse_created(created) <= offered_at:
+            raise ValueError(f"createdAt {created} is not later than {_created(offered_at)} of {before}, the update "
+                             "offered now, and a client never loads an update older than the one it runs")
+    seed = hashlib.sha256(update_id.encode() + b"\0" + created.encode()).hexdigest()
+    new = {**manifest, "id": str(uuid.UUID(seed[:32])), "createdAt": created}
+    new_body = json.dumps(new, separators=(",", ":"), ensure_ascii=False).encode()
+    sig = sign(new_body)
+    if not verify(new_body, sig, certificate, openssl=openssl, env=env):
+        raise ValueError("the signature does not verify against the certificate, so the app would refuse it")
+    target = root / new["id"]
+    _write(target / "manifest.json", new_body)
+    _write(target / "signature", signature_value(sig, keyid).encode())
+    _write(root / "latest", new["id"].encode())
+    return {"id": new["id"], "copied": update_id, "replaced": before, "created_at": created}
 
 
 def manifest_response(store: str | os.PathLike, *, platform: str, runtime_version: str,
