@@ -16,10 +16,17 @@ so 20 pixels leaves room for both and none for a frame that only loads a script.
     run_js(challenge.present_js(".g-recaptcha,iframe[src*=hcaptcha]"))   # the elements a recipe names
 
 `drawn_js` is the test on one element, for a script that reads more of the page at once.
+
+A challenge inside a frame that is itself inside another frame has no address the top page can read, so
+`says_robot_check` reads the words instead: a step's name, or a line read from the window.
+
+    challenge.says_robot_check("I'm not a robot")         # True
+    challenge.says_robot_check("Save and Continue")       # False
 """
 from __future__ import annotations
 
 import json
+import re
 
 #: the frames of the challenge vendors this knows, matched against an iframe's address
 VENDORS = r"challenges[.]cloudflare|hcaptcha|recaptcha|turnstile|arkose|funcaptcha"
@@ -27,6 +34,24 @@ VENDORS = r"challenges[.]cloudflare|hcaptcha|recaptcha|turnstile|arkose|funcaptc
 MIN_PX = 20
 #: reCAPTCHA v3's badge, which holds its frame on every page and is no step of anybody's
 V3_BADGE = ".grecaptcha-badge"
+#: the words a robot check shows a person, matched against text with its case and spacing set aside. A challenge
+#: can sit in a frame inside another frame, where a script in the top page sees no address to match against
+#: VENDORS, so the words a step or a button says are checked as well. The pattern uses no lookbehind, so the same
+#: string works as a JavaScript RegExp with the "i" flag.
+WORDS = (r"\bi(?:'|\u2019| a)m not a robot\b"
+         r"|\bi am (?:a )?human\b"
+         r"|\b(?:verify|prove|confirm) (?:that )?you(?:'|\u2019| a)re (?:a )?human\b"
+         r"|\bare you (?:a )?(?:robot|human)\b"
+         r"|\bhuman verification\b"
+         r"|\bpress (?:and|&) hold\b")
+
+
+def says_robot_check(text: str | None) -> bool:
+    """True when `text` says what a robot check says to a person ("I'm not a robot", "Verify you are human",
+    "Press and hold"), whatever its case, spacing or kind of apostrophe. For a step's words or a line read from a
+    window, where no frame address is there to check."""
+    words = re.sub(r"\s+", " ", text or "").strip()
+    return bool(words) and re.search(WORDS, words, re.IGNORECASE) is not None
 
 
 def drawn_js(min_px: int = MIN_PX) -> str:
