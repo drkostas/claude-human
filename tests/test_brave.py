@@ -591,6 +591,8 @@ class FakeTab:
         self.ran = []
 
     def osa(self, script, *a, **k):
+        if "get id of every window" in script:
+            return (0, "7")                              # the browser knows the window
         if "set URL of active tab" in script:
             self.sent = script.split('to "')[1].rstrip('"')
             self.left = self.lag
@@ -676,3 +678,293 @@ def test_a_page_whose_address_cannot_be_read_is_not_waited_for(monkeypatch):
     monkeypatch.setattr(brave.time, "sleep", lambda s: None)
     monkeypatch.setattr(brave, "blocked_by", lambda: None)
     assert brave.run("https://new.example.org/", "1", window="7")["result"] == "old"
+
+
+# Running a script in an open tab chosen by its address, and a window id the browser does not know.
+import time
+
+
+class FakeBrowser:
+    """Stands in for osascript and a browser with tabs in two windows. A script run in a tab is
+    recorded with that tab's id, and its answer is that tab's `pages` value."""
+
+    def __init__(self, tabs, listing=True, pay="", guard="guarded", refuse=None):
+        self.tabs = tabs                                  # [(window, tab, url, answer)]
+        self.listing, self.calls, self.ran = listing, [], []
+        # what the payment check answers, what the guard answers, and the refusal the guard leaves
+        # when the caller's script writes to a password input (None: it writes to none)
+        self.pay, self.guard, self.refuse = pay, guard, refuse
+        self.refused, self.steps = "", []
+
+    def __call__(self, script, timeout=30, *, env=None):
+        self.calls.append(script)
+        if "repeat with w in" in script:
+            if not self.listing:
+                return 1, "the browser did not answer"
+            return 0, "".join(f"{w}\t{t}\t{u}\tA title\n" for w, t, u, _ in self.tabs)
+        if "get id of every window" in script:
+            return 0, ", ".join(sorted({w for w, *_ in self.tabs}))
+        m = re.search(r"execute \(tab id (\d+) of window id (\d+)\) javascript \"(.*)\"$", script, re.S)
+        if not m:
+            return 1, f"Can't get that window (-1719): {script[:80]}"
+        tab = next((x for x in self.tabs if x[1] == m[1] and x[0] == m[2]), None)
+        if tab is None:
+            return 1, "Can't get tab id (-1728)"
+        js = re.sub(r'\\(.)', r'\1', m[3])
+        if js == brave.PAYMENT_PAGE_JS:
+            self.steps.append("pay check")
+            return 0, self.pay
+        if js.startswith(brave.GUARD_JS):
+            self.steps.append("guard")
+            return 0, self.guard
+        if js.startswith("window.__claude_guard_on = false"):
+            self.steps.append("off")
+            return 0, "off"
+        if js.startswith("String(window.__claude_refused"):
+            return 0, self.refused
+        if js.startswith("window.__claude_r = undefined"):
+            return 0, ""
+        if "__PENDING__" in js:
+            return 0, "__REFUSED__" if self.refused else "__PENDING__"
+        self.ran.append((m[1], js))
+        self.steps.append("script")
+        if self.refuse:
+            self.refused = self.refuse
+            return 0, "missing value"                     # the guard's throw ends the script
+        return 0, tab[3]
+
+
+TABS = [("10", "101", "https://shop.example.org/checkout?step=2", "step two"),
+        ("10", "102", "https://example.org/news", "news"),
+        ("20", "201", "https://forms.example.org/apply#part-3", "the form, filled")]
+
+
+def _browser(monkeypatch, extra=(), **k):
+    b = FakeBrowser(list(TABS) + list(extra), **k)
+    monkeypatch.setattr(brave, "osa", b)
+    monkeypatch.setattr(brave, "blocked_by", lambda: None)
+    monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    return b
+
+
+def test_run_in_tab_runs_in_the_one_matching_tab_and_loads_nothing(monkeypatch):
+    # a form filled over several steps: loading its page again, or running in the active tab of
+    # another window, would read the fields back empty
+    b = _browser(monkeypatch)
+    out = brave.run_in_tab("forms.example.org/apply", "document.title")
+    assert out == {"result": "the form, filled", "window": "20", "tab": "201",
+                   "url": "https://forms.example.org/apply#part-3"}
+    assert b.ran == [("201", "document.title")]
+    assert not any("set URL" in c or "activate" in c or "active tab" in c or "set index" in c
+                   for c in b.calls), b.calls
+
+
+def test_run_in_tab_refuses_no_match_and_several_before_running(monkeypatch):
+    b = _browser(monkeypatch)
+    for part, n in (("nowhere.example.org", 0), ("example.org", 3)):
+        try:
+            brave.run_in_tab(part, "1")
+        except LookupError as e:
+            assert f"{n} open tabs" in str(e) and ("longer part" in str(e)) == (n > 1), str(e)
+        else:
+            raise AssertionError(f"{part} ran with {n} matches")
+    assert b.ran == []
+    try:
+        brave.run_in_tab("", "1")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an empty part matched every tab")
+
+
+def test_a_listing_with_no_answer_is_unknown_not_no_match(monkeypatch):
+    _browser(monkeypatch, listing=False)
+    try:
+        brave.run_in_tab("forms.example.org", "1")
+    except RuntimeError as e:
+        assert "did not list its tabs" in str(e)
+    else:
+        raise AssertionError("a browser that did not answer read as a tab found or not found")
+
+
+def test_a_long_script_reaches_the_chosen_tab_in_parts(monkeypatch):
+    page = FakePage()
+    monkeypatch.setattr(brave, "osa", page)
+    code = _text(5_000)
+    assert brave.js_in("20", code, chunk=500, tab="201") == "ran" and page.ran == [code]
+    assert page.calls and all("execute (tab id 201 of window id 20) javascript" in c for c in page.calls)
+
+
+def test_the_tab_url_command(monkeypatch, tmp_path, capsys):
+    _browser(monkeypatch)
+    js = tmp_path / "read.js"
+    js.write_text("document.title")
+    assert brave.main(["--tab-url", "forms.example.org", str(js)]) == 0
+    got = capsys.readouterr()
+    assert got.out.strip() == "the form, filled" and "TAB 201 WINDOW 20" in got.err
+    assert brave.main(["--tab-url", "example.org", str(js)]) == 2
+    assert "3 open tabs" in capsys.readouterr().err
+    assert brave.main(["--tab-url", "forms.example.org", str(js), "--window", "20"]) == 2
+    assert "not --window" in capsys.readouterr().err
+
+
+def test_a_window_the_browser_does_not_know_is_refused_at_once(monkeypatch):
+    # a window manager's id passed as the browser's: every call failed, the run took that for a page
+    # still loading, and after its whole timeout named the page's condition, never the window
+    _browser(monkeypatch)
+    for url in ("https://forms.example.org/apply#part-4", "-"):
+        start = time.monotonic()
+        try:
+            brave.run(url, "1", window="35849", timeout=30)
+        except RuntimeError as e:
+            assert "has no window 35849" in str(e) and "WINDOW" in str(e), str(e)
+        else:
+            raise AssertionError(f"{url}: the run went on with a window the browser does not know")
+        assert time.monotonic() - start < 5
+
+
+def test_a_timeout_names_the_browsers_last_error(monkeypatch):
+    # the window is known, and the page never answers: the timeout says what the browser said
+    b = _browser(monkeypatch)
+    try:
+        brave.run("-", "1", window="20", timeout=0.05)
+    except TimeoutError as e:
+        assert "last error" in str(e) and "Can't get that window" in str(e), str(e)
+    else:
+        raise AssertionError("the run did not time out")
+    assert b.ran == []
+
+
+# run_in_tab never fills a password or a payment field (TAB_RULE), and says which rule refused it.
+
+PAY_TAB = ("30", "301", "https://checkout.stripe.com/c/pay/session-1", "the card form")
+
+
+def test_payment_hosts_are_matched_by_host_never_by_text():
+    assert brave.payment_host("https://checkout.stripe.com/c/pay/x") == "checkout.stripe.com"
+    assert brave.payment_host("https://www.paypal.com/checkoutnow") == "www.paypal.com"
+    assert brave.payment_host("https://stripe.com.example.org/") is None
+    assert brave.payment_host("https://notstripe.com/") is None
+    assert brave.payment_host("https://example.org/?next=https://paypal.com/") is None
+    assert brave.payment_host("not an address") is None
+
+
+def test_a_tab_on_a_payment_host_is_refused_before_any_script(monkeypatch):
+    b = _browser(monkeypatch, extra=[PAY_TAB])
+    try:
+        brave.run_in_tab("checkout.stripe.com", "document.title")
+    except brave.Refused as e:
+        assert brave.TAB_RULE in str(e) and "payment page (checkout.stripe.com)" in str(e), str(e)
+    else:
+        raise AssertionError("a script ran on a payment page")
+    assert b.ran == [] and b.steps == [] and not any("execute" in c for c in b.calls), b.calls
+
+
+def test_a_page_with_a_payment_frame_is_refused_before_the_callers_script(monkeypatch):
+    b = _browser(monkeypatch, pay="the page holds a payment frame (js.stripe.com)")
+    try:
+        brave.run_in_tab("forms.example.org", "document.title")
+    except brave.Refused as e:
+        assert brave.TAB_RULE in str(e) and "payment frame (js.stripe.com)" in str(e), str(e)
+    else:
+        raise AssertionError("a script ran on a page with a payment frame")
+    assert b.ran == [] and b.steps == ["pay check"], b.steps
+
+
+def test_a_payment_check_that_cannot_be_read_runs_nothing(monkeypatch):
+    b = _browser(monkeypatch, pay="missing value")
+    try:
+        brave.run_in_tab("forms.example.org", "document.title")
+    except RuntimeError as e:
+        assert "could not be read" in str(e)
+    else:
+        raise AssertionError("an unread payment check let the script run")
+    assert b.ran == []
+
+
+def test_a_write_to_a_password_input_stops_the_script_and_names_the_rule(monkeypatch):
+    said = brave.TAB_RULE + " (the script set the value of a password input)"
+    b = _browser(monkeypatch, refuse=said)
+    try:
+        brave.run_in_tab("forms.example.org", 'document.querySelector("#pw").value = "x"')
+    except brave.Refused as e:
+        assert str(e) == said
+    else:
+        raise AssertionError("a write to a password input read as a success")
+    assert b.steps == ["pay check", "guard", "script", "off"], b.steps
+
+
+def test_the_guard_goes_in_first_and_is_switched_off_after_every_call(monkeypatch):
+    b = _browser(monkeypatch)
+    assert brave.run_in_tab("forms.example.org", "document.title")["result"] == "the form, filled"
+    assert b.steps == ["pay check", "guard", "script", "off"], b.steps
+    b2 = _browser(monkeypatch, guard="missing value")
+    try:
+        brave.run_in_tab("forms.example.org", "document.title")
+    except RuntimeError as e:
+        assert "did not run" in str(e)
+    else:
+        raise AssertionError("the script ran without its guard")
+    assert b2.ran == [] and b2.steps == ["pay check", "guard", "off"], b2.steps
+
+
+def test_the_tab_url_command_refuses_a_payment_page(monkeypatch, tmp_path, capsys):
+    _browser(monkeypatch, extra=[PAY_TAB])
+    js = tmp_path / "fill.js"
+    js.write_text("1")
+    assert brave.main(["--tab-url", "checkout.stripe.com", str(js)]) == 2
+    assert brave.TAB_RULE in capsys.readouterr().err
+
+
+# The guard itself, run in node against a small stand-in for the page's DOM (the prototypes the guard
+# replaces), since a test machine has no browser to drive.
+GUARD_PAGE = r"""
+class Element { constructor(tag, type){ this.tagName = tag; this._a = {}; if (type) this._a.type = type; }
+  getAttribute(n){ return n in this._a ? this._a[n] : null; }
+  setAttribute(n, v){ this._a[String(n).toLowerCase()] = String(v); }
+  removeAttribute(n){ delete this._a[String(n).toLowerCase()]; } }
+class HTMLInputElement extends Element {
+  get value(){ return this._v || ""; } set value(v){ this._v = String(v); }
+  get defaultValue(){ return this._a.value || ""; } set defaultValue(v){ this._a.value = String(v); }
+  get type(){ return this._a.type || "text"; } set type(v){ this._a.type = String(v); }
+  setRangeText(t){ this._v = String(t); } }
+class Document { execCommand(c, u, v){ if (this.activeElement) this.activeElement._v = String(v); return true; } }
+globalThis.window = globalThis; window.frames = [];
+window.Element = Element; window.HTMLInputElement = HTMLInputElement; window.Document = Document;
+const doc = new Document(), user = new HTMLInputElement("INPUT"), pw = new HTMLInputElement("INPUT", "password");
+const out = {};
+out.guard = eval(GUARD + "(" + JSON.stringify(RULE) + ")");
+function tryit(name, f){ try { f(); out[name] = "ran"; } catch (e) { out[name] = e.message; } }
+tryit("user", () => { user.value = "someone"; });
+tryit("value", () => { pw.value = "secret"; });
+tryit("type", () => { pw.type = "text"; });
+tryit("attr", () => { pw.setAttribute("value", "secret"); });
+tryit("remove", () => { pw.removeAttribute("type"); });
+tryit("range", () => { pw.setRangeText("secret"); });
+tryit("typed", () => { doc.activeElement = pw; doc.execCommand("insertText", false, "secret"); });
+out.pw = pw._v || "", out.pwtype = pw.getAttribute("type"), out.userv = user.value;
+out.refused = window.__claude_refused;
+window.__claude_guard_on = false;
+tryit("off", () => { pw.value = "later"; });
+out.after = pw._v || "";
+console.log(JSON.stringify(out));
+"""
+
+
+def test_the_guard_refuses_every_write_to_a_password_input_and_only_while_on():
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    src = f"const GUARD = {json.dumps(brave.GUARD_JS)};\nconst RULE = {json.dumps(brave.TAB_RULE)};\n{GUARD_PAGE}"
+    r = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["guard"] == "guarded" and out["user"] == "ran" and out["userv"] == "someone", out
+    for k in ("value", "type", "attr", "remove", "range", "typed"):
+        assert out[k].startswith(brave.TAB_RULE + " (the script "), (k, out[k])
+    assert out["pw"] == "" and out["pwtype"] == "password", out          # the input is as it was
+    assert out["refused"].startswith(brave.TAB_RULE), out
+    assert out["off"] == "ran" and out["after"] == "later", out         # switched off, `run` is untouched

@@ -258,6 +258,7 @@ claude-human consent deny
 claude-human brave https://example.org/account read.js          # result on stdout, window closed
 claude-human brave https://example.org/login fill.js --keep-open # WINDOW <id> [YABAI <id>] on stderr
 claude-human brave - next.js --window <id>                      # continue in that window, on its page
+claude-human brave --tab-url forms.example.org/apply step.js     # the one open tab with that address, as it is
 ```
 
 The page opens in a new window of the person's own browser, which has their cookies and saved
@@ -268,6 +269,18 @@ passwords, never in one of their windows. The script may be async and assigns it
   answer, which is waited for by itself. A `--wait-for` that names `window.__claude_r` is refused,
   since only the script sets it. Wait for something on the page (`document.querySelector(".comments")`),
   or leave it out.
+
+- `--tab-url PART` (`brave.run_in_tab(part, code)`) runs in the one open tab whose address contains
+  PART, on its page as it is, with nothing loaded and nothing brought forward. Use it for a page of
+  several steps, where loading the page again clears what an earlier step filled in. No match, or more
+  than one, is refused before anything runs, and `brave.find_tab(part)` gives the tab.
+- `run_in_tab` never fills a password or a payment field, and has no option to (`brave.TAB_RULE`,
+  raised as `brave.Refused`, exit 2). A tab on a payment host (`brave.PAYMENT_HOSTS`), or a page with a
+  payment provider's frame or a card field, is refused before the script runs. A guard in the page
+  stops the script at its first write to a password input and leaves the input as it was. Read the
+  refusal as that rule, never as the tool failing. `brave.run` has no such guard.
+- `--window` takes the browser's own window id (the WINDOW line), never the YABAI one. An id the
+  browser does not know is refused at once.
 
 - A `--keep-open` run inside tmux reuses the window its tmux session kept last time while the browser
   still has it, so a flow of several steps keeps one window instead of leaving one per step.

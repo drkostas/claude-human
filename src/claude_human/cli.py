@@ -75,7 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("brave", help="run JavaScript on a page in the person's signed-in browser "
                                  "(brave URL JS_FILE [--keep-open] [--window ID] [--key KEY] ...), "
-                                 "whether it has a saved login (brave has-login SITE), or put files into a page's "
+                                 "in the one open tab whose address has a text, as it is "
+                                 "(brave --tab-url PART JS_FILE), whether it has a saved login (brave has-login SITE), or put files into a page's "
                                  "file input (brave upload WINDOW SELECTOR FILE...)")
 
     sub.add_parser("steps", help="drive one window through the station a step at a time, from step files, "
