@@ -180,8 +180,15 @@ claude-human brave --tab-url forms.example.org/apply step.js   # TAB <id> WINDOW
 holds now. Nothing is loaded and no window or tab comes forward, so a form filled in by an earlier step
 keeps its values, which loading the page again would clear. When no tab matches, or more than one does,
 it refuses before anything runs (exit 2) and says how many matched. A tab in the background runs a
-script as well as the active one. The tab may be one the person opened, so use it for a page the work
-is on, and never to fill a password, a sign-in or a payment field. Those stay with the person.
+script as well as the active one.
+
+The tab may be one the person opened, so password and payment fields are out of its reach, with no
+option to change that. A tab on a payment provider's host, or a page that holds a payment provider's
+frame or a card field, is refused before the script runs. A guard goes into the page first and stops
+a script at its first write to a password input (its value, its type, a value attribute, or text typed
+into it), and leaves the input as it was. Each refusal says that password and payment fields are not
+filled by this tool and stay with the person or their password manager, and exits 2. The guard is on
+only while the call runs, and only for scripts this tool runs, so the page's own scripts never meet it.
 
 `--window ID` takes the browser's own window id, the WINDOW line a `--keep-open` run prints. An id the
 browser does not know (a window manager's id, or a window that has closed) is refused at once with that

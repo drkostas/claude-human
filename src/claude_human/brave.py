@@ -917,6 +917,95 @@ def find_tab(part: str, app: str = APP, *, timeout: float = 30) -> dict:
     return hits[0]
 
 
+#: what run_in_tab says when it refuses, so a refusal reads as this rule and never as a broken tool
+TAB_RULE = ("password and payment fields are not filled by this tool, they stay with the person or "
+            "their password manager")
+
+#: hosts (and every host under them) of payment pages and the frames payment providers put in other
+#: sites' pages: run_in_tab refuses a tab on one, or a page that holds a frame from one
+PAYMENT_HOSTS = (
+    "stripe.com", "stripe.network", "paypal.com", "paypalobjects.com", "pay.google.com",
+    "payments.google.com", "pay.amazon.com", "payments.amazon.com", "braintreegateway.com",
+    "braintree-api.com", "adyen.com", "adyenpayments.com", "checkout.com", "squareup.com",
+    "square.site", "klarna.com", "paddle.com", "lemonsqueezy.com", "2checkout.com", "mollie.com",
+    "worldpay.com", "authorize.net", "opayo.co.uk", "checkout.visa.com", "src.mastercard.com",
+    "vivapayments.com", "vivawallet.com", "everypay.gr", "revolut.com", "wise.com",
+)
+
+
+class Refused(PermissionError):
+    """run_in_tab will not run in that tab, or stopped the script, under TAB_RULE."""
+
+
+def payment_host(url: str) -> str | None:
+    """Pure. The host of `url` when it is one of PAYMENT_HOSTS or under one, else None."""
+    from urllib.parse import urlsplit   # noqa: PLC0415
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return None
+    return host if any(host == h or host.endswith("." + h) for h in PAYMENT_HOSTS) else None
+
+
+#: why the page is a payment page, or "": a frame from a payment host, or a card field
+PAYMENT_PAGE_JS = (
+    "(function(H){function pay(u){var h;try{h=new URL(u,location.href).hostname.toLowerCase();}"
+    "catch(e){return '';}for(var i=0;i<H.length;i++){if(h===H[i]||h.slice(-H[i].length-1)==='.'+H[i])"
+    "return h;}return '';}var h=pay(location.href);if(h)return 'the tab is a payment page ('+h+')';"
+    "var f=document.querySelectorAll('iframe[src],frame[src]');for(var i=0;i<f.length;i++){var p=pay("
+    "f[i].src);if(p)return 'the page holds a payment frame ('+p+')';}var c=document.querySelector("
+    "'input[autocomplete*=\"cc-\"]');if(c)return 'the page holds a card field (autocomplete '+"
+    "c.getAttribute('autocomplete')+')';return '';})(" + json.dumps(list(PAYMENT_HOSTS)) + ")")
+
+#: where the guard leaves its refusal in the page
+REFUSED = "__claude_refused"
+
+#: where the guard is switched on, for the length of one run_in_tab call
+GUARD_ON = "__claude_guard_on"
+
+#: Put in the browser's isolated world for scripts before the caller's script runs, in the page and
+#: in every same-origin frame it holds. While window.__claude_guard_on is true it refuses, by
+#: throwing, any write to a password input: its value or defaultValue, its type (by the property or
+#: an attribute), setRangeText, a value attribute, and execCommand's insert commands while one has
+#: the focus. The page's own scripts run in another world, with other prototypes, so the page itself
+#: is not touched, and once the call has switched it off a later script (`run`) is not touched
+#: either. A refusal is left in window.__claude_refused and as the answer, so a script that catches
+#: the error still ends.
+GUARD_JS = r"""(function(R){
+var W = window;
+W.__claude_refused = "";
+W.__claude_guard_on = true;
+function refuse(why){ var m = R + " (" + why + ")"; W.__claude_refused = m; W.__claude_r = "__REFUSED__";
+  throw new Error(m); }
+function pw(el){ return W.__claude_guard_on === true && !!el && el.tagName === "INPUT" && String(el.getAttribute("type") || "").toLowerCase() === "password"; }
+function guard(w){
+  var P = w.HTMLInputElement.prototype, E = w.Element.prototype, D = w.Document.prototype;
+  if (Object.getOwnPropertyDescriptor(P, "__claude_guarded")) return;
+  ["value", "defaultValue", "type"].forEach(function(k){
+    var d = Object.getOwnPropertyDescriptor(P, k);
+    Object.defineProperty(P, k, {configurable: true, enumerable: d.enumerable, get: d.get,
+      set: function(v){ if (pw(this)) refuse("the script set the " + k + " of a password input"); return d.set.call(this, v); }});
+  });
+  var srt = P.setRangeText;
+  P.setRangeText = function(){ if (pw(this)) refuse("the script set the text of a password input"); return srt.apply(this, arguments); };
+  ["setAttribute", "setAttributeNS", "removeAttribute", "toggleAttribute"].forEach(function(k){
+    var f = E[k];
+    if (!f) return;
+    E[k] = function(){ var n = String(arguments[k === "setAttributeNS" ? 1 : 0]).toLowerCase();
+      if (pw(this) && (n === "value" || n === "type")) refuse("the script set the " + n + " attribute of a password input");
+      return f.apply(this, arguments); };
+  });
+  var ec = D.execCommand;
+  D.execCommand = function(c){ if (pw(this.activeElement) && /^insert/i.test(String(c))) refuse("the script typed into a password input");
+    return ec.apply(this, arguments); };
+  Object.defineProperty(P, "__claude_guarded", {value: true});
+}
+guard(W);
+for (var i = 0; i < W.frames.length; i++) { try { guard(W.frames[i]); } catch (e) {} }
+return "guarded";
+})"""
+
+
 def run_in_tab(part: str, code: str, *, timeout: float = 40, app: str = APP, blocker=None) -> dict:
     """Run `code` in the one open tab whose address contains `part`, on the page it holds now.
     Nothing is loaded, and no window or tab is brought forward or made active, so what an earlier
@@ -924,19 +1013,48 @@ def run_in_tab(part: str, code: str, *, timeout: float = 40, app: str = APP, blo
     {"result", "window", "tab", "url"}, with the result found as `run` finds it.
 
     The tab is chosen by `find_tab`: no match, or more than one, is refused (LookupError) before
-    anything runs. The tab may be one the person opened, so this is for a page the caller is working
-    on, never a way to fill a password, a sign-in or a payment field, which stay with the person.
+    anything runs. The tab may be one the person opened, so password and payment fields are out of
+    its reach, with no way to turn that off (TAB_RULE, raised as Refused):
+    - a tab on a payment host (PAYMENT_HOSTS) is refused before any script runs in it, and a page
+      that holds a payment provider's frame or a card field (autocomplete cc-*) before the caller's;
+    - GUARD_JS goes into the page first, and a script that writes to a password input is stopped
+      there, with the input left as it was.
+    `run` has no such guard: it works in a window of its own.
 
     A macOS prompt that holds every Apple Event raises Blocked before anything runs, as in `run`,
     and `timeout` holds for the whole call."""
     _refuse_if_blocked(blocker)
     global _deadline
     outer, _deadline = _deadline, time.monotonic() + timeout
+    guarded, w, tab = False, None, None
     try:
         t = find_tab(part, app, timeout=timeout)
-        result = _answer(t["window"], code, app, blocker, timeout, tab=t["tab"])
-        return {"result": result, "window": t["window"], "tab": t["tab"], "url": t["url"]}
+        w, tab = t["window"], t["tab"]
+        host = payment_host(t["url"])
+        if host:
+            raise Refused(f"{TAB_RULE} (the tab is a payment page ({host}))")
+        why = js_in(w, PAYMENT_PAGE_JS, app, tab=tab)
+        if why == "missing value":
+            raise RuntimeError("whether the page is a payment page could not be read, so the script "
+                               "did not run")
+        if why:
+            raise Refused(f"{TAB_RULE} ({why})")
+        guarded = True
+        if js_in(w, f"{GUARD_JS}({json.dumps(TAB_RULE)})", app, tab=tab) != "guarded":
+            raise RuntimeError("the guard against writes to a password input could not be put into the "
+                               "page, so the script did not run")
+        result = _answer(w, code, app, blocker, timeout, tab=tab)
+        refused = js_in(w, f'String(window.{REFUSED} || "")', app, tab=tab)
+        if refused:
+            raise Refused(refused)
+        return {"result": result, "window": w, "tab": tab, "url": t["url"]}
     finally:
+        if guarded and not (blocker or blocked_by)():
+            # switched off for whatever runs in this page next; past the deadline it gets
+            # CLOSE_GRACE seconds of its own, as closing a window does in `run`
+            _deadline = None
+            off = _escape(f'window.{GUARD_ON} = false; "off"')
+            osa(f'tell application "{app}" to execute {_target(w, tab)} javascript "{off}"', CLOSE_GRACE)
         _deadline = outer
 
 
@@ -978,8 +1096,9 @@ def main(argv: list[str]) -> int:
     `brave --tab-url PART JS_FILE [--timeout S] [--app NAME]`: run the script in the one open tab
     whose address contains PART, on the page it holds, with nothing loaded or brought forward
     (`run_in_tab`); the result on stdout, "TAB <id> WINDOW <id>" on stderr, exit 2 when no tab or
-    more than one matched. For a page of several steps, where loading it again would lose what an
-    earlier step filled in. Never for a password, a sign-in or a payment field.
+    more than one matched, or when it refused under TAB_RULE (a payment page, or a write to a
+    password input). For a page of several steps, where loading it again would lose what an earlier
+    step filled in.
     `brave has-login SITE`: exit 0 when a saved login matches the site, 1 when none, 2 when the
     login stores could not be read.
     `brave upload WINDOW SELECTOR FILE... [--done EXPR] [--settle S] [--timeout S] [--max-bytes N]
@@ -1039,7 +1158,7 @@ def _tab_main(a: list[str]) -> int:
     try:
         out = run_in_tab(opts["--tab-url"], Path(rest[0]).read_text(),
                          timeout=float(opts.get("--timeout", 40)), app=opts.get("--app", APP))
-    except (ValueError, LookupError) as e:
+    except (ValueError, LookupError, Refused) as e:
         print(str(e), file=sys.stderr)
         return 2
     except (TimeoutError, RuntimeError) as e:

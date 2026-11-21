@@ -273,8 +273,12 @@ passwords, never in one of their windows. The script may be async and assigns it
 - `--tab-url PART` (`brave.run_in_tab(part, code)`) runs in the one open tab whose address contains
   PART, on its page as it is, with nothing loaded and nothing brought forward. Use it for a page of
   several steps, where loading the page again clears what an earlier step filled in. No match, or more
-  than one, is refused before anything runs, and `brave.find_tab(part)` gives the tab. Never use it for
-  a password, a sign-in or a payment field, which stay with the person.
+  than one, is refused before anything runs, and `brave.find_tab(part)` gives the tab.
+- `run_in_tab` never fills a password or a payment field, and has no option to (`brave.TAB_RULE`,
+  raised as `brave.Refused`, exit 2). A tab on a payment host (`brave.PAYMENT_HOSTS`), or a page with a
+  payment provider's frame or a card field, is refused before the script runs. A guard in the page
+  stops the script at its first write to a password input and leaves the input as it was. Read the
+  refusal as that rule, never as the tool failing. `brave.run` has no such guard.
 - `--window` takes the browser's own window id (the WINDOW line), never the YABAI one. An id the
   browser does not know is refused at once.
 
