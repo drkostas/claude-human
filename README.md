@@ -299,6 +299,7 @@ The lock screen and SecurityAgent panels accept input only from real hardware. S
 ```bash
 claude-human unlock < password.txt       # type at the lock screen, then wait for the lock to clear
 claude-human relock                      # sleep the display, then wait for the lock to set
+claude-human keep-active --start 09:00 --end 19:00   # one pass: tap a bare Shift if today's window is open (run it every minute)
 claude-human use-password                # a Touch ID panel: press Return to switch to the password field
 claude-human approve < password.txt      # type into the password panel, then wait for it to close
 ```
