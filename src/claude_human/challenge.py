@@ -38,17 +38,19 @@ V3_BADGE = ".grecaptcha-badge"
 #: can sit in a frame inside another frame, where a script in the top page sees no address to match against
 #: VENDORS, so the words a step or a button says are checked as well. The pattern uses no lookbehind, so the same
 #: string works as a JavaScript RegExp with the "i" flag.
-WORDS = (r"\bi(?:'|\u2019| a)m not a robot\b"
+WORDS = (r"\bnot a robot\b"
          r"|\bi am (?:a )?human\b"
-         r"|\b(?:verify|prove|confirm) (?:that )?you(?:'|\u2019| a)re (?:a )?human\b"
+         r"|\b(?:verify|verifying|prove|proving|confirm|confirming) (?:that )?"
+         r"(?:you(?:'|\u2019| a)re|i am|i(?:'|\u2019)m) (?:a )?human\b"
          r"|\bare you (?:a )?(?:robot|human)\b"
          r"|\bhuman verification\b"
-         r"|\bpress (?:and|&) hold\b")
+         r"|\bpress (?:and|&) hold\b"
+         r"|\bchecking your browser before accessing\b")
 
 
 def says_robot_check(text: str | None) -> bool:
-    """True when `text` says what a robot check says to a person ("I'm not a robot", "Verify you are human",
-    "Press and hold"), whatever its case, spacing or kind of apostrophe. For a step's words or a line read from a
+    """True when `text` says what a robot check says to a person ("I'm not a robot", "Verifying you are human",
+    "Press and hold", "Checking your browser before accessing"), whatever its case, spacing or kind of apostrophe. For a step's words or a line read from a
     window, where no frame address is there to check."""
     words = re.sub(r"\s+", " ", text or "").strip()
     return bool(words) and re.search(WORDS, words, re.IGNORECASE) is not None

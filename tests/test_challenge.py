@@ -108,13 +108,16 @@ def test_the_words_of_a_robot_check_are_one():
     for words in ("I'm not a robot", "I’m not a robot", "i am not a robot", "  I'M   NOT A ROBOT ",
                   "Verify you are human", "Verify that you're human", "Prove you are a human",
                   "Confirm you are human", "Are you a robot?", "I am human", "Human verification",
-                  "Press and hold", "Press & Hold the button"):
+                  "Press and hold", "Press & Hold the button",
+                  "Verifying you are human. This may take a few seconds.", "Verify I am human",
+                  "Verify I\u2019m human", "Prove you're not a robot", "Confirm you are not a robot",
+                  "Checking your browser before accessing example.org"):
         assert challenge.says_robot_check(words), words
 
 
 def test_other_words_are_not_one():
     for words in ("Save and Continue", "Sign in", "Submit", "Robotics team", "Human resources",
-                  "Press the button and hold on", "Not now", "", None):
+                  "Press the button and hold on", "Not now", "Verify your email address", "", None):
         assert not challenge.says_robot_check(words), words
 
 
