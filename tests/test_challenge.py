@@ -102,3 +102,26 @@ def test_min_px_and_drawn_js_are_the_same_test(run):
     one = "(" + challenge.drawn_js() + ")(document.querySelectorAll('iframe')[0])"
     assert run([{"src": "https://example.org/any", "w": 300, "h": 65}], one) is True
     assert run([{"src": "https://example.org/any", "w": 300, "h": 65, "op": 0.05}], one) is False
+
+
+def test_the_words_of_a_robot_check_are_one():
+    for words in ("I'm not a robot", "I’m not a robot", "i am not a robot", "  I'M   NOT A ROBOT ",
+                  "Verify you are human", "Verify that you're human", "Prove you are a human",
+                  "Confirm you are human", "Are you a robot?", "I am human", "Human verification",
+                  "Press and hold", "Press & Hold the button",
+                  "Verifying you are human. This may take a few seconds.", "Verify I am human",
+                  "Verify I\u2019m human", "Prove you're not a robot", "Confirm you are not a robot",
+                  "Checking your browser before accessing example.org"):
+        assert challenge.says_robot_check(words), words
+
+
+def test_other_words_are_not_one():
+    for words in ("Save and Continue", "Sign in", "Submit", "Robotics team", "Human resources",
+                  "Press the button and hold on", "Not now", "Verify your email address", "", None):
+        assert not challenge.says_robot_check(words), words
+
+
+def test_the_words_pattern_works_as_a_javascript_regexp(run):
+    code = ("(function(){var r=new RegExp(" + json.dumps(challenge.WORDS) + ",'i');"
+            "return [r.test(\"I'm not a robot\"),r.test('Verify you are human'),r.test('Save and Continue')]})()")
+    assert run([], code) == [True, True, False]
