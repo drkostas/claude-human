@@ -188,3 +188,12 @@ def test_a_person_at_the_mac_gets_no_tap_and_is_seen(tmp_path):
     out = ka.step(at(12, 1), start="09:00", end="19:00", state_path=state, spread_min=0,
                   do_tap=lambda: taps.append(1) or (True, "tapped"), idle=lambda: 600.0)
     assert out["did"] == "tapped" and json.loads(state.read_text())["last_tap"]["idle_before"] == 600.0
+
+
+def test_a_tap_made_with_no_idle_reading_is_still_recorded_as_the_last_tap(tmp_path):
+    state = tmp_path / "state.json"
+    ka.step(at(12), start="09:00", end="19:00", state_path=state, spread_min=0, interval_s=240,
+            do_tap=lambda: (True, "tapped"), idle=lambda: None)
+    assert json.loads(state.read_text())["last_tap"]["idle_before"] == 240.0
+    later = at(12) + dt.timedelta(seconds=100)
+    assert ka.person_idle(100.0, state, now=later) == 340.0     # the tap is not read as a person
