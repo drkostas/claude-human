@@ -79,6 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
                                  "(brave --tab-url PART JS_FILE), whether it has a saved login (brave has-login SITE), or put files into a page's "
                                  "file input (brave upload WINDOW SELECTOR FILE...)")
 
+    sub.add_parser("keep-active", help="tap a bare Shift key through the virtual keyboard at an interval inside a daily "
+                                       "window with a random start and end, so a presence app sees the Mac in use")
     sub.add_parser("steps", help="drive one window through the station a step at a time, from step files, "
                                  "with a picture after each (steps OUTDIR --window ID | --app NAME [--open])")
     sub.add_parser("key", help="press key combinations in one window through the station, once the "
@@ -361,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["key"]:
         from claude_human import keys   # noqa: PLC0415
         return keys.main(argv[1:])
+    if argv[:1] == ["keep-active"]:
+        from claude_human import keep_active   # noqa: PLC0415
+        return keep_active.main(argv[1:])
     if argv[:1] == ["steps"]:
         from claude_human.station import steps   # noqa: PLC0415
         return steps.main(argv[1:])
