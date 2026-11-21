@@ -68,7 +68,8 @@ class Phone:
                 return 134, "adb F file_sync_client.cpp:477 protocol fault: failed to read stat response\n"
             data = open(argv[3], "rb").read()
             if self.corrupt and argv[4].endswith("piece.0001"):
-                data = data[:-1] + b"!"
+                # the last byte flipped, so the piece always differs (a fixed byte equals the file's own one in 256 runs)
+                data = data[:-1] + bytes([data[-1] ^ 0xFF])
             self.files[argv[4]] = data
             if self.pushes in self.whole_eof:
                 self.offline = True

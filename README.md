@@ -441,6 +441,26 @@ with bw_session(lock, read_password, act="nightly export", wait_s=300) as env:
 
 The lock path, the queue file, the CLI and the messages are all arguments, so the same lock works for any CLI with one session per account. `lock.hold(act, wait_s)` gives the lock alone, for a program that opens its session in its own way.
 
+## Over-the-air updates for an Expo app
+
+An Expo app with `expo-updates` can take a new JavaScript bundle without a new APK. `claude_human.expo_updates` serves such updates from a folder under the Expo Updates protocol (version 1), signed, so no hosted service is needed.
+
+```python
+from claude_human import expo_updates as eu
+
+sign = eu.openssl_signer(key_pem)          # RSA-SHA256 through openssl, the key on its standard input
+eu.publish("dist", "store", platform="android", runtime_version=runtime, base_url="https://updates.example.org/updates",
+           expo_client=public_config, sign=sign, certificate=certificate_pem)
+
+status, headers, body = eu.manifest_response("store", platform="android", runtime_version=runtime)
+status, headers, body = eu.asset_response("store", asset_hash)
+```
+
+- `publish` reads what `npx expo export` wrote, keeps each file under its base64url SHA-256, and keeps the manifest as the exact bytes a client is sent. It signs them once, checks the signature against the certificate the app carries before storing it, and only then names the update as the one offered for its runtime version.
+- The program that answers the app reads stored bytes only, so it never holds the private key. Nothing in an answer is made per request but the multipart boundary.
+- The app names the manifest's address in `updates.url`, and `updates.codeSigningCertificate` and `updates.codeSigningMetadata` (`{"keyid": "main", "alg": "rsa-v1_5-sha256"}`) turn the signature check on. Such a client refuses a manifest with no signature or a wrong one, and keeps the bundle it has.
+- A runtime version or a platform that is not a plain name is a 400, and an asset is answered only by a hash its bytes still have.
+
 ## Phone notifications without Firebase
 
 `js/` is the npm package `@drkostas/expo-ntfy`. It has a config plugin, the ntfy wire logic, and the Expo glue for notifications. See [js/README.md](js/README.md).
