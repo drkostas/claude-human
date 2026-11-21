@@ -198,10 +198,14 @@ def publish(dist: str | os.PathLike, store: str | os.PathLike, *, platform: str,
 
     With `sign`, the manifest's bytes are signed once and the expo-signature value is kept beside them. With
     `certificate` as well, the signature is first checked against it (`verify`), and a signature the app's
-    certificate would refuse is never stored. Returns the update's id, whether it is signed, the size of the
-    manifest and the number of assets."""
+    certificate would refuse is never stored. Its createdAt must be later than the createdAt of the update offered now
+    for that runtime version, as for `republish`, since a client would never load an older one; otherwise it raises
+    ValueError and stores nothing. Returns the update's id, whether it is signed, the size of the manifest and the
+    number of assets."""
     manifest, files = build_manifest(dist, platform=platform, runtime_version=runtime_version, base_url=base_url,
                                      expo_client=expo_client, created_at=created_at)
+    root = Path(store)
+    _after_offered(root / platform / runtime_version, latest(store, platform, runtime_version), manifest["createdAt"])
     body = json.dumps(manifest, separators=(",", ":"), ensure_ascii=False).encode()
     value = None
     if sign is not None:
@@ -209,7 +213,6 @@ def publish(dist: str | os.PathLike, store: str | os.PathLike, *, platform: str,
         if certificate is not None and not verify(body, sig, certificate, openssl=openssl, env=env):
             raise ValueError("the signature does not verify against the certificate, so the app would refuse it")
         value = signature_value(sig, keyid)
-    root = Path(store)
     for h, path, ctype in files:
         target = root / "assets" / h
         if not target.exists():
@@ -265,6 +268,24 @@ def _parse_created(value: object) -> datetime | None:
         return None
 
 
+def _after_offered(root: Path, before: str | None, created: str) -> None:
+    """Raise ValueError unless `created` is later than the createdAt of `before`, the update offered now in `root` (a
+    runtime version's folder). A client never loads an update older than the one it runs, so an update that is not
+    later would be offered and never taken."""
+    if before is None:
+        return
+    try:
+        offered_at = _parse_created(json.loads((root / before / "manifest.json").read_bytes()).get("createdAt"))
+    except (OSError, ValueError, AttributeError):
+        offered_at = None
+    if offered_at is None:
+        raise ValueError(f"the createdAt of {before}, the update offered now, cannot be read, so a later one "
+                         "cannot be chosen")
+    if _parse_created(created) <= offered_at:
+        raise ValueError(f"createdAt {created} is not later than {_created(offered_at)} of {before}, the update "
+                         "offered now, and a client never loads an update older than the one it runs")
+
+
 def republish(store: str | os.PathLike, platform: str, runtime_version: str, update_id: str, *,
               sign: Callable[[bytes], str], certificate: str, keyid: str = "main", created_at: datetime | None = None,
               openssl: str = "openssl", env: Mapping[str, str] | None = None) -> dict:
@@ -301,17 +322,7 @@ def republish(store: str | os.PathLike, platform: str, runtime_version: str, upd
         raise ValueError(f"{update_id} has no signature the certificate verifies, so it is not signed again")
     before = latest(store, platform, runtime_version)
     created = _created(created_at)
-    if before is not None:
-        try:
-            offered_at = _parse_created(json.loads((root / before / "manifest.json").read_bytes()).get("createdAt"))
-        except (OSError, ValueError, AttributeError):
-            offered_at = None
-        if offered_at is None:
-            raise ValueError(f"the createdAt of {before}, the update offered now, cannot be read, so a later one "
-                             "cannot be chosen")
-        if _parse_created(created) <= offered_at:
-            raise ValueError(f"createdAt {created} is not later than {_created(offered_at)} of {before}, the update "
-                             "offered now, and a client never loads an update older than the one it runs")
+    _after_offered(root, before, created)
     seed = hashlib.sha256(update_id.encode() + b"\0" + created.encode()).hexdigest()
     new = {**manifest, "id": str(uuid.UUID(seed[:32])), "createdAt": created}
     new_body = json.dumps(new, separators=(",", ":"), ensure_ascii=False).encode()

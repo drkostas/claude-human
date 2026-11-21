@@ -119,7 +119,8 @@ def test_a_signer_the_certificate_would_refuse_stores_nothing(tmp_path):
 def test_an_unsigned_update_carries_no_signature_and_a_newer_one_replaces_it(tmp_path):
     key, cert = make_key(tmp_path)
     dist, store = make_export(tmp_path), tmp_path / "store"
-    plain = eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE)
+    plain = eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE,
+                       created_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
     (part,) = parts(*eu.manifest_response(store, platform="android", runtime_version="r1"))
     assert not plain["signed"] and part["expo-signature"] is None
     (dist / "_expo/static/js/android/index-1.hbc").write_bytes(b"a newer bundle")
@@ -130,6 +131,28 @@ def test_an_unsigned_update_carries_no_signature_and_a_newer_one_replaces_it(tmp
     (part,) = parts(*eu.manifest_response(store, platform="android", runtime_version="r1"))
     assert json.loads(part.get_payload(decode=True))["launchAsset"]["hash"] == eu.asset_hash(b"a newer bundle")
     assert part["expo-signature"]
+
+
+def test_an_update_not_later_than_the_offered_one_is_never_published(tmp_path):
+    key, cert = make_key(tmp_path)
+    dist, store = make_export(tmp_path), tmp_path / "store"
+    offered = eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE, sign=eu.openssl_signer(key),
+                         certificate=cert, created_at=datetime(2025, 1, 2, tzinfo=timezone.utc))
+    before = sorted((str(p.relative_to(store)), p.read_bytes()) for p in store.rglob("*") if p.is_file())
+    (dist / "_expo/static/js/android/index-1.hbc").write_bytes(b"another bundle")
+    (dist / "metadata.json").write_text((dist / "metadata.json").read_text() + " ")
+    for at in (datetime(2025, 1, 2, tzinfo=timezone.utc), datetime(2025, 1, 1, tzinfo=timezone.utc)):
+        with pytest.raises(ValueError, match="never loads an update older"):
+            eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE, sign=eu.openssl_signer(key),
+                       certificate=cert, created_at=at)
+    assert sorted((str(p.relative_to(store)), p.read_bytes()) for p in store.rglob("*") if p.is_file()) == before
+    assert eu.latest(store, "android", "r1") == offered["id"]
+    # another runtime version has its own latest, and a later one is published as before
+    assert eu.publish(dist, store, platform="android", runtime_version="r2", base_url=BASE,
+                      created_at=datetime(2025, 1, 1, tzinfo=timezone.utc))["id"] == eu.latest(store, "android", "r2")
+    later = eu.publish(dist, store, platform="android", runtime_version="r1", base_url=BASE, sign=eu.openssl_signer(key),
+                       certificate=cert)
+    assert eu.latest(store, "android", "r1") == later["id"] != offered["id"]
 
 
 def test_requests_for_nothing_stored_or_not_plain_are_refused(tmp_path):

@@ -456,7 +456,7 @@ status, headers, body = eu.manifest_response("store", platform="android", runtim
 status, headers, body = eu.asset_response("store", asset_hash)
 ```
 
-- `publish` reads what `npx expo export` wrote, keeps each file under its base64url SHA-256, and keeps the manifest as the exact bytes a client is sent. It signs them once, checks the signature against the certificate the app carries before storing it, and only then names the update as the one offered for its runtime version.
+- `publish` reads what `npx expo export` wrote, keeps each file under its base64url SHA-256, and keeps the manifest as the exact bytes a client is sent. It signs them once, checks the signature against the certificate the app carries before storing it, and only then names the update as the one offered for its runtime version. An update whose createdAt is not later than the offered one's is refused, since a client would never load it.
 - The program that answers the app reads stored bytes only, so it never holds the private key. Nothing in an answer is made per request but the multipart boundary.
 - The app names the manifest's address in `updates.url`, and `updates.codeSigningCertificate` and `updates.codeSigningMetadata` (`{"keyid": "main", "alg": "rsa-v1_5-sha256"}`) turn the signature check on. Such a client refuses a manifest with no signature or a wrong one, and keeps the bundle it has.
 - A runtime version or a platform that is not a plain name is a 400, and an asset is answered only by a hash its bytes still have.
