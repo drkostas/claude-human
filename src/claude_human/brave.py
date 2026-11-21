@@ -530,9 +530,15 @@ def _escape(code: str) -> str:
     return code.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _js_once(window: str, code: str, app: str) -> str:
-    rc, out = osa(f'tell application "{app}" to execute active tab of (first window whose id is '
-                  f'{window}) javascript "{_escape(code)}"')
+def _target(window: str, tab: str | None) -> str:
+    """The AppleScript for the tab a script runs in: the window's active tab, or one tab by its id."""
+    if tab:
+        return f"(tab id {tab} of window id {window})"
+    return f"active tab of (first window whose id is {window})"
+
+
+def _js_once(window: str, code: str, app: str, tab: str | None = None) -> str:
+    rc, out = osa(f'tell application "{app}" to execute {_target(window, tab)} javascript "{_escape(code)}"')
     if rc != 0:
         raise RuntimeError(out)
     return out
@@ -564,7 +570,7 @@ def _short(out: str) -> str:
     return re.sub(r'[A-Za-z0-9+/=\\"]{40,}', "...", out)[:300]
 
 
-def send(window: str, text: str, app: str = APP, *, chunk: int = CHUNK) -> str:
+def send(window: str, text: str, app: str = APP, *, chunk: int = CHUNK, tab: str | None = None) -> str:
     """Put `text` into the page in parts, each small enough for one AppleScript call, and return
     the key it waits under: `window.__claude_in[key]`. Each part's arrival is checked by the length
     the page then holds, and the whole by its CRC-32, so a part that is lost, repeated or put in the
@@ -575,13 +581,13 @@ def send(window: str, text: str, app: str = APP, *, chunk: int = CHUNK) -> str:
     key = secrets.token_hex(6)
     slot = f'window.{INBOX}["{key}"]'
     parts = _parts(text, chunk)
-    _js_once(window, f'(window.{INBOX}=window.{INBOX}||{{}})["{key}"]="";"0"', app)
+    _js_once(window, f'(window.{INBOX}=window.{INBOX}||{{}})["{key}"]="";"0"', app, tab)
     held = 0
     try:
         for i, part in enumerate(parts):
             held += len(_units(part)) // 2
             try:
-                got = _js_once(window, f"{slot}+={json.dumps(part)};String({slot}.length)", app)
+                got = _js_once(window, f"{slot}+={json.dumps(part)};String({slot}.length)", app, tab)
             except RuntimeError as e:
                 raise RuntimeError(f"part {i + 1} of {len(parts)} did not reach the page: "
                                    f"{_short(str(e))}") from None
@@ -589,37 +595,38 @@ def send(window: str, text: str, app: str = APP, *, chunk: int = CHUNK) -> str:
                 raise RuntimeError(f"part {i + 1} of {len(parts)} did not arrive whole: the page holds "
                                    f"{_short(got)} characters, {held} were sent")
         want = zlib.crc32(_units(text))
-        got = _js_once(window, f"String(({_CRC_JS})({slot}))", app)
+        got = _js_once(window, f"String(({_CRC_JS})({slot}))", app, tab)
         if got != str(want):
             raise RuntimeError(f"the {len(parts)} parts arrived but differ from what was sent "
                                f"(CRC-32 {_short(got)} in the page, {want} sent)")
     except BaseException:
-        drop(window, key, app)
+        drop(window, key, app, tab=tab)
         raise
     return key
 
 
-def drop(window: str, key: str, app: str = APP) -> None:
+def drop(window: str, key: str, app: str = APP, *, tab: str | None = None) -> None:
     """Delete what `send` left in the page under `key`. Never raises."""
     try:
-        _js_once(window, f'window.{INBOX}&&delete window.{INBOX}["{key}"];"ok"', app)
+        _js_once(window, f'window.{INBOX}&&delete window.{INBOX}["{key}"];"ok"', app, tab)
     except RuntimeError:
         pass
 
 
-def js_in(window: str, code: str, app: str = APP, *, chunk: int = CHUNK) -> str:
-    """Run `code` in the active tab of `window` and return the value of its last expression, as
-    text. A script longer than one AppleScript call can carry is sent in parts (`send`), checked,
-    and then run with an indirect eval, which gives it the same global scope and the same result.
+def js_in(window: str, code: str, app: str = APP, *, chunk: int = CHUNK, tab: str | None = None) -> str:
+    """Run `code` in the active tab of `window` (or in the tab whose id is `tab`, active or not) and
+    return the value of its last expression, as text. A script longer than one AppleScript call can
+    carry is sent in parts (`send`), checked, and then run with an indirect eval, which gives it the
+    same global scope and the same result.
 
     The script runs in the browser's isolated world for AppleScript: it shares the page's DOM but
     not its JavaScript. The page's own functions and libraries are not visible from it; reach them
     by adding a `<script>` element to the page."""
     if len(_escape(code)) <= chunk:
-        return _js_once(window, code, app)
-    key = send(window, code, app, chunk=chunk)
+        return _js_once(window, code, app, tab)
+    key = send(window, code, app, chunk=chunk, tab=tab)
     return _js_once(window, f'(function(k){{var s=window.{INBOX}[k];delete window.{INBOX}[k];'
-                            f'return (0,eval)(s);}})("{key}")', app)
+                            f'return (0,eval)(s);}})("{key}")', app, tab)
 
 
 def _settled(read, *, settle: float, timeout: float, step: float = 0.5, clock=None, sleep=None) -> str:
@@ -799,10 +806,23 @@ def _await_new_document(window: str, app: str, before: str | None, url: str, blo
         time.sleep(pause)
 
 
-def _ran_out(blocker, what: str, timeout: float) -> None:
-    """Raise Blocked when a prompt is on screen, else TimeoutError naming `what`."""
+def _ran_out(blocker, what: str, timeout: float, error: str | None = None) -> None:
+    """Raise Blocked when a prompt is on screen, else TimeoutError naming `what`, and the last error
+    the browser gave while it was waited for, when there was one."""
     _refuse_if_blocked(blocker)
-    raise TimeoutError(f"timed out after {timeout:g} s waiting for {what} (Brave did not answer in time)")
+    said = f", and its last error was: {_short(error)}" if error else ""
+    raise TimeoutError(f"timed out after {timeout:g} s waiting for {what} (Brave did not answer in time{said})")
+
+
+def _refuse_if_gone(window: str, app: str) -> None:
+    """RuntimeError when the browser lists its windows and `window` is not one of them. A window id
+    the browser does not know makes every call fail, and a run that took those failures for a page
+    still loading waited out its whole timeout and named the page's condition instead."""
+    ids = _read_window_ids(app)
+    if ids is not None and str(window) not in ids:
+        raise RuntimeError(f"{app} has no window {window}. Pass the browser's own window id (the WINDOW "
+                           f"line of a --keep-open run, or a window from brave.list_tabs()), never a "
+                           f"window manager's id")
 
 
 #: how long closing the run's own window may take after its time ran out
@@ -813,6 +833,7 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
     """`run`'s body, under its deadline."""
     global _deadline
     owned, yid, reused = window is None, None, False
+    given = window is not None
     if owned:
         mine = kept(key, state=state, app=app) if (keep_open and key) else None
         if mine:
@@ -829,38 +850,94 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
         if url != "-":
             before = address(window, app)
             if before is None:
-                # the page answered nothing: a prompt holding every call is the one cause worth
-                # ending the run for, and it is cheaper to find out now than one call later
+                # the page answered nothing: a prompt holding every call, or a window id the browser
+                # does not know, is worth ending the run for, and cheaper to find out now
                 _refuse_if_blocked(blocker)
+                if given:
+                    _refuse_if_gone(window, app)
             osa(f'tell application "{app}" to set URL of active tab of (first window whose id is '
                 f'{window}) to "{url}"')
             _await_new_document(window, app, before, url, blocker, timeout)
+        error, checked = None, False
         while True:
             try:
                 if js_in(window, f"!!({wait_for})", app) == "true":
                     break
-            except RuntimeError:
+            except RuntimeError as e:
+                error = str(e)
                 _refuse_if_blocked(blocker)
+                if given and not checked:
+                    _refuse_if_gone(window, app)
+                    checked = True
             if time.monotonic() >= _deadline:
-                _ran_out(blocker, wait_for, timeout)
+                _ran_out(blocker, wait_for, timeout, error)
             time.sleep(0.5)
-        js_in(window, "window.__claude_r = undefined;", app)
-        last = js_in(window, code, app)
-        while True:
-            r = js_in(window, 'window.__claude_r === undefined ? "__PENDING__" : String(window.__claude_r)', app)
-            if r != "__PENDING__":
-                return {"result": r, "window": window, "yabai": yid, "reused": reused}
-            if "window.__claude_r" not in code:
-                return {"result": last, "window": window, "yabai": yid, "reused": reused}
-            if time.monotonic() >= _deadline:
-                _ran_out(blocker, "window.__claude_r", timeout)
-            time.sleep(0.5)
+        result = _answer(window, code, app, blocker, timeout)
+        return {"result": result, "window": window, "yabai": yid, "reused": reused}
     finally:
         # behind a prompt the close would only wait out its own timeout too; past the deadline it
         # gets CLOSE_GRACE seconds of its own
         if owned and not keep_open and not (blocker or blocked_by)():
             _deadline = None
             osa(f'tell application "{app}" to close (first window whose id is {window})', CLOSE_GRACE)
+
+
+def _answer(window: str, code: str, app: str, blocker, timeout: float, tab: str | None = None) -> str:
+    """Run `code` in the tab and return its answer: what it set as window.__claude_r (waited for
+    while the script names it), else the value of its last expression."""
+    on = {"tab": tab} if tab else {}
+    js_in(window, "window.__claude_r = undefined;", app, **on)
+    last = js_in(window, code, app, **on)
+    while True:
+        r = js_in(window, 'window.__claude_r === undefined ? "__PENDING__" : String(window.__claude_r)', app, **on)
+        if r != "__PENDING__":
+            return r
+        if "window.__claude_r" not in code:
+            return last
+        if time.monotonic() >= _deadline:
+            _ran_out(blocker, "window.__claude_r", timeout)
+        time.sleep(0.5)
+
+
+def find_tab(part: str, app: str = APP, *, timeout: float = 30) -> dict:
+    """The one open tab whose address contains `part`, as `list_tabs` gives it ({"window", "tab",
+    "url", "title"}). LookupError saying how many tabs matched when that is not exactly one, since
+    a script meant for one page must never run in another. RuntimeError when the browser did not
+    list its tabs, which is unknown, never "no match"."""
+    if not part:
+        raise ValueError("no part of an address to look for")
+    listed = list_tabs(app, timeout=timeout)
+    if listed is None:
+        raise RuntimeError(f"{app} did not list its tabs")
+    hits = [t for t in listed if part in t["url"]]
+    if len(hits) != 1:
+        more = ", so give a longer part of the address" if hits else ""
+        raise LookupError(f"{len(hits)} open tabs have an address containing {part!r}, and the script "
+                          f"runs only when exactly one does{more}")
+    return hits[0]
+
+
+def run_in_tab(part: str, code: str, *, timeout: float = 40, app: str = APP, blocker=None) -> dict:
+    """Run `code` in the one open tab whose address contains `part`, on the page it holds now.
+    Nothing is loaded, and no window or tab is brought forward or made active, so what an earlier
+    step left in the page (a half-filled form, a scroll position) is still there. Returns
+    {"result", "window", "tab", "url"}, with the result found as `run` finds it.
+
+    The tab is chosen by `find_tab`: no match, or more than one, is refused (LookupError) before
+    anything runs. The tab may be one the person opened, so this is for a page the caller is working
+    on, never a way to fill a password, a sign-in or a payment field, which stay with the person.
+
+    A macOS prompt that holds every Apple Event raises Blocked before anything runs, as in `run`,
+    and `timeout` holds for the whole call."""
+    _refuse_if_blocked(blocker)
+    global _deadline
+    outer, _deadline = _deadline, time.monotonic() + timeout
+    try:
+        t = find_tab(part, app, timeout=timeout)
+        result = _answer(t["window"], code, app, blocker, timeout, tab=t["tab"])
+        return {"result": result, "window": t["window"], "tab": t["tab"], "url": t["url"]}
+    finally:
+        _deadline = outer
 
 
 #: where Brave keeps each profile's saved logins
@@ -898,6 +975,11 @@ def has_login(site: str, *, profiles: Path = PROFILES) -> bool | None:
 def main(argv: list[str]) -> int:
     """`brave URL JS_FILE [--wait-for EXPR] [--timeout S] [--keep-open] [--window ID] [--key KEY]
     [--app NAME]`: the result on stdout; with --keep-open, "WINDOW <id>[ YABAI <id>]" on stderr.
+    `brave --tab-url PART JS_FILE [--timeout S] [--app NAME]`: run the script in the one open tab
+    whose address contains PART, on the page it holds, with nothing loaded or brought forward
+    (`run_in_tab`); the result on stdout, "TAB <id> WINDOW <id>" on stderr, exit 2 when no tab or
+    more than one matched. For a page of several steps, where loading it again would lose what an
+    earlier step filled in. Never for a password, a sign-in or a payment field.
     `brave has-login SITE`: exit 0 when a saved login matches the site, 1 when none, 2 when the
     login stores could not be read.
     `brave upload WINDOW SELECTOR FILE... [--done EXPR] [--settle S] [--timeout S] [--max-bytes N]
@@ -916,6 +998,8 @@ def main(argv: list[str]) -> int:
     def opt(name, default=None):
         return a[a.index(name) + 1] if name in a else default
 
+    if "--tab-url" in a:
+        return _tab_main(a)
     if len(a) < 2:
         print(main.__doc__, file=sys.stderr)
         return 2
@@ -933,6 +1017,35 @@ def main(argv: list[str]) -> int:
         return 1
     if keep_open:
         print(f"WINDOW {out['window']}" + (f" YABAI {out['yabai']}" if out["yabai"] else ""), file=sys.stderr)
+    print(out["result"])
+    return 0
+
+
+def _tab_main(a: list[str]) -> int:
+    opts, rest, i = {}, [], 0
+    while i < len(a):
+        if a[i] in ("--tab-url", "--timeout", "--app") and i + 1 < len(a):
+            opts[a[i]] = a[i + 1]
+            i += 2
+        else:
+            rest.append(a[i])
+            i += 1
+    other = [x for x in rest if x.startswith("--")]
+    if other or len(rest) != 1 or not opts.get("--tab-url"):
+        print("usage: brave --tab-url PART JS_FILE [--timeout S] [--app NAME] (it runs in a tab as "
+              "it is, so it takes no URL" + (f", and not {' '.join(other)}" if other else "") + ")",
+              file=sys.stderr)
+        return 2
+    try:
+        out = run_in_tab(opts["--tab-url"], Path(rest[0]).read_text(),
+                         timeout=float(opts.get("--timeout", 40)), app=opts.get("--app", APP))
+    except (ValueError, LookupError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except (TimeoutError, RuntimeError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(f"TAB {out['tab']} WINDOW {out['window']}", file=sys.stderr)
     print(out["result"])
     return 0
 

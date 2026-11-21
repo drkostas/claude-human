@@ -170,6 +170,23 @@ shares the page's DOM and not its JavaScript, so the page's own functions and li
 there (add a `<script>` element to the page to reach them). And a window that is not on screen captures
 blank with `screencapture -l`, so bring it on screen before taking a picture of it.
 
+## Running a script in a tab that is already open
+
+```bash
+claude-human brave --tab-url forms.example.org/apply step.js   # TAB <id> WINDOW <id> on stderr
+```
+
+`--tab-url` runs the script in the one open tab whose address contains the given text, on the page it
+holds now. Nothing is loaded and no window or tab comes forward, so a form filled in by an earlier step
+keeps its values, which loading the page again would clear. When no tab matches, or more than one does,
+it refuses before anything runs (exit 2) and says how many matched. A tab in the background runs a
+script as well as the active one. The tab may be one the person opened, so use it for a page the work
+is on, and never to fill a password, a sign-in or a payment field. Those stay with the person.
+
+`--window ID` takes the browser's own window id, the WINDOW line a `--keep-open` run prints. An id the
+browser does not know (a window manager's id, or a window that has closed) is refused at once with that
+reason. It used to wait out the whole timeout and then name the page's condition.
+
 ## A saved login, and a tap on a phone
 
 ```bash

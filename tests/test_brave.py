@@ -591,6 +591,8 @@ class FakeTab:
         self.ran = []
 
     def osa(self, script, *a, **k):
+        if "get id of every window" in script:
+            return (0, "7")                              # the browser knows the window
         if "set URL of active tab" in script:
             self.sent = script.split('to "')[1].rstrip('"')
             self.left = self.lag
@@ -676,3 +678,139 @@ def test_a_page_whose_address_cannot_be_read_is_not_waited_for(monkeypatch):
     monkeypatch.setattr(brave.time, "sleep", lambda s: None)
     monkeypatch.setattr(brave, "blocked_by", lambda: None)
     assert brave.run("https://new.example.org/", "1", window="7")["result"] == "old"
+
+
+# Running a script in an open tab chosen by its address, and a window id the browser does not know.
+import time
+
+
+class FakeBrowser:
+    """Stands in for osascript and a browser with tabs in two windows. A script run in a tab is
+    recorded with that tab's id, and its answer is that tab's `pages` value."""
+
+    def __init__(self, tabs, listing=True):
+        self.tabs = tabs                                  # [(window, tab, url, answer)]
+        self.listing, self.calls, self.ran = listing, [], []
+
+    def __call__(self, script, timeout=30, *, env=None):
+        self.calls.append(script)
+        if "repeat with w in" in script:
+            if not self.listing:
+                return 1, "the browser did not answer"
+            return 0, "".join(f"{w}\t{t}\t{u}\tA title\n" for w, t, u, _ in self.tabs)
+        if "get id of every window" in script:
+            return 0, ", ".join(sorted({w for w, *_ in self.tabs}))
+        m = re.search(r"execute \(tab id (\d+) of window id (\d+)\) javascript \"(.*)\"$", script, re.S)
+        if not m:
+            return 1, f"Can't get that window (-1719): {script[:80]}"
+        tab = next((x for x in self.tabs if x[1] == m[1] and x[0] == m[2]), None)
+        if tab is None:
+            return 1, "Can't get tab id (-1728)"
+        js = re.sub(r'\\(.)', r'\1', m[3])
+        if js.startswith("window.__claude_r = undefined"):
+            return 0, ""
+        if "__PENDING__" in js:
+            return 0, "__PENDING__"
+        self.ran.append((m[1], js))
+        return 0, tab[3]
+
+
+TABS = [("10", "101", "https://shop.example.org/checkout?step=2", "step two"),
+        ("10", "102", "https://example.org/news", "news"),
+        ("20", "201", "https://forms.example.org/apply#part-3", "the form, filled")]
+
+
+def _browser(monkeypatch, **k):
+    b = FakeBrowser(list(TABS), **k)
+    monkeypatch.setattr(brave, "osa", b)
+    monkeypatch.setattr(brave, "blocked_by", lambda: None)
+    monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    return b
+
+
+def test_run_in_tab_runs_in_the_one_matching_tab_and_loads_nothing(monkeypatch):
+    # a form filled over several steps: loading its page again, or running in the active tab of
+    # another window, would read the fields back empty
+    b = _browser(monkeypatch)
+    out = brave.run_in_tab("forms.example.org/apply", "document.title")
+    assert out == {"result": "the form, filled", "window": "20", "tab": "201",
+                   "url": "https://forms.example.org/apply#part-3"}
+    assert b.ran == [("201", "document.title")]
+    assert not any("set URL" in c or "activate" in c or "active tab" in c or "set index" in c
+                   for c in b.calls), b.calls
+
+
+def test_run_in_tab_refuses_no_match_and_several_before_running(monkeypatch):
+    b = _browser(monkeypatch)
+    for part, n in (("nowhere.example.org", 0), ("example.org", 3)):
+        try:
+            brave.run_in_tab(part, "1")
+        except LookupError as e:
+            assert f"{n} open tabs" in str(e) and ("longer part" in str(e)) == (n > 1), str(e)
+        else:
+            raise AssertionError(f"{part} ran with {n} matches")
+    assert b.ran == []
+    try:
+        brave.run_in_tab("", "1")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an empty part matched every tab")
+
+
+def test_a_listing_with_no_answer_is_unknown_not_no_match(monkeypatch):
+    _browser(monkeypatch, listing=False)
+    try:
+        brave.run_in_tab("forms.example.org", "1")
+    except RuntimeError as e:
+        assert "did not list its tabs" in str(e)
+    else:
+        raise AssertionError("a browser that did not answer read as a tab found or not found")
+
+
+def test_a_long_script_reaches_the_chosen_tab_in_parts(monkeypatch):
+    page = FakePage()
+    monkeypatch.setattr(brave, "osa", page)
+    code = _text(5_000)
+    assert brave.js_in("20", code, chunk=500, tab="201") == "ran" and page.ran == [code]
+    assert page.calls and all("execute (tab id 201 of window id 20) javascript" in c for c in page.calls)
+
+
+def test_the_tab_url_command(monkeypatch, tmp_path, capsys):
+    _browser(monkeypatch)
+    js = tmp_path / "read.js"
+    js.write_text("document.title")
+    assert brave.main(["--tab-url", "forms.example.org", str(js)]) == 0
+    got = capsys.readouterr()
+    assert got.out.strip() == "the form, filled" and "TAB 201 WINDOW 20" in got.err
+    assert brave.main(["--tab-url", "example.org", str(js)]) == 2
+    assert "3 open tabs" in capsys.readouterr().err
+    assert brave.main(["--tab-url", "forms.example.org", str(js), "--window", "20"]) == 2
+    assert "not --window" in capsys.readouterr().err
+
+
+def test_a_window_the_browser_does_not_know_is_refused_at_once(monkeypatch):
+    # a window manager's id passed as the browser's: every call failed, the run took that for a page
+    # still loading, and after its whole timeout named the page's condition, never the window
+    _browser(monkeypatch)
+    for url in ("https://forms.example.org/apply#part-4", "-"):
+        start = time.monotonic()
+        try:
+            brave.run(url, "1", window="35849", timeout=30)
+        except RuntimeError as e:
+            assert "has no window 35849" in str(e) and "WINDOW" in str(e), str(e)
+        else:
+            raise AssertionError(f"{url}: the run went on with a window the browser does not know")
+        assert time.monotonic() - start < 5
+
+
+def test_a_timeout_names_the_browsers_last_error(monkeypatch):
+    # the window is known, and the page never answers: the timeout says what the browser said
+    b = _browser(monkeypatch)
+    try:
+        brave.run("-", "1", window="20", timeout=0.05)
+    except TimeoutError as e:
+        assert "last error" in str(e) and "Can't get that window" in str(e), str(e)
+    else:
+        raise AssertionError("the run did not time out")
+    assert b.ran == []
