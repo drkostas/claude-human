@@ -197,8 +197,9 @@ def step(now: dt.datetime, *, start: str | dt.time | None, end: str | dt.time | 
     if not ok:
         return {"did": "busy" if detail.startswith("busy") else "failed", "window": window, "detail": detail}
     state["taps"].append(now.isoformat(timespec="seconds"))
-    if person is not None:
-        state["last_tap"] = {"at": now.isoformat(), "idle_before": person}
+    # a tap made with no idle reading still happens only after `interval_s` of idle time when a reader was given,
+    # and with no reader nothing is claimed about the person, so the interval is the least it can have been
+    state["last_tap"] = {"at": now.isoformat(), "idle_before": person if person is not None else float(interval_s)}
     _save(path, state)
     return {"did": "tapped", "window": window, "taps_today": sum(t[:10] == day for t in state["taps"])}
 
