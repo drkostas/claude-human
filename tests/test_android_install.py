@@ -2,6 +2,7 @@
 makes again a connection that went offline, and installs the joined file on the phone itself."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -34,16 +35,21 @@ class Phone:
     first) that fail with a protocol fault and leave the device offline until a disconnect and a connect.
     `whole_eof` lists pushes that write the whole file and still exit 1 with "failed to read copy response: EOF",
     and `unread` pushes that exit 0 while the next md5sum of their file gets no answer.
-    `answer` is what pm install writes once it has been polled `slow` times. Every call is kept."""
+    `max_push` is the most bytes one push carries: a bigger one fails with "failed to read copy response: EOF", writes nothing
+    and leaves the device offline until a disconnect and a connect, as a push over a link that cannot stay up long enough
+    does. `bps` makes every push take len / bps seconds on the clock `tick` moves, and `bad_merge` makes the phone join the
+    parts of a piece into something else. `answer` is what pm install writes once it has been polled `slow` times.
+    Every call is kept."""
 
     def __init__(self, *, drop=(), whole_eof=(), unread=(), answer="Success", slow=1, installed=None, corrupt=False,
-                 focus=HOME):
+                 focus=HOME, max_push=None, bps=None, bad_merge=False):
         self.files: dict[str, bytes] = {}
         self.dirs: dict[str, int] = {}
         self.drop, self.answer, self.slow, self.installed, self.corrupt = set(drop), answer, slow, installed, corrupt
         self.whole_eof, self.unread, self.silent = set(whole_eof), set(unread), set()
         self.offline, self.pushes, self.polls, self.calls, self.focus = False, 0, 0, [], focus
         self.starts, self.reading = 0, {}             # pm installs started; {app.apk path: pid} while one runs
+        self.max_push, self.bps, self.bad_merge, self.tick, self.pushed = max_push, bps, bad_merge, None, []
 
     def ls(self, folder):
         return sorted(p for p in self.files if p.rsplit("/", 1)[0] == folder)
@@ -63,10 +69,16 @@ class Phone:
             return 1, "adb: error: failed to get feature set: device offline\n"
         if argv[2] == "push":
             self.pushes += 1
+            self.pushed.append(argv[4].rsplit("/", 1)[1])
             if self.pushes in self.drop:
                 self.offline = True
                 return 134, "adb F file_sync_client.cpp:477 protocol fault: failed to read stat response\n"
             data = open(argv[3], "rb").read()
+            if self.tick and self.bps:
+                self.tick(len(data) / self.bps)
+            if self.max_push is not None and len(data) > self.max_push:
+                self.offline = True
+                return 1, "adb: error: failed to read copy response: EOF\n"
             if self.corrupt and argv[4].endswith("piece.0001"):
                 # the last byte flipped, so the piece always differs (a fixed byte equals the file's own one in 256 runs)
                 data = data[:-1] + bytes([data[-1] ^ 0xFF])
@@ -92,6 +104,26 @@ class Phone:
         if m:
             return 0, "".join(f"{md5(self.files[p])}  {p.rsplit('/', 1)[1]}\n" for p in self.ls(m.group(1))
                               if "/piece." in p)
+        m = re.match(r"^cd (\S+) && md5sum part\.\* 2>/dev/null$", cmd)
+        if m:
+            return 0, "".join(f"{md5(self.files[p])}  {p.rsplit('/', 1)[1]}\n" for p in self.ls(m.group(1))
+                              if "/part." in p)
+        m = re.match(r"^cd (\S+) && cat (part\.\d{4}\.of\d+\.)\* > (tmp\.\d{4}) && mv (tmp\.\d{4}) (piece\.\d{4}) && "
+                     r"rm -f (part\.\d{4}\.)\* && echo merged$", cmd)
+        if m:
+            here = m.group(1)
+            parts = [p for p in self.ls(here) if p.rsplit("/", 1)[1].startswith(m.group(2))]
+            joined = b"".join(self.files[p] for p in parts)
+            self.files[f"{here}/{m.group(5)}"] = joined[:-1] + b"?" if self.bad_merge and joined else joined
+            for p in [p for p in self.ls(here) if p.rsplit("/", 1)[1].startswith(m.group(6))]:
+                del self.files[p]
+            return 0, "merged\n"
+        m = re.match(r"^cd (\S+) && rm -f ([^&{;]+)$", cmd)
+        if m:
+            for pattern in m.group(2).split():
+                for p in [p for p in self.ls(m.group(1)) if fnmatch.fnmatch(p.rsplit("/", 1)[1], pattern)]:
+                    del self.files[p]
+            return 0, ""
         m = re.match(r"^md5sum (\S+) 2>/dev/null$", cmd) or re.match(r"^md5sum (\S+)$", cmd)
         if m:
             p = m.group(1)
@@ -159,6 +191,7 @@ def run_install(phone, apk, **k):
     def sleep(s):
         t[0] += s
         phone.slept.append(s)
+    phone.tick = lambda s: t.__setitem__(0, t[0] + s)
     said = []
     out = android_install.install(SERIAL, apk, run=phone, piece=4096, sleep=sleep, clock=lambda: t[0],
                                   say=said.append, **k)
@@ -342,6 +375,79 @@ def test_the_cli_passes_the_first_pieces_extra_tries(apk, capsys, monkeypatch):
     monkeypatch.setattr(android_install.time, "sleep", lambda s: None)
     code = android.main(["install", "--serial", SERIAL, apk, "--piece-kb", "4", "--tries", "1", "--first-extra", "0"])
     assert code == 1 and "piece 1 of 3 did not arrive in 1 tries" in capsys.readouterr().out
+
+
+def test_a_piece_the_link_cannot_carry_whole_is_sent_in_smaller_parts_and_arrives(apk):
+    """A push that has to stay up too long is the one that fails on a slow link. The same piece sent in parts that are half as
+    big, and again half as big, goes through, and the pieces are made on the phone, so the file is the same one."""
+    phone = Phone(max_push=1500)
+    out, said = run_install(phone, apk, min_part=512, package=PKG)
+    assert out["outcome"] == "success", out
+    # piece 1 and 2 fail whole and in halves, and arrive in quarters; piece 3 (2171 bytes) fails whole and arrives in halves
+    assert out["failed_tries"] == 5 and out["split"] == 3 and out["parts_sent"] == 10, out
+    assert any(s.startswith("piece 1 of 3 sent in 4 parts (4096 bytes") for s in said), said
+    assert any(s.startswith("piece 3 of 3 sent in 2 parts (2171 bytes") for s in said), said
+
+
+def test_parts_that_arrived_stay_when_a_later_part_fails_and_the_next_run_sends_only_the_rest(apk):
+    """A try that failed but moved a part keeps its size, and the parts there are not sent again, in the next try and in the
+    next run."""
+    phone = Phone(max_push=2048, drop={3, 4})
+    out, said = run_install(phone, apk, min_part=512, tries=3, first_extra=0)
+    assert out["outcome"] == "failure" and "piece 1 of 3 did not arrive in 3 tries" in out["why"], out
+    assert phone.pushed == ["piece.0000", "part.0000.of2.00", "part.0000.of2.01", "part.0000.of2.01"], phone.pushed
+    phone.max_push, phone.drop, phone.pushed = None, set(), []
+    out, said = run_install(phone, apk, min_part=512, tries=3, first_extra=0)
+    assert out["outcome"] == "success", out
+    assert phone.pushed == ["part.0000.of2.01", "piece.0001", "piece.0002"], phone.pushed
+
+
+def test_a_slow_push_makes_the_next_pieces_start_in_parts_so_no_try_is_spent_on_a_whole_one(apk):
+    phone = Phone(bps=200)       # 4096 bytes take 20.5 s
+    out, said = run_install(phone, apk, slow_s=10.0, min_part=512, piece_s=1000.0)
+    assert out["outcome"] == "success" and out["failed_tries"] == 0, out
+    assert out["split"] == 2 and out["parts_sent"] == 12, out         # 8 parts of 512 bytes, then 4 parts of the short piece
+    assert phone.pushed[0] == "piece.0000" and all(n.startswith("part.") for n in phone.pushed[1:]), phone.pushed
+
+
+def test_a_fast_link_keeps_whole_pieces(apk):
+    phone = Phone(bps=1_000_000)
+    out, said = run_install(phone, apk, slow_s=10.0, min_part=512)
+    assert out["outcome"] == "success" and out["split"] == 0 and out["parts_sent"] == 0, out
+    assert phone.pushed == ["piece.0000", "piece.0001", "piece.0002"], phone.pushed
+
+
+def test_a_failed_try_says_how_long_it_ran_and_whether_the_link_answered_again(apk):
+    phone = Phone(max_push=1500, bps=100)
+    out, said = run_install(phone, apk, min_part=512)
+    assert out["outcome"] == "success", out
+    assert any(re.match(r"^  that try ran 41 s, and the link answered again$", s) for s in said), said
+
+
+def test_parts_that_do_not_make_the_piece_are_removed_and_the_try_is_lost(apk):
+    phone = Phone(max_push=1500, bad_merge=True)
+    out, said = run_install(phone, apk, min_part=512, tries=3, first_extra=0)
+    assert out["outcome"] == "failure" and "piece 1 of 3 did not arrive in 3 tries" in out["why"], out
+    assert any("the parts joined on the phone did not make this piece" in s for s in said), said
+    assert not [p for p in phone.files if "/part." in p or "/tmp." in p or p.endswith("/piece.0000")], sorted(phone.files)
+
+
+def test_a_piece_smaller_than_two_parts_is_never_split(apk):
+    phone = Phone(max_push=1500)
+    out, said = run_install(phone, apk, tries=2, first_extra=0)       # min_part is 256 KiB: a 4 KiB piece has no parts
+    assert out["outcome"] == "failure" and out["split"] == 0 and out["parts_sent"] == 0, out
+    assert phone.pushed == ["piece.0000", "piece.0000"], phone.pushed
+
+
+def test_the_cli_passes_the_slow_and_the_part_limits(apk, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(android_install, "install",
+                        lambda serial, path, **k: seen.update(k) or {"outcome": "success", "why": "installed"})
+    assert android_install.main(["--serial", SERIAL, apk, "--min-part-kb", "1", "--slow-s", "5"]) == 0
+    assert seen["slow_s"] == 5.0 and seen["min_part"] == 1024, seen
+    seen.clear()
+    assert android_install.main(["--serial", SERIAL, apk]) == 0
+    assert seen["slow_s"] == android_install.SLOW_S and seen["min_part"] == android_install.MIN_PART, seen
 
 
 def test_the_start_answers_at_once_while_the_install_still_runs(tmp_path):
