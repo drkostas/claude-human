@@ -259,6 +259,12 @@ did not arrive disconnects the device, connects it again and reads the piece's m
 next try (`--tries`, `--piece-s`). The md5 decides, not adb's exit code, because a push can arrive whole
 while adb says "failed to read copy response: EOF". Each further try waits a little longer, and the first
 piece a run sends gets more tries (`--first-extra`), since the first push after a quiet link fails most often.
+On a link that is slow as well as weak, a push that has to stay up for a minute or more is the one that fails, and
+it fails again in every try. So a piece that fails is sent again in parts that are half as big (down to
+`--min-part-kb`), and a run that has seen a slow push starts the next pieces in parts at once, so that each push
+stays under about half of `--slow-s` seconds at the speed the last one had. Each part is checked by its md5 like a
+piece, the parts are made into the same piece on the phone and checked as a whole, and a part that arrived is not
+sent again in the next try or the next run. A try that failed says how long it ran and whether the link answered again.
 The pieces stay between runs, so a run after a failure sends only what is missing. It joins them on the
 phone, checks the whole file by its md5, and runs `pm install` there in the background (`--install-s`),
 so a link that drops during the install does not stop it. With `--package` it then checks the installed

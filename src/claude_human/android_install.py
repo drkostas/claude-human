@@ -11,7 +11,11 @@ that did not arrive it disconnects the device, connects it again and reads the p
 push can arrive whole while adb says it failed ("failed to read copy response: EOF"), or while the read right after
 it gets no answer. The md5 decides, never adb's exit code. Each further try waits a little longer than the one
 before, and the first piece a run sends gets more tries than the rest, since the first push after a quiet link is
-the one that fails most often. It joins the pieces on the phone, checks the
+the one that fails most often. On a link that is slow as well as weak, a push that has to stay up for a minute or
+more is the one that fails, in every try. A piece that fails is then sent in parts that are half as big, down to
+--min-part-kb, and once a push has run slowly the next pieces start in parts, so that each push stays under about
+half of --slow-s seconds at the speed the last one had. The parts are checked by their md5, made into the same piece on
+the phone and checked as a whole, and a part that arrived is not sent again. It joins the pieces on the phone, checks the
 whole file by its md5, and runs `pm install` there in the background, so the install itself does not depend on the
 link either. With --package it then checks that the installed copy is the same file. On success the folder is
 removed. After a failure the pieces stay for the next run, and --clear removes them.
@@ -22,7 +26,8 @@ file still running there waits for that one and starts no second install, and a 
 the install names the dialog. With --package, a phone that already runs this file is a success with nothing sent.
 
     claude-human android install --serial HOST:PORT APK [--package NAME] [--folder /data/local/tmp/apk-install]
-        [--piece-kb 4096] [--tries 4] [--first-extra 3] [--piece-s 120] [--install-s 300] [--clear] [--json]
+        [--piece-kb 4096] [--tries 4] [--first-extra 3] [--piece-s 120] [--slow-s 60] [--min-part-kb 256]
+        [--install-s 300] [--clear] [--json]
 
 An APK can carry secrets of its own (an app built with a token in its bundle, say). The folder on the phone is
 0700 and every piece 0600, and both are gone once the install succeeds or --clear runs.
@@ -51,6 +56,13 @@ TRIES = 4
 #: just before it had answered.
 FIRST_EXTRA = 3
 PIECE_S = 120.0
+#: a push that has to stay up longer than this is the one that fails on a slow link, so a piece the last push's speed puts above
+#: it is sent in parts (see _parts_for). On a link of about 50 KB/s a 4 MiB piece needs more than a minute, and a push that long
+#: can fail in every try, while a quarter of the piece needs about 20 seconds
+SLOW_S = 60.0
+#: a piece is never sent in parts smaller than this, and in no more than MAX_PARTS of them
+MIN_PART = 256 * 1024
+MAX_PARTS = 64
 INSTALL_S = 300.0
 EVERY = 3.0
 #: how often a waiting install looks for a dialog that holds it
@@ -107,6 +119,39 @@ def md5_lines(text: str) -> dict[str, str]:
         if m:
             out[m.group(2).rsplit("/", 1)[-1]] = m.group(1)
     return out
+
+
+def _max_parts(size: int, min_part: int) -> int:
+    """The most parts (a power of two) a piece of `size` bytes is sent in: none of them smaller than `min_part`."""
+    n = 1
+    while n * 2 <= MAX_PARTS and size // (n * 2) >= max(1, min_part):
+        n *= 2
+    return n
+
+
+def _parts_for(size: int, rate: float | None, slow_s: float, min_part: int) -> int:
+    """How many parts to start a piece of `size` bytes in, when the last push that arrived ran at `rate` bytes a second
+    (None until one has). One, unless the whole piece is expected to take longer than `slow_s`. Then the smallest power
+    of two that brings each part under half of it, within _max_parts."""
+    top = _max_parts(size, min_part)
+    if not rate or rate <= 0 or top == 1 or size / rate <= slow_s:
+        return 1
+    n = 2
+    while n < top and size / rate / n > slow_s / 2:
+        n *= 2
+    return n
+
+
+def part_name(index: int, n: int, k: int) -> str:
+    """The name of part `k` of the `n` that piece `index` is sent in. It does not begin with "piece.", so the shell's
+    join of the pieces and the list of what arrived never see it, until the parts are made into the piece."""
+    return f"part.{index:04d}.of{n}.{k:02d}"
+
+
+def cut(block: bytes, n: int) -> list[bytes]:
+    """`block` in `n` parts of the same size, the last one shorter when it does not divide."""
+    step = -(-len(block) // n)
+    return [block[i:i + step] for i in range(0, len(block), step)] if block else [b""]
 
 
 def installed_line(text: str) -> str | None:
@@ -201,15 +246,19 @@ def clear(serial: str, folder: str = FOLDER, *, adb: str = ADB, env: Mapping[str
 
 
 def install(serial: str, apk: str, *, package: str | None = None, folder: str = FOLDER, piece: int = PIECE,
-            tries: int = TRIES, first_extra: int = FIRST_EXTRA, piece_s: float = PIECE_S,
-            install_s: float = INSTALL_S, every: float = EVERY, look_s: float = LOOK_S, adb: str = ADB,
+            tries: int = TRIES, first_extra: int = FIRST_EXTRA, piece_s: float = PIECE_S, slow_s: float = SLOW_S,
+            min_part: int = MIN_PART, install_s: float = INSTALL_S, every: float = EVERY, look_s: float = LOOK_S,
+            adb: str = ADB,
             env: Mapping[str, str] | None = None, run: Runner | None = None, sleep=time.sleep, clock=time.monotonic,
             say: Callable[[str], None] = print) -> dict:
     """Send `apk` to the phone in pieces, keep what arrived, join and check it there, and install it.
-    Each piece gets `tries` tries, and the first one a run sends `first_extra` more.
+    Each piece gets `tries` tries, and the first one a run sends `first_extra` more. A piece that fails is sent again in
+    smaller parts (down to `min_part` bytes), and once a push has run slowly the next pieces start in parts, so that
+    each push stays under about half of `slow_s` seconds at the speed the last one had (see _parts_for).
     Answers {outcome: success | failure | refused, why, md5, size, pieces, sent, reused, failed_tries, read_again,
-    waiting_for}, where read_again counts the pieces found whole only on the second read of their md5, and
-    waiting_for names a dialog on the phone that holds the install, or is None."""
+    split, parts_sent, waiting_for}, where read_again counts the pieces found whole only on the second read of their md5,
+    split counts the pieces that were sent in parts and parts_sent those parts, and waiting_for names a dialog on the
+    phone that holds the install, or is None."""
     if not os.path.isfile(apk):
         return {"outcome": "refused", "why": f"no file at {apk}"}
     run = run or _runner(adb, env)
@@ -217,7 +266,8 @@ def install(serial: str, apk: str, *, package: str | None = None, folder: str = 
     here = f"{folder.rstrip('/')}/{md5}"
     q = shlex.quote(here)
     report = {"outcome": "failure", "why": "", "serial": serial, "apk": apk, "md5": md5, "size": size,
-              "pieces": 0, "sent": 0, "reused": 0, "failed_tries": 0, "read_again": 0, "waiting_for": None}
+              "pieces": 0, "sent": 0, "reused": 0, "failed_tries": 0, "read_again": 0, "split": 0, "parts_sent": 0,
+              "waiting_for": None}
 
     def fail(why: str) -> dict:
         report["why"] = why
@@ -241,8 +291,8 @@ def install(serial: str, apk: str, *, package: str | None = None, folder: str = 
         say(f"an install of this file is still running on the phone (pid {pid}); waiting for it instead of "
             f"starting another")
     else:
-        failed = _send_and_start(serial, apk, here, size, md5, piece, tries, first_extra, piece_s, every, run, sleep,
-                                 clock, say, report)
+        failed = _send_and_start(serial, apk, here, size, md5, piece, tries, first_extra, piece_s, slow_s, min_part,
+                                 every, run, sleep, clock, say, report)
         if failed:
             return fail(failed)
         say("joined and checked on the phone; installing there")
@@ -287,11 +337,77 @@ def _piece_md5(serial: str, run: Runner, here: str, name: str) -> str | None:
     return md5_lines(got).get(name)
 
 
+def _push_checked(serial: str, run: Runner, local: str, here: str, name: str, want: str, piece_s: float, every: float,
+                  sleep, clock) -> dict:
+    """Push the file `local` to `here/name`, and decide by the phone's md5 of it, not by adb's exit code (a push can arrive whole
+    while adb says it failed, or while the md5 read gets no answer). When it is not there whole, the link is made again and the
+    md5 read once more before the push counts as lost. Answers {arrived, code, out, got, again, back, secs}: `again` is whether
+    the second read decided, `back` whether the link answered after a drop (None when no drop was seen), and `secs` how long
+    the push itself ran."""
+    start = clock()
+    code, out = run(["-s", serial, "push", local, f"{here}/{name}"], timeout=piece_s)
+    secs = clock() - start
+    got = _piece_md5(serial, run, here, name)
+    again, back = False, None
+    if got != want:
+        back = reconnect(serial, run)
+        if not back:
+            sleep(every)
+        got, again = _piece_md5(serial, run, here, name), True
+    return {"arrived": got == want, "code": code, "out": out, "got": got, "again": again, "back": back, "secs": secs}
+
+
+def _send_parts(serial: str, run: Runner, here: str, p: dict, n: int, tmp: str, piece_s: float, every: float, sleep, clock,
+                parts_there: dict[str, str]) -> dict:
+    """One try at the piece `p` sent in `n` parts (see part_name), each checked by its md5 like a piece, then made into the piece
+    on the phone and checked as a whole. A part already on the phone with the right md5 is not sent again, and one that arrived
+    stays when a later one fails, so the next try sends only the rest. Answers what _push_checked does for the push that
+    failed, with `part` (which one, from 1) and `n`, and `bytes` and `secs` for what this try pushed."""
+    q = shlex.quote(here)
+    idx = int(p["name"].split(".")[1])
+    with open(p["path"], "rb") as f:
+        blocks = cut(f.read(), n)
+    n = len(blocks)
+    res = {"arrived": False, "code": 0, "out": "", "got": None, "again": False, "back": None, "bytes": 0, "secs": 0.0,
+           "part": None, "n": n}
+    for k, data in enumerate(blocks):
+        name = part_name(idx, n, k)
+        want = hashlib.md5(data).hexdigest()   # noqa: S324 - see md5_of
+        if parts_there.get(name) == want:
+            continue
+        local = os.path.join(tmp, name)
+        fd = os.open(local, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        r = _push_checked(serial, run, local, here, name, want, piece_s, every, sleep, clock)
+        res["again"] = res["again"] or r["again"]
+        if not r["arrived"]:
+            res.update(code=r["code"], out=r["out"], got=r["got"], back=r["back"], part=k + 1)
+            return res
+        parts_there[name] = want
+        res["bytes"] += len(data)
+        res["secs"] += r["secs"]
+    tmpn = f"tmp.{idx:04d}"
+    code, out = _shell(serial, run, f"cd {q} && cat part.{idx:04d}.of{n}.* > {tmpn} && mv {tmpn} {p['name']} && "
+                                    f"rm -f part.{idx:04d}.* && echo merged", timeout=60)
+    for name in [x for x in parts_there if x.startswith(f"part.{idx:04d}.")]:
+        del parts_there[name]
+    got = _piece_md5(serial, run, here, p["name"]) if "merged" in out else None
+    if got == p["md5"]:
+        res.update(arrived=True, got=got)
+        return res
+    _shell(serial, run, f"cd {q} && rm -f {tmpn} {p['name']} part.{idx:04d}.*")
+    res.update(code=code, out="the parts joined on the phone did not make this piece, so they were removed"
+               if "merged" in out else out, got=got, back=reconnect(serial, run), part=0)
+    return res
+
+
 def _send_and_start(serial: str, apk: str, here: str, size: int, md5: str, piece: int, tries: int, first_extra: int,
-                    piece_s: float, every: float, run: Runner, sleep, clock, say: Callable[[str], None],
-                    report: dict) -> str | None:
+                    piece_s: float, slow_s: float, min_part: int, every: float, run: Runner, sleep, clock,
+                    say: Callable[[str], None], report: dict) -> str | None:
     """Send what is missing of `apk` into `here` on the phone, join it there, check it, and start pm install.
-    Counts into `report`, and answers why it failed, or None once the install has started."""
+    A piece goes whole while the link carries it, and in parts once it has failed or the last push that arrived
+    ran slowly (see _parts_for). Counts into `report`, and answers why it failed, or None once the install has started."""
     q, qf = shlex.quote(here), shlex.quote(here.rsplit("/", 1)[0])
     # this APK's folder, private to the shell user; any other APK's pieces are removed first
     code, out = _shell(serial, run, f"mkdir -p {q} && chmod 700 {qf} {q} && "
@@ -304,37 +420,58 @@ def _send_and_start(serial: str, apk: str, here: str, size: int, md5: str, piece
         report["pieces"] = len(parts)
         _code, out = _shell(serial, run, f"cd {q} && md5sum piece.* 2>/dev/null")
         there = md5_lines(out)
+        _code, out = _shell(serial, run, f"cd {q} && md5sum part.* 2>/dev/null")
+        parts_there = md5_lines(out)     # parts a run that failed left, which the next try of their piece does not send again
         say(f"{len(parts)} pieces of up to {piece // 1024} KiB for {os.path.basename(apk)} ({size} bytes); "
             f"{sum(1 for p in parts if there.get(p['name']) == p['md5'])} already on the phone")
         first = True
+        rate = None            # bytes a second of the last push that arrived in this run
         for i, p in enumerate(parts, 1):
             if there.get(p["name"]) == p["md5"]:
                 report["reused"] += 1
                 continue
             n = tries + (first_extra if first else 0)
             first = False
+            top = _max_parts(p["size"], min_part)
+            nparts = _parts_for(p["size"], rate, slow_s, min_part)
+            idx = int(p["name"].split(".")[1])
+            left = [int(m.group(1)) for m in (re.match(rf"^part\.{idx:04d}\.of(\d+)\.\d+$", x) for x in parts_there) if m]
+            if left:
+                nparts = max(nparts, min(max(left), top))      # a run that failed left parts of this size: go on with them
             for t in range(1, n + 1):
                 start = clock()
-                code, out = run(["-s", serial, "push", p["path"], f"{here}/{p['name']}"], timeout=piece_s)
-                got = _piece_md5(serial, run, here, p["name"])
-                again = False
-                if got != p["md5"]:
-                    # a push can arrive whole while adb says it failed, or while this read gets no answer, so the
-                    # link is made again and the md5 read once more before the try counts as lost
-                    if not reconnect(serial, run):
-                        sleep(every)
-                    got, again = _piece_md5(serial, run, here, p["name"]), True
-                if got == p["md5"]:
+                if nparts == 1:
+                    r = _push_checked(serial, run, p["path"], here, p["name"], p["md5"], piece_s, every, sleep, clock)
+                    r.update(bytes=p["size"], part=None, n=1)
+                else:
+                    r = _send_parts(serial, run, here, p, nparts, tmp, piece_s, every, sleep, clock, parts_there)
+                if r["arrived"]:
                     report["sent"] += 1
-                    report["read_again"] += again
-                    note = (f"; its md5 matched on a second read (adb said exit {code})" if again
-                            else f"; adb said exit {code}, and its md5 matched" if code != 0 else "")
-                    say(f"piece {i} of {len(parts)} sent ({p['size']} bytes, {clock() - start:.1f} s){note}")
+                    report["read_again"] += r["again"]
+                    if nparts > 1:
+                        report["split"] = report.get("split", 0) + 1
+                        report["parts_sent"] = report.get("parts_sent", 0) + r["n"]
+                    if r["bytes"] and r["secs"] >= 0.5:
+                        rate = r["bytes"] / r["secs"]
+                    code = r["code"]
+                    note = (f"; its md5 matched on a second read (adb said exit {code})" if r["again"]
+                            else f"; adb said exit {code}, and its md5 matched" if code != 0 and nparts == 1 else "")
+                    how = f"sent in {r['n']} parts" if nparts > 1 else "sent"
+                    say(f"piece {i} of {len(parts)} {how} ({p['size']} bytes, {clock() - start:.1f} s){note}")
                     break
                 report["failed_tries"] += 1
-                last = (out.strip().splitlines() or [""])[-1][:200]
-                say(f"piece {i} of {len(parts)} did not arrive (try {t} of {n}, exit {code}): {last}; on the phone: "
+                last = (r["out"].strip().splitlines() or [""])[-1][:200]
+                got = r["got"]
+                where = (f"try {t} of {n}, in {r['n']} parts, " + (f"part {r['part']} failed, " if r["part"] else "")
+                         if nparts > 1 else f"try {t} of {n}, ")
+                say(f"piece {i} of {len(parts)} did not arrive ({where}exit {r['code']}): {last}; on the phone: "
                     + (f"md5 {got[:12]}, not {p['md5'][:12]}" if got else "no md5"))
+                if r["back"] is not None:      # what the next try can count on: how long this one ran and whether the link came back
+                    say(f"  that try ran {clock() - start:.0f} s, and the link {'answered again' if r['back'] else 'did not answer again'}")
+                if not (nparts > 1 and r["bytes"] > 0):
+                    # a try that failed goes on in smaller parts, unless it moved a part: those stay, and the next try
+                    # sends only the rest at the same size
+                    nparts = min(max(nparts * 2, 2), top)
                 if t < n:
                     sleep(every * t)      # a link that just dropped gets a little longer each time to come back
             else:
@@ -367,7 +504,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--tries", type=int, default=TRIES, help="tries for each piece before giving up")
     p.add_argument("--first-extra", type=int, default=FIRST_EXTRA,
                    help="more tries for the first piece a run sends")
-    p.add_argument("--piece-s", type=float, default=PIECE_S, help="seconds one piece may take")
+    p.add_argument("--piece-s", type=float, default=PIECE_S, help="seconds one push may take")
+    p.add_argument("--slow-s", type=float, default=SLOW_S,
+                   help="a piece the last push's speed puts above this many seconds is sent in parts")
+    p.add_argument("--min-part-kb", type=int, default=MIN_PART // 1024, help="the smallest part a piece is sent in")
     p.add_argument("--install-s", type=float, default=INSTALL_S, help="seconds the install on the phone may take")
     p.add_argument("--clear", action="store_true", help="remove the pieces kept on the phone, and install nothing")
     p.add_argument("--json", action="store_true", help="print the whole result as JSON")
@@ -379,8 +519,8 @@ def main(argv: list[str]) -> int:
         p.error("an APK is needed, or --clear")
     else:
         result = install(a.serial, a.apk, package=a.package, folder=a.folder, piece=a.piece_kb * 1024,
-                         tries=a.tries, first_extra=a.first_extra, piece_s=a.piece_s, install_s=a.install_s,
-                         adb=a.adb,
+                         tries=a.tries, first_extra=a.first_extra, piece_s=a.piece_s, slow_s=a.slow_s,
+                         min_part=a.min_part_kb * 1024, install_s=a.install_s, adb=a.adb,
                          say=(lambda _s: None) if a.json else print)
     if a.json:
         print(json.dumps(result, ensure_ascii=False, indent=1))
