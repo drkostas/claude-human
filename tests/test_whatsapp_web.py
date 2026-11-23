@@ -366,3 +366,51 @@ def test_collect_reports_numbers_only_besides_its_stop():
     assert how["stopped"] in wa.STOPS and how["depth"] is None
     for k, v in how.items():
         assert k == "stopped" or v is None or isinstance(v, (int, list))
+
+
+#: a stand-in chat with a message and a reply that quotes it, in the two shapes a reply can take: the quoted
+#: message drawn above the reply's copyable line, or inside it before the reply's words. The quote carries a
+#: selectable span of its own, as on the real page. Invented names and text.
+_QUOTE_PAGE = r"""
+function El(tag,attrs,cls){this.tag=tag;this.attrs=attrs||{};this.cls=cls||[];this.children=[];
+this.parentElement=null;this.innerText='';}
+El.prototype.add=function(c){c.parentElement=this;this.children.push(c);return c;};
+El.prototype.getAttribute=function(n){return n in this.attrs?this.attrs[n]:null;};
+El.prototype.matches=function(q){if(q==='#main')return this.attrs.id==='main';
+if(q==='span.selectable-text')return this.tag==='span'&&this.cls.indexOf('selectable-text')>=0;
+var m=/^\[([a-z-]+)(?:="([^"]*)")?\]$/.exec(q);if(!m)throw new Error('selector '+q);
+return m[2]===undefined?(m[1] in this.attrs):this.attrs[m[1]]===m[2];};
+El.prototype.querySelectorAll=function(q){var out=[];(function walk(e){for(var i=0;i<e.children.length;i++){
+var c=e.children[i];if(c.matches(q))out.push(c);walk(c);}})(this);return out;};
+El.prototype.querySelector=function(q){return this.querySelectorAll(q)[0]||null;};
+El.prototype.closest=function(q){var e=this;while(e){if(e.matches(q))return e;e=e.parentElement;}return null;};
+function span(parent,text){var s=parent.add(new El('span',{},['selectable-text']));s.innerText=text;return s;}
+var main=new El('div',{id:'main'});
+var a=main.add(new El('div',{'data-id':'3EB0AAAAAAAAAAAAAAAA01'}));
+span(a.add(new El('div',{'data-pre-plain-text':'[19:41, 05/11/2026] Ana: '})),'Shall we meet on Thursday?');
+var b=main.add(new El('div',{'data-id':'3EB0AAAAAAAAAAAAAAAA02'}));
+var line=new El('div',{'data-pre-plain-text':'[19:42, 05/11/2026] Ben: '});
+var quote=new El('div',{'role':'button'});span(quote,'Shall we meet on Thursday?');
+if(INSIDE){b.add(line);line.add(quote);}else{b.add(quote);b.add(line);}
+var own=span(line,'Thursday works');if(MENTION){own.innerText='Thursday works @Ana';span(own,'@Ana');}
+var document={querySelector:function(q){return q==='#main'?main:null;}};
+process.stdout.write(JSON.stringify(eval(PROGRAM))+'\n');
+"""
+
+
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("mention", [False, True])
+def test_a_reply_is_its_own_words_by_its_own_sender_and_never_the_message_it_quotes(inside, mention):
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    prog = (_QUOTE_PAGE.replace("INSIDE", "true" if inside else "false")
+            .replace("MENTION", "true" if mention else "false").replace("PROGRAM", json.dumps(wa.MESSAGES)))
+    out = subprocess.run([node, "-e", prog], capture_output=True, text=True, timeout=20)
+    rows = wa.parse_messages(json.loads(out.stdout), chat="120363000000000001@g.us")
+    assert [(r["sender"], r["text"]) for r in rows] == [
+        ("Ana", "Shall we meet on Thursday?"),
+        ("Ben", "Thursday works @Ana" if mention else "Thursday works")], \
+        "one row per real message, each with its own sender and its own words, not the quoted ones"
