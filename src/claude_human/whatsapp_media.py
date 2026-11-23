@@ -20,9 +20,13 @@ JavaScript. That is enough here, since IndexedDB, `fetch` and WebCrypto are the 
   its string. It checks the size and the SHA-256 again on the bytes it read back, and returns them.
 
 Which message: `chat` is the chat's id without its server (the part of "<id>@g.us" before the "@"),
-and the message is named by WhatsApp's own message id or by its file name. A message is taken only
-from that chat, and only when exactly one record matches its id. A file name takes the newest message
-in the chat with that exact name, and says how many there were.
+and the message is named by WhatsApp's own message id, by its file name, or by a window of time it was
+sent in. A message is taken only from that chat, and only when exactly one record matches its id. A
+file name takes the newest message in the chat with that exact name, and says how many there were. A
+time window, `sent=(since, until)` in seconds, is for a message with no file name (a photo, a voice
+note): it takes the one message with a file sent in it, and when there are several it takes none and
+names each one (its id, type, file name and time), so the caller can ask again by id. Every fetch says
+the message's id.
 
 Nothing here sends, opens a chat, marks a message read or presses anything.
 """
@@ -49,6 +53,9 @@ MEDIA_HOST = "https://mmg.whatsapp.net"
 #: the most a fetch takes by default (WhatsApp sends documents of up to 2 GB; a tab holds this one in memory)
 MAX_BYTES = 64 * 1024 * 1024
 
+#: the widest time window a message is looked for in, in seconds
+SENT_SPAN_MAX = 86400
+
 #: the base64 a single chunk call returns (a browser's automation answers in one string)
 CHUNK = 256 * 1024
 
@@ -56,7 +63,7 @@ CHUNK = 256 * 1024
 WHY = {
     "no_store": "WhatsApp Web in this tab has no message store (it is not linked, or still loading)",
     "no_record": "WhatsApp Web in this tab holds no such message in that chat",
-    "ambiguous": "more than one message in that chat matches that id, so none was taken",
+    "ambiguous": "more than one message in that chat matches, so none was taken (a time window names each one)",
     "no_media": "the message has no file this tab can fetch (no media key or no address)",
     "unknown_type": "the message's file is of a kind this does not know how to decrypt",
     "too_big": "the file is larger than the most this fetch takes",
@@ -74,7 +81,7 @@ _CHAT = re.compile(r"^[0-9A-Za-z.:-]{3,64}$")
 _MESSAGE_ID = re.compile(r"^[0-9A-Za-z]{8,64}$")
 _TOKEN = re.compile(r"^[0-9a-f]{8,32}$")
 
-_START = r"""(function(){var T=__WA_TOKEN__,CHAT=__WA_CHAT__,ID=__WA_ID__,NAME=__WA_NAME__,MAX=__WA_MAX__,SV=__WA_SERVERS__,INFO=__WA_INFO__,HOST=__WA_HOST__;
+_START = r"""(function(){var T=__WA_TOKEN__,CHAT=__WA_CHAT__,ID=__WA_ID__,NAME=__WA_NAME__,SENT=__WA_SENT__,MAX=__WA_MAX__,SV=__WA_SERVERS__,INFO=__WA_INFO__,HOST=__WA_HOST__;
 var W=window.__waMedia=window.__waMedia||{};W[T]={state:'running'};
 function b64(s){var b=atob(s);var u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u}
 function same(a,b){if(a.length!==b.length)return false;for(var i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true}
@@ -88,14 +95,20 @@ function each(st,range,f){return new Promise(function(ok,no){var c=st.openCursor
  if(!db||!db.objectStoreNames.contains('message')){if(db)db.close();fail('no_store');return}
  function st(){return db.transaction('message','readonly').objectStore('message')}var hits=[];
  for(var f=0;f<2;f++){for(var s=0;s<SV.length;s++){var pre=(f?'true':'false')+'_'+CHAT+'@'+SV[s]+'_';
-  if(ID){var exact=await req(st().get(pre+ID));if(exact)hits.push(exact);
-   await each(st(),IDBKeyRange.bound(pre+ID+'_',pre+ID+'_￿'),function(k,v){hits.push(v)})}
-  else{await each(st(),IDBKeyRange.bound(pre,pre+'￿'),function(k,v){if(v&&v.filename===NAME)hits.push(v)})}}}
+  if(ID){var exact=await req(st().get(pre+ID));if(exact)hits.push({k:pre+ID,v:exact});
+   await each(st(),IDBKeyRange.bound(pre+ID+'_',pre+ID+'_￿'),function(k,v){hits.push({k:k,v:v})})}
+  else if(SENT){await each(st(),IDBKeyRange.bound(pre,pre+'￿'),function(k,v){
+   if(v&&INFO[v.type]&&v.t>=SENT[0]&&v.t<SENT[1])hits.push({k:k,v:v})})}
+  else{await each(st(),IDBKeyRange.bound(pre,pre+'￿'),function(k,v){if(v&&v.filename===NAME)hits.push({k:k,v:v})})}}}
  db.close();
+ function mid(k){var p=String(k).split('_');return p.length>2?p[2]:null}
  if(!hits.length){fail('no_record');return}
  if(ID&&hits.length>1){fail('ambiguous',{matches:hits.length});return}
- hits.sort(function(a,b){return (b.t||0)-(a.t||0)});var rec=hits[0];
- var meta={type:rec.type||null,mimetype:rec.mimetype||null,filename:rec.filename||null,size:rec.size||null,
+ if(SENT&&hits.length>1){hits.sort(function(a,b){return (a.v.t||0)-(b.v.t||0)});
+  fail('ambiguous',{matches:hits.length,candidates:hits.slice(0,10).map(function(h){
+   return {id:mid(h.k),type:h.v.type||null,filename:h.v.filename||null,sent_at:h.v.t||null}})});return}
+ hits.sort(function(a,b){return (b.v.t||0)-(a.v.t||0)});var rec=hits[0].v;
+ var meta={id:mid(hits[0].k),type:rec.type||null,mimetype:rec.mimetype||null,filename:rec.filename||null,size:rec.size||null,
   sent_at:rec.t||null,filehash:rec.filehash||null,matches:hits.length};
  if(!rec.mediaKey||!(rec.deprecatedMms3Url||rec.directPath)||!rec.filehash){fail('no_media',{meta:meta});return}
  if(!INFO[rec.type]){fail('unknown_type',{meta:meta});return}
@@ -143,21 +156,37 @@ def _token(token: str) -> str:
     return json.dumps(token)
 
 
+def _sent(sent) -> list[int] | None:
+    """A time window as [since, until) in whole seconds, or None. At most a day wide."""
+    if sent is None:
+        return None
+    if not isinstance(sent, (tuple, list)) or len(sent) != 2 \
+            or not all(isinstance(x, int) and not isinstance(x, bool) for x in sent):
+        raise ValueError("a time window is (since, until) in whole seconds")
+    since, until = sent
+    if since < 0 or until <= since or until - since > SENT_SPAN_MAX:
+        raise ValueError(f"a time window starts at 0 or later, ends after it starts and spans at most "
+                         f"{SENT_SPAN_MAX} seconds")
+    return [since, until]
+
+
 def start_js(token: str, chat: str, *, message_id: str | None = None, name: str | None = None,
-             max_bytes: int = MAX_BYTES) -> str:
-    """The script that starts fetching one message's file in the page. Exactly one of `message_id` and
-    `name` names the message. Every value goes in as JSON, and a chat or message id that is not one is
-    refused here, before any script runs."""
+             sent: tuple[int, int] | None = None, max_bytes: int = MAX_BYTES) -> str:
+    """The script that starts fetching one message's file in the page. Exactly one of `message_id`,
+    `name` and `sent` names the message. Every value goes in as JSON, and a chat or message id that is
+    not one is refused here, before any script runs."""
     if not _CHAT.match(str(chat)) or "@" in str(chat):
         raise ValueError("a chat is its id without the server, the part before the @")
-    if (message_id is None) == (name is None):
-        raise ValueError("name the message by its id or by its file name, not both")
+    if sum(x is not None for x in (message_id, name, sent)) != 1:
+        raise ValueError("name the message one way: by its id, its file name or the time it was sent")
+    window = _sent(sent)
     if message_id is not None and not _MESSAGE_ID.match(str(message_id)):
         raise ValueError("a message id is 8 to 64 letters and digits")
     if name is not None and not (0 < len(str(name)) <= 255):
         raise ValueError("a file name is 1 to 255 characters")
     return _fill(_START, {"__WA_TOKEN__": _token(token), "__WA_CHAT__": json.dumps(chat),
                           "__WA_ID__": json.dumps(message_id), "__WA_NAME__": json.dumps(name),
+                          "__WA_SENT__": json.dumps(window),
                           "__WA_MAX__": str(int(max_bytes)), "__WA_SERVERS__": json.dumps(list(SERVERS)),
                           "__WA_INFO__": json.dumps(INFO), "__WA_HOST__": json.dumps(MEDIA_HOST)})
 
@@ -197,16 +226,16 @@ def safe_name(name: str | None, fallback: str = "attachment") -> str:
 
 
 def fetch(js, chat: str, *, message_id: str | None = None, name: str | None = None,
-          max_bytes: int = MAX_BYTES, wait_s: float = 120.0, chunk: int = CHUNK, step_s: float = 1.0,
+          sent: tuple[int, int] | None = None, max_bytes: int = MAX_BYTES, wait_s: float = 120.0, chunk: int = CHUNK, step_s: float = 1.0,
           sleep=time.sleep, clock=time.monotonic) -> dict:
     """Fetch one message's file through `js`, a function that runs a script in a WhatsApp Web tab and
     returns its string (None when the tab did not answer).
 
     {"ok": True, "data": bytes, "meta": {...}} or {"ok": False, "why": <a WHY key>, "said": <its words>,
-    ...}. `meta` holds the type, mimetype, file name, size, the time it was sent (seconds) and how many
-    messages matched; never the media key. The file is dropped from the page whatever happens."""
+    ...}. `meta` holds the message's id, type, mimetype, file name, size, the time it was sent (seconds) and
+    how many messages matched; never the media key. An `ambiguous` time window also gives `candidates`. The file is dropped from the page whatever happens."""
     token = secrets.token_hex(8)
-    started = _load(js(start_js(token, chat, message_id=message_id, name=name, max_bytes=max_bytes)))
+    started = _load(js(start_js(token, chat, message_id=message_id, name=name, sent=sent, max_bytes=max_bytes)))
     if not (started or {}).get("started"):
         return {"ok": False, "why": "no_answer", "said": WHY["no_answer"]}
     try:
@@ -219,7 +248,7 @@ def fetch(js, chat: str, *, message_id: str | None = None, name: str | None = No
         if state != "ready":
             why = got.get("why") if state == "failed" and got.get("why") in WHY else "timeout"
             out = {"ok": False, "why": why, "said": WHY[why]}
-            out.update({k: got[k] for k in ("meta", "matches", "status", "error") if k in got})
+            out.update({k: got[k] for k in ("meta", "matches", "candidates", "status", "error") if k in got})
             return out
         meta = {k: v for k, v in (got.get("meta") or {}).items() if k != "filehash"}
         length = int(got.get("length") or 0)

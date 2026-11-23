@@ -65,6 +65,7 @@ async function add(key, o) {
 }
 window.add = add;
 window.noStore = () => { HAS_STORE = false; return 'ok'; };
+window.put = (k, o) => { STORE.set(k, Object.assign({ id: k }, o)); return 'ok'; };
 const rl = require('readline').createInterface({ input: process.stdin });
 rl.on('line', l => { let out; try { out = eval(JSON.parse(l)); } catch (e) { out = JSON.stringify({ error: String(e) }); }
   process.stdout.write(JSON.stringify(out === undefined ? null : out) + '\n'); });
@@ -227,3 +228,47 @@ def test_a_file_name_holding_every_marker_word_stays_whole_and_the_script_runs(t
     tab.add(f"false_{GROUP}@g.us_3EB0KKKKKKKKKKKKKKKK13_1@lid", type="document", name=name, text="kept whole", t=1)
     got = _fetch(tab, GROUP, name=name)
     assert got["ok"] and got["data"] == b"kept whole" and got["meta"]["filename"] == name
+
+
+def test_a_message_is_found_by_the_time_it_was_sent_and_its_id_is_said(tab):
+    # a photo has no file name, and a reader may know only the minute it was sent
+    tab.add(f"false_{GROUP}@g.us_3EB0LLLLLLLLLLLLLLLL14_15550000002@lid", type="image", name=None,
+            text="photo bytes", t=1000)
+    tab("put(" + json.dumps(f"false_{GROUP}@g.us_3EB0LLLLLLLLLLLLLLLL15_1@lid") + ",{type:'chat',t:1010})")
+    tab.add(f"false_{ONE}@c.us_3EB0LLLLLLLLLLLLLLLL16", type="image", name=None, text="another chat", t=1005)
+    got = _fetch(tab, GROUP, sent=(990, 1050))
+    assert got["ok"], got
+    assert got["data"] == b"photo bytes" and got["meta"]["id"] == "3EB0LLLLLLLLLLLLLLLL14"
+    assert got["meta"]["matches"] == 1 and got["meta"]["sent_at"] == 1000
+
+
+def test_two_files_sent_in_the_window_take_neither_and_name_each(tab):
+    tab.add(f"true_{ONE}@c.us_3EB0MMMMMMMMMMMMMMMM17", type="image", name=None, text="first", t=2030)
+    tab.add(f"true_{ONE}@c.us_3EB0MMMMMMMMMMMMMMMM18", type="document", name="b.pdf", text="second", t=2000)
+    got = _fetch(tab, ONE, sent=(1990, 2050))
+    assert not got["ok"] and got["why"] == "ambiguous" and "data" not in got
+    assert got["candidates"] == [
+        {"id": "3EB0MMMMMMMMMMMMMMMM18", "type": "document", "filename": "b.pdf", "sent_at": 2000},
+        {"id": "3EB0MMMMMMMMMMMMMMMM17", "type": "image", "filename": None, "sent_at": 2030}]
+    again = _fetch(tab, ONE, message_id=got["candidates"][1]["id"])
+    assert again["ok"] and again["data"] == b"first" and again["meta"]["id"] == "3EB0MMMMMMMMMMMMMMMM17"
+
+
+def test_no_file_sent_in_the_window_is_no_record(tab):
+    tab.add(f"false_{GROUP}@g.us_3EB0NNNNNNNNNNNNNNNN19", type="image", name=None, text="later", t=5000)
+    got = _fetch(tab, GROUP, sent=(4000, 4999))
+    assert not got["ok"] and got["why"] == "no_record"
+
+
+def test_a_file_name_fetch_says_the_message_id_too(tab):
+    tab.add(f"false_{GROUP}@g.us_3EB0OOOOOOOOOOOOOOOO20_1@lid", type="document", name="o.pdf", text="o", t=1)
+    got = _fetch(tab, GROUP, name="o.pdf")
+    assert got["ok"] and got["meta"]["id"] == "3EB0OOOOOOOOOOOOOOOO20"
+
+
+@pytest.mark.parametrize("sent", [(10, 5), (5, 5), ("a", 9), (-1, 9), (0, 2 * 86400), (1, 2, 3)])
+def test_a_bad_time_window_is_refused(sent):
+    with pytest.raises(ValueError):
+        wm.start_js("0123abcd", GROUP, sent=sent)
+    with pytest.raises(ValueError):
+        wm.start_js("0123abcd", GROUP, sent=(1, 9), name="x")
