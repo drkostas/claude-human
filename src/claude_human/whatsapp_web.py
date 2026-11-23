@@ -187,7 +187,10 @@ def open_title_js(title: str) -> str:
 #: is the outermost element in the open chat with a `data-id`. Its id is either WhatsApp's long form
 #: ("false_<chat>_<message>", which says who sent it and in which chat) or a bare message id of letters
 #: and digits, which newer pages use; a bare id counts only on an element that holds a copyable line
-#: (`data-pre-plain-text`) or a message container (`data-testid="msg-container"`)
+#: (`data-pre-plain-text`) or a message container (`data-testid="msg-container"`). Its text is the LAST
+#: outermost selectable span inside that copyable line (inside the whole message when it has none). A reply
+#: also draws the message it quotes, with a selectable span of its own, before the reply's words, so the
+#: first span was the quoted text, and a reply was read as its sender saying the words it quoted
 MESSAGES = r"""(function(){var main=document.querySelector('#main');if(!main)return JSON.stringify(null);
 var seen={};var out=[];var els=main.querySelectorAll('[data-id]');
 for(var i=0;i<els.length;i++){var e=els[i];var id=e.getAttribute('data-id');if(!id||seen[id])continue;
@@ -195,7 +198,10 @@ if(e.parentElement&&e.parentElement.closest('[data-id]'))continue;
 var c=e.querySelector('[data-pre-plain-text]');
 if(!/^(true|false)_/.test(id)&&!(/^[0-9A-Za-z]{10,64}$/.test(id)&&(c||e.querySelector('[data-testid="msg-container"]'))))continue;
 seen[id]=1;var raw=c?c.getAttribute('data-pre-plain-text'):null;
-var s=e.querySelector('span.selectable-text')||c;var text=s?(s.innerText||'').trim():'';
+var scope=c||e,sp=scope.querySelectorAll('span.selectable-text'),s=null;
+for(var j=0;j<sp.length;j++){var p=sp[j].parentElement,inner=false;
+while(p&&p!==scope){if(p.matches('span.selectable-text')){inner=true;break;}p=p.parentElement;}if(!inner)s=sp[j];}
+if(!s)s=c;var text=s?(s.innerText||'').trim():'';
 var kind=text?'text':'other';if(!text){var l=e.querySelector('[aria-label]');if(l)kind=(l.getAttribute('aria-label')||'other').slice(0,40);}
 out.push({id:id,raw:raw,text:text,kind:kind});}
 return JSON.stringify(out);})()"""
