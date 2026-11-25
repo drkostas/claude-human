@@ -124,31 +124,47 @@ def yabai_ids(app: str = APP, *, yabai: str = YABAI, env: Mapping[str, str] | No
         return None
 
 
-#: the owners of the prompts behind which every Apple Event waits until a person answers
-#: (claude_human.consent): while one is up, no AppleScript to the browser returns
+#: the owners of the prompts that can hold Apple Events until a person answers (claude_human.consent).
+#: An automation consent prompt holds every AppleScript to the browser while it is up. A prompt of
+#: the same owner that asks for something else, such as access to another app's files, holds none,
+#: so a prompt of one of these owners is a block only when the browser does not answer (`answers`).
 APPLE_EVENT_BLOCKERS = {"UserNotificationCenter"}
+
+#: how long the browser has to answer one cheap Apple Event while such a prompt is on screen. It
+#: answers in well under a second when nothing holds it.
+ANSWER_WAIT_S = 3.0
 
 
 class Blocked(RuntimeError):
     """A prompt on screen holds every Apple Event to the browser, so nothing here can answer."""
 
 
-def blocked_by() -> str | None:
-    """The owner of a prompt on screen that holds every Apple Event to the browser, or None (also
-    when the window list cannot be read)."""
+def answers(app: str = APP, wait: float = ANSWER_WAIT_S) -> bool:
+    """True when the app answers one cheap Apple Event within `wait` seconds. An app that is not
+    running counts as answering, and is not started by the question."""
+    rc, _ = osa(f'if application "{app}" is running then tell application "{app}" to count windows', wait)
+    return rc == 0
+
+
+def blocked_by(app: str = APP, *, answering=None) -> str | None:
+    """The owner of a prompt on screen that holds Apple Events to the browser, or None (also when
+    the window list cannot be read). A prompt of an owner in APPLE_EVENT_BLOCKERS is a block only
+    when the browser then does not answer within ANSWER_WAIT_S, because only some of those prompts
+    hold Apple Events. `answering` stands in for `answers` in a test."""
     from . import consent   # noqa: PLC0415
     for p in consent.prompts() or []:
         if p.get("owner") in APPLE_EVENT_BLOCKERS:
-            return p["owner"]
+            return None if (answering or answers)(app) else p["owner"]
     return None
 
 
 def _refuse_if_blocked(blocker=None) -> None:
-    """Raise Blocked, naming the prompt's owner, when one is on screen."""
+    """Raise Blocked, naming the prompt's owner, when one is on screen and holds the browser."""
     owner = (blocker or blocked_by)()
     if owner:
-        raise Blocked(f"blocked_by {owner}: a macOS prompt is blocking Brave (every Apple Event to the "
-                      f"browser waits behind it until someone answers it; claude-human consent list)")
+        raise Blocked(f"blocked_by {owner}: a macOS prompt is blocking Brave (the browser did not answer "
+                      f"an Apple Event while it is up, and will not until someone answers the prompt; "
+                      f"claude-human consent list)")
 
 
 def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 10.0,
