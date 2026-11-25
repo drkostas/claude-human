@@ -32,14 +32,26 @@ a 400.
         except serving.BodyRefused as e:
             self.close_connection = True      # what the caller sent beyond the cap stays unread
             return self.send_error(e.status, e.reason)
+
+A request that never ends leaves no trace of its own. Its thread waits, its caller times out, and a
+log line written when a request finishes is never written. `DrainingMixin.running` lists the
+requests in progress, each with its request line, how long it has run and the stack of the thread
+answering it, and `watch_running` logs each request still running after a number of seconds, once,
+while it still waits, and again when it ends. The stack names the line it waits on.
+
+    watch = serving.watch_running(server, after_s=60, log=print)
+    ...
+    watch.set()                               # stops the watch
 """
 from __future__ import annotations
 
 import errno
 import json
 import signal
+import sys
 import threading
 import time
+import traceback
 from typing import Callable, Optional, TypeVar
 
 T = TypeVar("T")
@@ -59,6 +71,9 @@ class DrainingMixin:
     def __init__(self, *args, **kwargs):
         self._open = 0
         self._idle = threading.Condition()
+        # the thread answering each request in progress: its id -> (monotonic start, client address).
+        # Not `_threads`, which socketserver.ThreadingMixIn keeps for its own list of threads
+        self._answering: dict[int, tuple[float, object]] = {}
         super().__init__(*args, **kwargs)
 
     @property
@@ -76,10 +91,38 @@ class DrainingMixin:
             raise
 
     def process_request_thread(self, request, client_address):
+        me = threading.get_ident()
+        with self._idle:
+            self._answering[me] = (time.monotonic(), client_address)
         try:
             super().process_request_thread(request, client_address)
         finally:
+            with self._idle:
+                self._answering.pop(me, None)
             self._done()
+
+    def running(self, older_than: float = 0.0) -> list[dict]:
+        """The requests in progress that have run at least `older_than` seconds, longest first. Each
+        is a dict with `thread` (the thread's id), `started` (its time.monotonic() start, which with
+        `thread` names one request, since a thread's id is reused after it ends), `client` (the caller's
+        address), `seconds`, `request`
+        (the request line, None until the handler has read it) and `stack` (the thread's stack as
+        text, innermost call last, empty when the thread has just ended). A request counts from
+        the moment its thread starts."""
+        now = time.monotonic()
+        with self._idle:
+            threads = dict(self._answering)
+        frames = sys._current_frames()
+        out = []
+        for ident, (started, client) in threads.items():
+            seconds = now - started
+            if seconds < older_than:
+                continue
+            frame = frames.get(ident)
+            out.append({"thread": ident, "started": started, "client": client, "seconds": round(seconds, 3),
+                        "request": _request_line(frame),
+                        "stack": "".join(traceback.format_stack(frame)) if frame is not None else ""})
+        return sorted(out, key=lambda r: -r["seconds"])
 
     def _done(self) -> None:
         with self._idle:
@@ -97,6 +140,54 @@ class DrainingMixin:
                     break
                 self._idle.wait(left)
             return self._open
+
+
+def _request_line(frame) -> Optional[str]:
+    """The request line of the handler running in `frame` or any frame that called it: the first
+    frame whose `self` has a `requestline`, as http.server's handlers do once they read it."""
+    while frame is not None:
+        line = getattr(frame.f_locals.get("self"), "requestline", None)
+        if isinstance(line, str) and line:
+            return line
+        frame = frame.f_back
+    return None
+
+
+def watch_running(server, after_s: float, log: Callable[[str], None], *,
+                  every_s: Optional[float] = None) -> threading.Event:
+    """Log each request of `server` (a DrainingMixin server) that is still running `after_s` seconds
+    after it started, once, with its request line and stack, and log again when it ends. Looks every
+    `every_s` seconds (a quarter of `after_s` by default, at least 0.05). Runs on a daemon thread
+    and returns an Event, which stops it when set. A failure inside one look is logged and the
+    watch goes on."""
+    every = every_s if every_s is not None else max(after_s / 4, 0.05)
+    stop = threading.Event()
+    # (thread id, start) -> request line, for each request logged as running and not yet seen to end
+    seen: dict[tuple[int, float], Optional[str]] = {}
+
+    def look() -> None:
+        for r in server.running(after_s):
+            key = (r["thread"], r["started"])
+            if key not in seen:
+                seen[key] = r["request"]
+                log(f"request still running after {r['seconds']:.0f}s: {r['request'] or 'request line not read yet'} "
+                    f"from {r['client']}, thread {r['thread']}, waiting in\n{r['stack'].rstrip()}")
+        with server._idle:
+            alive = {(ident, started) for ident, (started, _client) in server._answering.items()}
+        for key in [k for k in seen if k not in alive]:
+            request = seen.pop(key)
+            log(f"request that ran past {after_s:g}s has ended after about {time.monotonic() - key[1]:.0f}s: "
+                f"{request or 'request line not read'}, thread {key[0]}")
+
+    def run() -> None:
+        while not stop.wait(every):
+            try:
+                look()
+            except Exception as e:   # noqa: BLE001 - the watch is a witness and never stops the server
+                log(f"watch_running: one look failed: {type(e).__name__}: {e}")
+
+    threading.Thread(target=run, name="watch_running", daemon=True).start()
+    return stop
 
 
 def serve_until_stopped(server, *, drain_s: float = DRAIN_S, signals=(signal.SIGTERM,),
