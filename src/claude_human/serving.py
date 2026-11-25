@@ -170,13 +170,13 @@ def watch_running(server, after_s: float, log: Callable[[str], None], *,
             key = (r["thread"], r["started"])
             if key not in seen:
                 seen[key] = r["request"]
-                log(f"request still running after {r['seconds']:.0f}s: {r['request'] or 'request line not read yet'} "
+                log(f"request still running after {r['seconds']:.1f}s: {r['request'] or 'request line not read yet'} "
                     f"from {r['client']}, thread {r['thread']}, waiting in\n{r['stack'].rstrip()}")
         with server._idle:
             alive = {(ident, started) for ident, (started, _client) in server._answering.items()}
         for key in [k for k in seen if k not in alive]:
             request = seen.pop(key)
-            log(f"request that ran past {after_s:g}s has ended after about {time.monotonic() - key[1]:.0f}s: "
+            log(f"request that ran past {after_s:g}s has ended after about {time.monotonic() - key[1]:.1f}s: "
                 f"{request or 'request line not read'}, thread {key[0]}")
 
     def run() -> None:
