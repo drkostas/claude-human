@@ -337,6 +337,24 @@ def test_watch_running_logs_a_long_request_once_and_then_its_end(held):
         stop.set()
 
 
+def test_watch_running_only_logs_and_the_request_it_named_still_answers_in_full(held):
+    port = held.server_address[1]
+    logs = []
+    stop = serving.watch_running(held, after_s=0.1, log=logs.append, every_s=0.02)
+    try:
+        asker, got = ask_in_background(port, "/hold")
+        assert until(lambda: [m for m in logs if "still running" in m])
+        time.sleep(0.3)   # many more looks after the one that logged it
+        assert asker.is_alive() and got == {}
+        assert [r["request"] for r in held.running()] == ["GET /hold HTTP/1.1"]
+        Held.gate.set()
+        asker.join(5)
+        assert got == {"answer": (200, b"done")}
+        assert get(port, "/after") == (200, b"done")
+    finally:
+        stop.set()
+
+
 def test_watch_running_says_nothing_of_a_quick_request(held):
     port = held.server_address[1]
     logs = []

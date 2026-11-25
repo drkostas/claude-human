@@ -37,7 +37,9 @@ A request that never ends leaves no trace of its own. Its thread waits, its call
 log line written when a request finishes is never written. `DrainingMixin.running` lists the
 requests in progress, each with its request line, how long it has run and the stack of the thread
 answering it, and `watch_running` logs each request still running after a number of seconds, once,
-while it still waits, and again when it ends. The stack names the line it waits on.
+while it still waits, and again when it ends. The stack names the line it waits on. The watch only
+logs. It never ends a request, stops its thread or closes its connection or anything the request
+holds, so a request it names goes on exactly as it would without the watch.
 
     watch = serving.watch_running(server, after_s=60, log=print)
     ...
@@ -159,7 +161,8 @@ def watch_running(server, after_s: float, log: Callable[[str], None], *,
     after it started, once, with its request line and stack, and log again when it ends. Looks every
     `every_s` seconds (a quarter of `after_s` by default, at least 0.05). Runs on a daemon thread
     and returns an Event, which stops it when set. A failure inside one look is logged and the
-    watch goes on."""
+    watch goes on. It only logs: it never ends a request, stops its thread or closes anything the
+    request holds, so a request it names answers as it would have without the watch."""
     every = every_s if every_s is not None else max(after_s / 4, 0.05)
     stop = threading.Event()
     # (thread id, start) -> request line, for each request logged as running and not yet seen to end
