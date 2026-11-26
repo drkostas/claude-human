@@ -799,8 +799,31 @@ def address(window: str, app: str = APP) -> str | None:
         return None
 
 
+#: where run leaves a mark in the document a window holds before it is sent to another address
+DOC_MARK = "__claude_doc"
+
+
+def _mark_document(window: str, app: str) -> str | None:
+    """Leave a mark in the document the window holds now and return it, or None when the page lets
+    no script in. A new document starts without it, whatever its address."""
+    import secrets   # noqa: PLC0415
+    mark = secrets.token_hex(8)
+    try:
+        return mark if js_in(window, f'window.{DOC_MARK} = "{mark}"', app) == mark else None
+    except RuntimeError:
+        return None
+
+
+def _still_marked(window: str, app: str, mark: str) -> bool | None:
+    """Whether the window still holds the document `mark` was left in, or None when it cannot be read."""
+    try:
+        return js_in(window, f'window.{DOC_MARK} === "{mark}"', app) == "true"
+    except RuntimeError:
+        return None
+
+
 def _await_new_document(window: str, app: str, before: str | None, url: str, blocker,
-                        timeout: float, pause: float = 0.25) -> None:
+                        timeout: float, pause: float = 0.25, mark: str | None = None) -> None:
     """Wait until the window holds a document other than the one it held before.
 
     Without this, a window that is reused runs the script against the page it already had. The
@@ -810,7 +833,13 @@ def _await_new_document(window: str, app: str, before: str | None, url: str, blo
     where the page that answers is not the one that was asked for.
 
     Nothing is waited for when the previous address could not be read, or when the window already
-    held the address being asked for, since no change is coming in either case."""
+    held the address being asked for, since no change is coming in either case.
+
+    An address alone cannot tell a new document from the old one when the site sends the new page
+    back to the address the window held, as a site that adds a slash does (asked for
+    /messages?mode=user, landed on /messages/?mode=user, which the window already showed). The
+    wait then ran out, and said Brave had not answered. So the old document carries `mark`
+    (`_mark_document`), and a document without it is new at any address."""
     if before is None or before == url:
         return
     while True:
@@ -818,6 +847,8 @@ def _await_new_document(window: str, app: str, before: str | None, url: str, blo
         if now is None:
             _refuse_if_blocked(blocker)        # a prompt holds every call; do not poll behind one
         elif now != before:
+            return
+        elif mark is not None and _still_marked(window, app, mark) is False:
             return
         if time.monotonic() >= _deadline:
             _ran_out(blocker, f"the window to leave {before}", timeout)
@@ -873,9 +904,10 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
                 _refuse_if_blocked(blocker)
                 if given:
                     _refuse_if_gone(window, app)
+            mark = _mark_document(window, app) if before is not None and before != url else None
             osa(f'tell application "{app}" to set URL of active tab of (first window whose id is '
                 f'{window}) to "{url}"')
-            _await_new_document(window, app, before, url, blocker, timeout)
+            _await_new_document(window, app, before, url, blocker, timeout, mark=mark)
         error, checked = None, False
         while True:
             try:
@@ -903,6 +935,9 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
 #: what the page answers, followed by the parser's message, for a script that does not parse
 UNPARSED = "__claude_unparsed__"
 
+#: added to the parser's message when a script parses as a function body and not as a script
+AS_BODY_ONLY = "it parses as a function body but not as a script, and a top-level return is the usual cause"
+
 
 def scoped(code: str) -> str:
     """Pure. The script that runs `code` in the page: it is parsed first and, when it parses, run
@@ -915,8 +950,22 @@ def scoped(code: str) -> str:
     tab that declared the same name did not parse ("Identifier 't' has already been declared").
     An indirect eval keeps such declarations to the run that made them, while `var` and
     `function` declarations still land on the global object as before. A value meant for a later
-    script still goes on `window`."""
+    script still goes on `window`.
+
+    Two readers answer "does this parse", and they must agree. `new Function` reads the script as a
+    function body and the eval that runs it reads it as a script, and the two differ on a
+    top-level `return`, which a function body allows. So the script is also parsed as a script
+    inside a block that never runs (`if(0){...}`), and one that passes the first reading and fails
+    the second comes back as UNPARSED with AS_BODY_ONLY. `new Function` stays first because it
+    reads the body on its own, so a stray closing brace cannot end that block early and run what
+    follows it. A SyntaxError a running script throws itself, such as one from JSON.parse, is
+    not a parse failure and is left to propagate as before. A script that starts with "use strict"
+    loses that directive inside the block, but the first reading keeps it (a function body has a
+    directive prologue too), so a syntax error only strict mode has (`delete x`) is still refused
+    there."""
     return ('(function(s){try{new Function(s);}catch(e){return "' + UNPARSED + '"+e;}'
+            'try{(0,eval)("if(0){\\n"+s+"\\n}");}catch(e){return "' + UNPARSED + '"+e+'
+            + json.dumps(" (" + AS_BODY_ONLY + ")") + ';}'
             'return (0,eval)(s);})(' + json.dumps(code) + ')')
 
 
@@ -1131,6 +1180,10 @@ def has_login(site: str, *, profiles: Path = PROFILES) -> bool | None:
     return found if read else None
 
 
+#: the flags of `brave URL JS_FILE` that take a value
+RUN_VALUE_FLAGS = ("--wait-for", "--timeout", "--window", "--key", "--app")
+
+
 def main(argv: list[str]) -> int:
     """`brave URL JS_FILE [--wait-for EXPR] [--timeout S] [--keep-open] [--window ID] [--key KEY]
     [--app NAME]`: the result on stdout; with --keep-open, "WINDOW <id>[ YABAI <id>]" on stderr.
@@ -1155,15 +1208,31 @@ def main(argv: list[str]) -> int:
         got = has_login(a[1])
         return 0 if got else (1 if got is False else 2)
 
-    def opt(name, default=None):
-        return a[a.index(name) + 1] if name in a else default
-
     if "--tab-url" in a:
         return _tab_main(a)
-    if len(a) < 2:
-        print(main.__doc__, file=sys.stderr)
+    # the flags are read apart from the two positionals, wherever they stand: `--keep-open URL JS`
+    # took --keep-open for the address and the address for the script's file
+    opts, rest, i = {}, [], 0
+    while i < len(a):
+        if a[i] in RUN_VALUE_FLAGS and i + 1 < len(a):
+            opts[a[i]] = a[i + 1]
+            i += 2
+        elif a[i] == "--keep-open":
+            opts[a[i]] = True
+            i += 1
+        else:
+            rest.append(a[i])
+            i += 1
+    other = [x for x in rest if x.startswith("--")]
+    if other or len(rest) != 2:
+        print(main.__doc__ + (f"\n(not {' '.join(other)})" if other else ""), file=sys.stderr)
         return 2
-    keep_open = "--keep-open" in a
+    a = rest
+
+    def opt(name, default=None):
+        return opts.get(name, default)
+
+    keep_open = bool(opts.get("--keep-open"))
     key = opt("--key") or (default_key() if keep_open else None)
     try:
         out = run(a[0], Path(a[1]).read_text(), wait_for=opt("--wait-for", READY),
