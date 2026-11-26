@@ -786,7 +786,7 @@ def test_run_in_tab_runs_in_the_one_matching_tab_and_loads_nothing(monkeypatch):
     out = brave.run_in_tab("forms.example.org/apply", "document.title")
     assert out == {"result": "the form, filled", "window": "20", "tab": "201",
                    "url": "https://forms.example.org/apply#part-3"}
-    assert b.ran == [("201", "document.title")]
+    assert b.ran == [("201", brave.scoped("document.title"))]
     assert not any("set URL" in c or "activate" in c or "active tab" in c or "set index" in c
                    for c in b.calls), b.calls
 
@@ -839,6 +839,64 @@ def test_the_tab_url_command(monkeypatch, tmp_path, capsys):
     assert brave.main(["--tab-url", "forms.example.org", str(js), "--window", "20"]) == 2
     assert "not --window" in capsys.readouterr().err
 
+
+
+def test_a_script_that_does_not_parse_is_refused_at_once_with_the_parsers_words(monkeypatch, tmp_path, capsys):
+    # the browser never answers a script it cannot parse: the run waited out its whole timeout and
+    # the command then printed an empty line and exited 1
+    said = brave.UNPARSED + "SyntaxError: Identifier 't' has already been declared"
+    _browser(monkeypatch, extra=[("30", "301", "https://steps.example.org/two", said)])
+    start = time.monotonic()
+    try:
+        brave.run_in_tab("steps.example.org", "const t = 2;", timeout=30)
+    except ValueError as e:
+        assert "does not parse" in str(e) and "Identifier 't' has already been declared" in str(e), str(e)
+    else:
+        raise AssertionError("a script that does not parse read as an answer")
+    assert time.monotonic() - start < 5
+    js = tmp_path / "step.js"
+    js.write_text("const t = 2;")
+    assert brave.main(["--tab-url", "steps.example.org", str(js)]) == 2
+    assert "Identifier 't' has already been declared" in capsys.readouterr().err
+
+
+def test_a_browser_that_never_answers_a_script_is_said_in_words(monkeypatch):
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (-1, ""))
+    try:
+        brave._js_once("20", "1", brave.APP, "201")
+    except RuntimeError as e:
+        assert "did not answer the script" in str(e), str(e)
+    else:
+        raise AssertionError("a script with no answer read as one")
+
+
+def test_scoped_runs_in_a_real_engine_as_it_says():
+    # node stands in for the page's isolated world: one global object kept from run to run
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    runs = ['const t = 1; window.__claude_r = "first " + t;',
+            'const t = 2; window.__claude_r = "second " + t; "last " + t',
+            'window.__claude_r = ;',
+            'var kept = 5; function helper(){ return kept * 2 }',
+            'helper() + ":" + typeof t']
+    js = "const vm = require('vm'); const ctx = vm.createContext({}); vm.runInContext('var window = this;', ctx);\n"
+    for code in runs:
+        js += f"console.log(JSON.stringify([vm.runInContext({json.dumps(brave.scoped(code))}, ctx), ctx.__claude_r]));\n"
+    # the fault itself, so the engine is shown to reproduce it: the same script twice, run as it is
+    js += "try { vm.runInContext('const t = 1;', ctx); vm.runInContext('const t = 2;', ctx); console.log('null'); } "
+    js += "catch (e) { console.log(JSON.stringify(String(e))); }\n"
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    got = [json.loads(line) for line in out.splitlines()]
+    assert "has already been declared" in (got[5] or ""), got[5]
+    assert got[0] == ["first 1", "first 1"]
+    assert got[1] == ["last 2", "second 2"]                       # the same const again, and the last value
+    assert got[2][0].startswith(brave.UNPARSED + "SyntaxError")   # nothing of it ran
+    assert got[2][1] == "second 2"
+    assert got[4][0] == "10:undefined"                            # var and function stay, const does not
 
 def test_a_window_the_browser_does_not_know_is_refused_at_once(monkeypatch):
     # a window manager's id passed as the browser's: every call failed, the run took that for a page

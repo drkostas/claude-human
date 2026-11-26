@@ -555,8 +555,10 @@ def _target(window: str, tab: str | None) -> str:
 
 def _js_once(window: str, code: str, app: str, tab: str | None = None) -> str:
     rc, out = osa(f'tell application "{app}" to execute {_target(window, tab)} javascript "{_escape(code)}"')
+    if rc == -1:
+        raise RuntimeError(f"{app} did not answer the script in the time left")
     if rc != 0:
-        raise RuntimeError(out)
+        raise RuntimeError(out or f"{app} refused the script and gave no reason (osascript exit {rc})")
     return out
 
 
@@ -898,12 +900,35 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
             osa(f'tell application "{app}" to close (first window whose id is {window})', CLOSE_GRACE)
 
 
+#: what the page answers, followed by the parser's message, for a script that does not parse
+UNPARSED = "__claude_unparsed__"
+
+
+def scoped(code: str) -> str:
+    """Pure. The script that runs `code` in the page: it is parsed first and, when it parses, run
+    with an indirect eval, which keeps the global scope and gives the value of its last expression.
+
+    The browser never answers a script it cannot parse, so a syntax error used to be waited for
+    until the whole timeout ran out and then reported with no words at all. Now the page answers
+    UNPARSED and the parser's message at once. A tab keeps the scripts' isolated world from one
+    run to the next, so a top-level `const` or `let` stayed behind, and the next script in the same
+    tab that declared the same name did not parse ("Identifier 't' has already been declared").
+    An indirect eval keeps such declarations to the run that made them, while `var` and
+    `function` declarations still land on the global object as before. A value meant for a later
+    script still goes on `window`."""
+    return ('(function(s){try{new Function(s);}catch(e){return "' + UNPARSED + '"+e;}'
+            'return (0,eval)(s);})(' + json.dumps(code) + ')')
+
+
 def _answer(window: str, code: str, app: str, blocker, timeout: float, tab: str | None = None) -> str:
-    """Run `code` in the tab and return its answer: what it set as window.__claude_r (waited for
-    while the script names it), else the value of its last expression."""
+    """Run `code` in the tab (`scoped`) and return its answer: what it set as window.__claude_r
+    (waited for while the script names it), else the value of its last expression. ValueError,
+    with the parser's message, when the script does not parse, and then nothing of it has run."""
     on = {"tab": tab} if tab else {}
     js_in(window, "window.__claude_r = undefined;", app, **on)
-    last = js_in(window, code, app, **on)
+    last = js_in(window, scoped(code), app, **on)
+    if last.startswith(UNPARSED):
+        raise ValueError(f"the script does not parse, so nothing of it ran ({last[len(UNPARSED):]})")
     while True:
         r = js_in(window, 'window.__claude_r === undefined ? "__PENDING__" : String(window.__claude_r)', app, **on)
         if r != "__PENDING__":
