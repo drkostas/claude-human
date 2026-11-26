@@ -5,9 +5,10 @@ question or a note that tells the person to open a page, sign in, type a passwor
 hands the work back to them, and on a phone it may be work they cannot do at all. ``by_hand`` finds
 such a sentence so a tool can refuse the text before it is sent, and say how to ask instead.
 
-    from claude_human.tasks import by_hand
+    from claude_human.tasks import by_hand, hand_ask
     by_hand("Open the settings page and tap Allow.")     # "Open the settings page and tap Allow."
     by_hand("Which account should I use?")               # None
+    hand_ask('Please press "Decline" now.')              # HandAsk(sentence='Please press "Decline" now.', verb='press')
 
 A sentence counts when it starts with one of the verbs (after "please", "then", "now", "first", a
 list number or a bullet, and after a place set off by a comma, as in "In the app on your phone, open
@@ -16,10 +17,16 @@ have to", "can you", "could you" or "please". Text in quotation marks is a quote
 message that reports a refusal word for word passes. A sentence where someone else acts ("Should I
 open a pull request?") passes too, and so does "open" used as an adjective ("Open items, each with its
 date").
+
+``hand_ask`` also gives the verb that made the sentence an instruction. A refusal that names it tells
+the writer what to change. "Please press Decline" is refused for "press", while "Decline is the right
+answer" passes, so a refusal that only quoted the sentence left the writer to guess whether the
+button's name or the verb was the problem.
 """
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 #: what a person is asked to do by hand, as the words of an instruction
 HAND_VERBS = ("open", "sign in", "sign into", "log in", "log into", "install", "plug", "unplug", "go to",
@@ -38,16 +45,56 @@ _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|`[^`]*`")
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
+@dataclass(frozen=True)
+class HandAsk:
+    """A sentence that tells the reader to act by hand, as written (quotations kept), and the verb in
+    it that made it an instruction, as written with its spaces made single ("press", "Sign in")."""
+    sentence: str
+    verb: str
+
+
 def _pattern(verbs: tuple[str, ...]) -> re.Pattern:
     words = "|".join(sorted((re.escape(v).replace(r"\ ", r"\s+") for v in verbs), key=len, reverse=True))
     verb = rf"(?!{_OPEN_ADJECTIVE})(?:{words})\b"
-    return re.compile(rf"^\s*{_PLACE}{_LEAD}{verb}|\b{_ASKING}{verb}", re.I)
+    return re.compile(rf"(?:^\s*{_PLACE}{_LEAD}|\b{_ASKING})(?P<verb>{verb})", re.I)
+
+
+def _unquoted(text: str) -> tuple[str, list[int], list[int]]:
+    """`text` with each quotation made one space, and for each of its characters where it starts and
+    ends in `text`, so a sentence found in it can be given back as it was written."""
+    parts, starts, ends, at = [], [], [], 0
+    for m in _QUOTED.finditer(text):
+        parts.append(text[at:m.start()])
+        starts.extend(range(at, m.start()))
+        ends.extend(range(at + 1, m.start() + 1))
+        parts.append(" ")
+        starts.append(m.start())
+        ends.append(m.end())
+        at = m.end()
+    parts.append(text[at:])
+    starts.extend(range(at, len(text)))
+    ends.extend(range(at + 1, len(text) + 1))
+    return "".join(parts), starts, ends
+
+
+def hand_ask(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> HandAsk | None:
+    """The first sentence of `text` that tells the reader to do something by hand, with the verb that
+    made it one, or None."""
+    pattern = _pattern(verbs)
+    plain, starts, ends = _unquoted(text or "")
+    at = 0
+    for gap in [*_SENTENCES.finditer(plain), None]:
+        end = gap.start() if gap else len(plain)
+        found = pattern.search(plain[at:end])
+        if found and end > at:
+            return HandAsk(sentence=(text or "")[starts[at]:ends[end - 1]].strip(),
+                           verb=" ".join(found.group("verb").split()))
+        # the next sentence starts at a quotation inside the gap, so a sentence that opens with one keeps it
+        at = next((k for k in range(gap.start(), gap.end()) if ends[k] - starts[k] > 1), gap.end()) if gap else end
+    return None
 
 
 def by_hand(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> str | None:
-    """The first sentence of `text` that tells the reader to do something by hand, or None."""
-    pattern = _pattern(verbs)
-    for sentence in _SENTENCES.split(_QUOTED.sub(" ", text or "")):
-        if pattern.search(sentence):
-            return sentence.strip()
-    return None
+    """The first sentence of `text` that tells the reader to do something by hand, as written, or None."""
+    found = hand_ask(text, verbs)
+    return found.sentence if found else None

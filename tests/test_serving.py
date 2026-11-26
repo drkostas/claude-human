@@ -230,3 +230,158 @@ def test_a_handler_answers_a_refused_body_with_its_status():
         assert raw_post(port, [f"Content-Length: {len(ok)}"], ok)[0] == 200   # and the server still answers
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------------------
+# running and watch_running: a request that does not end is named while it waits
+# ---------------------------------------------------------------------------------------
+
+class Held(BaseHTTPRequestHandler):
+    gate = threading.Event()
+
+    def do_GET(self):
+        if self.path == "/hold":
+            Held.gate.wait(10)
+        if self.path == "/boom":
+            raise RuntimeError("the handler failed")
+        body = b"done"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+    def log_error(self, *a):
+        pass
+
+
+def until(test, limit=5.0):
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        got = test()
+        if got:
+            return got
+        time.sleep(0.02)
+    return test()
+
+
+@pytest.fixture
+def held():
+    Held.gate = threading.Event()
+    srv = Server(("127.0.0.1", 0), Held)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv
+    Held.gate.set()
+    srv.shutdown()
+    srv.server_close()
+
+
+def ask_in_background(port, path):
+    got = {}
+
+    def ask():
+        try:
+            got["answer"] = get(port, path)
+        except Exception as e:   # noqa: BLE001
+            got["error"] = e
+
+    t = threading.Thread(target=ask)
+    t.start()
+    return t, got
+
+
+def test_running_names_a_waiting_request_by_its_line_and_stack(held):
+    port = held.server_address[1]
+    asker, got = ask_in_background(port, "/hold")
+    rows = until(lambda: held.running())
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["request"] == "GET /hold HTTP/1.1"
+    assert r["seconds"] >= 0 and r["client"][0] == "127.0.0.1"
+    # the stack names the handler and the line it waits on
+    assert "do_GET" in r["stack"] and "Held.gate.wait(10)" in r["stack"]
+    assert held.running(older_than=60) == []
+    Held.gate.set()
+    asker.join(5)
+    assert got["answer"] == (200, b"done")
+    assert until(lambda: held.running() == [])
+    assert held.open_requests == 0
+
+
+def test_a_request_whose_handler_raised_leaves_the_list(held):
+    port = held.server_address[1]
+    with pytest.raises(Exception):
+        get(port, "/boom")
+    assert until(lambda: held.running() == [] and held.open_requests == 0)
+
+
+def test_watch_running_logs_a_long_request_once_and_then_its_end(held):
+    port = held.server_address[1]
+    logs = []
+    stop = serving.watch_running(held, after_s=0.2, log=logs.append, every_s=0.05)
+    try:
+        asker, got = ask_in_background(port, "/hold")
+        assert until(lambda: [m for m in logs if "still running" in m])
+        time.sleep(0.3)   # several more looks while it still waits
+        waiting = [m for m in logs if "still running" in m]
+        assert len(waiting) == 1
+        assert "GET /hold HTTP/1.1" in waiting[0] and "Held.gate.wait(10)" in waiting[0]
+        assert not [m for m in logs if "has ended" in m]
+        Held.gate.set()
+        asker.join(5)
+        ended = until(lambda: [m for m in logs if "has ended" in m])
+        assert len(ended) == 1 and "GET /hold HTTP/1.1" in ended[0]
+    finally:
+        stop.set()
+
+
+def test_watch_running_only_logs_and_the_request_it_named_still_answers_in_full(held):
+    port = held.server_address[1]
+    logs = []
+    stop = serving.watch_running(held, after_s=0.1, log=logs.append, every_s=0.02)
+    try:
+        asker, got = ask_in_background(port, "/hold")
+        assert until(lambda: [m for m in logs if "still running" in m])
+        time.sleep(0.3)   # many more looks after the one that logged it
+        assert asker.is_alive() and got == {}
+        assert [r["request"] for r in held.running()] == ["GET /hold HTTP/1.1"]
+        Held.gate.set()
+        asker.join(5)
+        assert got == {"answer": (200, b"done")}
+        assert get(port, "/after") == (200, b"done")
+    finally:
+        stop.set()
+
+
+def test_watch_running_says_nothing_of_a_quick_request(held):
+    port = held.server_address[1]
+    logs = []
+    stop = serving.watch_running(held, after_s=0.5, log=logs.append, every_s=0.05)
+    try:
+        assert get(port, "/quick") == (200, b"done")
+        time.sleep(0.8)
+        assert logs == []
+    finally:
+        stop.set()
+
+
+def test_watch_running_goes_on_after_a_look_that_failed(held):
+    logs = []
+    real = held.running
+    calls = {"n": 0}
+
+    def once_broken(older_than=0.0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("no frames")
+        return real(older_than)
+
+    held.running = once_broken
+    stop = serving.watch_running(held, after_s=0.1, log=logs.append, every_s=0.05)
+    try:
+        assert until(lambda: calls["n"] >= 3)
+        assert [m for m in logs if "one look failed: RuntimeError: no frames" in m]
+    finally:
+        stop.set()
