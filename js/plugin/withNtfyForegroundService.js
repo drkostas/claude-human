@@ -514,7 +514,7 @@ class NtfyService : Service() {
                     if (open != null) setContentIntent(
                         PendingIntent.getActivity(this@NtfyService, click.hashCode(), open, FLAGS)
                     )
-                    for ((label, tap) in buttons(id, f.optJSONArray("actions"))) addAction(0, label, tap)
+                    for ((label, tap) in buttons(id, shown, f.optJSONArray("actions"))) addAction(0, label, tap)
                 }
                 .build()
             getSystemService(NotificationManager::class.java).notify(shown, n)
@@ -526,27 +526,21 @@ class NtfyService : Service() {
     /** Only links into this app are followed. A link in a notification is data from the network. */
     private fun intoApp(link: String): Boolean = ${linkCheck}
 
-    /**
-     * A link opens as a link intent aimed at this app, not as the launcher intent with a link
-     * attached: the launcher intent carries CATEGORY_LAUNCHER, and when the app is already running
-     * Android then only brings its task to the front and never delivers the link, so a tap opened
-     * the app on whatever screen it was last on. The app's own link handling takes it from here.
-     */
-    private fun linkIntent(link: String): Intent =
-        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link)).apply {
-            setPackage(packageName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
+    /** A link into this app, as appLinkIntent builds it (a tap once opened the app on whatever screen
+     *  it was last on, because the launcher intent never delivers a link to a running app). */
+    private fun linkIntent(link: String): Intent = appLinkIntent(packageName, link)
 
     /**
      * ntfy's view actions as buttons, at most MAX_BUTTONS, in the order they came. Like the tap, a
-     * button opens its link only when the link is into this app. It opens the app straight from
-     * the notification, because Android 12 and later do not let a receiver or service started by a
-     * notification open an activity. So a button does not dismiss the notification, and ntfy's
-     * "clear" is not honoured. ntfy's http and broadcast actions are not drawn. Each button has its
-     * own request code, so no two share a PendingIntent.
+     * button opens its link only when the link is into this app. Android 12 and later do not let a
+     * receiver or service started by a notification open an activity, and auto-cancel removes a
+     * notification only on its tap, never on a button. So a button whose action says "clear": true,
+     * as ntfy's own app reads it, opens NtfyTapActivity, which removes this notification (by shown,
+     * the id it was posted under) and then opens the link. Any other button opens the link straight
+     * from the notification and leaves the notification in the tray. ntfy's http and broadcast
+     * actions are not drawn. Each button has its own request code, so no two share a PendingIntent.
      */
-    private fun buttons(id: String, actions: JSONArray?): List<Pair<String, PendingIntent>> {
+    private fun buttons(id: String, shown: Int, actions: JSONArray?): List<Pair<String, PendingIntent>> {
         val out = mutableListOf<Pair<String, PendingIntent>>()
         if (actions == null) return out
         for (i in 0 until actions.length()) {
@@ -555,7 +549,8 @@ class NtfyService : Service() {
             val label = a.optString("label")
             val url = a.optString("url")
             if (a.optString("action") != "view" || label.isBlank() || !intoApp(url)) continue
-            out.add(label to PendingIntent.getActivity(this, "$id#$i".hashCode(), linkIntent(url), FLAGS))
+            val open = if (a.optBoolean("clear", false)) NtfyTapActivity.intent(this, shown, url) else linkIntent(url)
+            out.add(label to PendingIntent.getActivity(this, "$id#$i".hashCode(), open, FLAGS))
         }
         return out
     }
@@ -596,6 +591,57 @@ class NtfyService : Service() {
         if (tags == null) return false
         for (i in 0 until tags.length()) if (tags.optString(i) == tag) return true
         return false
+    }
+}
+
+/**
+ * A link into this app as an intent aimed at it, not as the launcher intent with a link attached: the
+ * launcher intent carries CATEGORY_LAUNCHER, and when the app is already running Android then only
+ * brings its task to the front and never delivers the link. The app's own link handling takes it
+ * from here.
+ */
+fun appLinkIntent(packageName: String, link: String): Intent =
+    Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link)).apply {
+        setPackage(packageName)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+
+/**
+ * Removes a notification and then opens a button's link, for a view action that says "clear": true.
+ * Android 12 and later refuse an activity started by a receiver or service that a notification
+ * started, but an activity a notification opens may start another. So this activity shows nothing:
+ * it cancels the notification by the id it was posted under, opens the link into the app, and
+ * finishes before it is drawn. It is not exported, so only this app's own notifications open it.
+ */
+class NtfyTapActivity : Activity() {
+    companion object {
+        const val EXTRA_SHOWN = "expo_ntfy_shown"
+        const val EXTRA_LINK = "expo_ntfy_link"
+        private const val TAG = ${kt(o.logTag)}
+
+        /** The intent a button's PendingIntent carries: the notification's id and the link. */
+        fun intent(context: Context, shown: Int, link: String): Intent =
+            Intent(context, NtfyTapActivity::class.java)
+                .putExtra(EXTRA_SHOWN, shown)
+                .putExtra(EXTRA_LINK, link)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_HISTORY or
+                          Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (intent.hasExtra(EXTRA_SHOWN)) {
+            getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra(EXTRA_SHOWN, 0))
+        }
+        val link = intent.getStringExtra(EXTRA_LINK)
+        if (link != null) {
+            try {
+                startActivity(appLinkIntent(packageName, link))
+            } catch (e: Exception) {
+                Log.w(TAG, "open: " + e.message)
+            }
+        }
+        finish()
     }
 }
 
@@ -683,7 +729,8 @@ const PERMISSIONS = [
   "android.permission.ACCESS_NOTIFICATION_POLICY",
 ];
 
-/** The manifest (as Expo's parsed XML object) with the permissions, the service and the receiver. */
+/** The manifest (as Expo's parsed XML object) with the permissions, the service, the receiver and the
+ *  activity a "clear" button opens. */
 function addManifestEntries(manifest, app) {
   manifest["uses-permission"] = manifest["uses-permission"] || [];
   for (const name of PERMISSIONS) {
@@ -715,6 +762,20 @@ function addManifestEntries(manifest, app) {
   });
   // Rewritten like the service, so a build without --clean gets the START_LISTENER filter too.
   // ${applicationId} is filled in by Gradle's manifest merger.
+  // The activity a "clear" button opens: not exported, never in the recents list, no window of its own
+  // (it finishes in onCreate, which Theme.NoDisplay requires), and in a task of its own, so opening it
+  // never brings the app's task forward before the link does.
+  app.activity = (app.activity || []).filter((a) => a.$["android:name"] !== ".NtfyTapActivity");
+  app.activity.push({
+    $: {
+      "android:name": ".NtfyTapActivity",
+      "android:exported": "false",
+      "android:excludeFromRecents": "true",
+      "android:noHistory": "true",
+      "android:taskAffinity": "",
+      "android:theme": "@android:style/Theme.NoDisplay",
+    },
+  });
   app.receiver = (app.receiver || []).filter((r) => r.$["android:name"] !== ".BootReceiver");
   app.receiver.push({
     $: { "android:name": ".BootReceiver", "android:exported": "true" },
