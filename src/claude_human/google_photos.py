@@ -90,19 +90,26 @@ _SEARCH = r"""(function(){var T=__GP_TOKEN__,WORDS=__GP_WORDS__,FROM=__GP_FROM__
 """ + _COMMON + r"""
 (async function(){try{
  if(!AT||!SID){fail('not_signed_in');return}
- var seen={},hits=[],page=null,pages=0,more=false;
+ var seen={},hits=[],page=null,pages=0,more=false,low=TO;
  while(true){
   var d=WORDS?await rpc('EzkLib',[WORDS,null,page]):await rpc('lcxiM',[page,page?null:TO,null,null,1,1]);pages++;
   var list=(d&&d[0])||[],oldest=Infinity;
   list.forEach(function(x){var t=x&&x[2];if(typeof t!=='number')return;if(t<oldest)oldest=t;
-   if(t>=FROM&&t<TO&&!seen[x[0]]){seen[x[0]]=1;hits.push(x[0])}});
+   if(t>=FROM&&t<TO&&!seen[x[0]]){seen[x[0]]=1;hits.push([x[0],t])}});
+  if(oldest<low)low=oldest;
+  W[T]={state:'running',pages:pages,reached_ms:WORDS?null:Math.max(low,FROM)};
   page=d&&d[1]||null;
   if(!page||(!WORDS&&oldest<FROM))break;
+  if(hits.length>MAXN)break;
   if(pages>=PAGES){more=true;break}}
- var cut=hits.length>MAXN;hits=hits.slice(0,MAXN);var items=[];
- for(var i=0;i<hits.length;i+=8){var got=await Promise.all(hits.slice(i,i+8).map(about));got.forEach(function(g){if(g)items.push(g)})}
+ var cut=hits.length>MAXN,from=null;
+ if(!WORDS)from=cut?hits[MAXN-1][1]:more?Math.max(low,FROM):FROM;else if(!cut&&!more)from=FROM;
+ hits=hits.slice(0,MAXN).map(function(h){return h[0]});var items=[];
+ var reached=W[T].reached_ms===undefined?null:W[T].reached_ms;
+ for(var i=0;i<hits.length;i+=8){W[T]={state:'running',pages:pages,reached_ms:reached,found:hits.length,read:i};
+  var got=await Promise.all(hits.slice(i,i+8).map(about));got.forEach(function(g){if(g)items.push(g)})}
  items.sort(function(a,b){return (b.taken_ms||0)-(a.taken_ms||0)});
- W[T]={state:'ready',items:items,pages:pages,truncated:cut||more};
+ W[T]={state:'ready',items:items,pages:pages,truncated:cut||more,complete_from_ms:from};
 }catch(e){caught(e)}})();
 return JSON.stringify({started:true});})()"""
 
@@ -211,6 +218,13 @@ def taken_at(item: dict) -> str | None:
     return dt.datetime.fromtimestamp(ms / 1000, zone).isoformat(timespec="seconds")
 
 
+def _at(ms, zone) -> str | None:
+    """A time in milliseconds as ISO 8601 in `zone`, or None when there is no time."""
+    if not isinstance(ms, (int, float)):
+        return None
+    return dt.datetime.fromtimestamp(ms / 1000, zone).isoformat(timespec="seconds")
+
+
 def _public(item: dict) -> dict:
     return {"id": item.get("id"), "name": item.get("name"), "taken": taken_at(item),
             "size": item.get("size"), "width": item.get("width"), "height": item.get("height"),
@@ -226,10 +240,18 @@ def _wait(js, token: str, wait_s: float, step_s: float, sleep, clock) -> dict:
     return got
 
 
-def _failed(got: dict) -> dict:
+def _failed(got: dict, zone=dt.timezone.utc) -> dict:
     state = got.get("state")
     why = got.get("why") if state == "failed" and got.get("why") in WHY else "timeout"
     out = {"ok": False, "why": why, "said": WHY[why]}
+    if why == "timeout" and got.get("pages"):
+        # how far the search had come when the time ran out: the listing had read `pages` pages back to
+        # `reached` (a date listing), and when it was reading each item's details, `read` of `found`
+        # items were done. A caller can then name a range that fits rather than retry the whole one.
+        out["pages"] = got["pages"]
+        out["reached"] = _at(got.get("reached_ms"), zone)
+        if "found" in got:
+            out.update(found=got["found"], read=got.get("read"))
     if got.get("meta"):
         out["meta"] = _public(got["meta"])
     out.update({k: got[k] for k in ("status", "error", "call") if k in got})
@@ -242,8 +264,16 @@ def search(js, start, end, *, words: str | None = None, max_items: int = MAX_ITE
     """The items taken from `start` up to `end` (matching `words` when given), newest first, through
     `js`, a function that runs a script in a signed-in Google Photos tab and returns its string.
 
-    {"ok": True, "items": [{id, name, taken, size, width, height}], "pages": n, "truncated": bool} or
-    {"ok": False, "why": <a WHY key>, "said": <its words>}. No item carries an address or a picture."""
+    {"ok": True, "items": [{id, name, taken, size, width, height}], "pages": n, "truncated": bool,
+    "complete_from": <time>} or {"ok": False, "why": <a WHY key>, "said": <its words>}. No item carries an
+    address or a picture.
+
+    `complete_from` is the time from which the items are every item up to `end`. It is `start` when
+    nothing was cut. A date listing cut by `max_items` keeps the newest items, so it is the oldest one
+    kept, and the older part of the range must be searched again. It is None when a word search was cut,
+    because its results come in Google's order, not by date, and no part of the range is known complete.
+    A timeout of a date listing carries `pages` and `reached`, the time the listing had read back to."""
+    zone = start.tzinfo if isinstance(start, dt.datetime) else dt.timezone.utc
     token = secrets.token_hex(8)
     started = _load(js(search_js(token, start, end, words=words, max_items=max_items, max_pages=max_pages)))
     if not (started or {}).get("started"):
@@ -251,9 +281,10 @@ def search(js, start, end, *, words: str | None = None, max_items: int = MAX_ITE
     try:
         got = _wait(js, token, wait_s, step_s, sleep, clock)
         if got.get("state") != "ready":
-            return _failed(got)
+            return _failed(got, zone)
         return {"ok": True, "items": [_public(i) for i in got.get("items") or []],
-                "pages": got.get("pages"), "truncated": bool(got.get("truncated"))}
+                "pages": got.get("pages"), "truncated": bool(got.get("truncated")),
+                "complete_from": _at(got.get("complete_from_ms"), zone)}
     finally:
         js(clear_js(token))
 
