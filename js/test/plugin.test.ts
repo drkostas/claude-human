@@ -48,7 +48,8 @@ describe("config plugin against a fixture project", () => {
     // A tap on a notification opens its link with a link intent aimed at the app. The launcher
     // intent with a link attached only brought a running app to the front, without the link.
     // A button opens its link the same way.
-    const link = out.kotlin.slice(out.kotlin.indexOf("private fun linkIntent("));
+    expect(out.kotlin).toContain("private fun linkIntent(link: String): Intent = appLinkIntent(packageName, link)");
+    const link = out.kotlin.slice(out.kotlin.indexOf("fun appLinkIntent("));
     expect(link).toContain("Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link))");
     expect(link).toContain("setPackage(packageName)");
     expect(link).toContain("FLAG_ACTIVITY_SINGLE_TOP");
@@ -151,6 +152,7 @@ describe("plugin helpers", () => {
     expect((manifest["uses-permission"] as unknown[]).length).toBe(5);
     expect((app.service as unknown[]).length).toBe(1);
     expect((app.receiver as unknown[]).length).toBe(1);
+    expect((app.activity as unknown[]).length).toBe(1);
   });
 
   it("validates names that end up in code", () => {
@@ -199,14 +201,41 @@ describe("what a message shows", () => {
 
   it("draws each view action into the app as a button, at most three, each with its own request code", async () => {
     const { kotlin } = await prebuild({}, ENV);
-    expect(fn(kotlin, "handle")).toContain('for ((label, tap) in buttons(id, f.optJSONArray("actions"))) addAction(0, label, tap)');
+    expect(fn(kotlin, "handle")).toContain('for ((label, tap) in buttons(id, shown, f.optJSONArray("actions"))) addAction(0, label, tap)');
     const buttons = fn(kotlin, "buttons");
     expect(buttons).toContain("if (out.size == MAX_BUTTONS) break");
     expect(buttons).toContain('a.optString("action") != "view"');
     expect(buttons).toContain("!intoApp(url)");
-    expect(buttons).toContain('PendingIntent.getActivity(this, "$id#$i".hashCode(), linkIntent(url), FLAGS)');
+    expect(buttons).toContain('PendingIntent.getActivity(this, "$id#$i".hashCode(), open, FLAGS)');
     expect(kotlin).toContain("const val MAX_BUTTONS = 3");
     expect(kotlin).toContain("const val FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT");
+  });
+
+  // Auto-cancel removes a notification only on its tap, and Android 12 and later refuse an activity that a
+  // receiver or service started from a notification opens, so a button alone never dismissed its notification.
+  it("removes the notification when a button whose action says clear is tapped, through an activity", async () => {
+    const { kotlin, manifest } = await prebuild({}, ENV);
+    const buttons = fn(kotlin, "buttons");
+    // ntfy's own app reads "clear" the same way, and a button without it still leaves the notification
+    expect(buttons).toContain(
+      'val open = if (a.optBoolean("clear", false)) NtfyTapActivity.intent(this, shown, url) else linkIntent(url)');
+    // the id the activity cancels is the one the notification was posted under, its key's or its own
+    const handle = fn(kotlin, "handle");
+    expect(handle).toContain("val shown = (key ?: id).hashCode()");
+    expect(handle).toContain("getSystemService(NotificationManager::class.java).notify(shown, n)");
+    const tap = kotlin.slice(kotlin.indexOf("class NtfyTapActivity : Activity()"), kotlin.indexOf("class BootReceiver"));
+    expect(tap).toContain(".putExtra(EXTRA_SHOWN, shown)");
+    expect(tap).toContain(".putExtra(EXTRA_LINK, link)");
+    const onCreate = tap.slice(tap.indexOf("override fun onCreate("));
+    const cancel = onCreate.indexOf("getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra(EXTRA_SHOWN, 0))");
+    const open = onCreate.indexOf("startActivity(appLinkIntent(packageName, link))");
+    const finish = onCreate.indexOf("finish()");
+    expect(cancel).toBeGreaterThan(-1);
+    expect(open).toBeGreaterThan(cancel);
+    expect(finish).toBeGreaterThan(open);
+    // not exported, so only the app's own notifications open it, and no window of its own
+    expect(manifest).toMatch(/<activity android:name="\.NtfyTapActivity" android:exported="false"[^>]*android:theme="@android:style\/Theme\.NoDisplay"/);
+    expect(manifest).toContain('android:excludeFromRecents="true"');
   });
 
   it("posts on the alarm, chime or silent channel by the message's priority", async () => {
