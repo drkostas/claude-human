@@ -940,8 +940,9 @@ def test_a_syntax_error_the_script_throws_itself_is_not_a_parse_failure():
     node = shutil.which("node")
     if not node:
         pytest.skip("node is not installed")
+    wrapped = json.dumps(brave.scoped('JSON.parse("{")'))
     js = ("const vm = require('vm'); const ctx = vm.createContext({}); "
-          f"try {{ vm.runInContext({json.dumps(brave.scoped('JSON.parse("{")'))}, ctx); console.log('none'); }} "
+          "try { vm.runInContext(" + wrapped + ", ctx); console.log('none'); } "
           "catch (e) { console.log(e.name); }")
     out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
     assert out.strip() == "SyntaxError"                           # thrown by the run, as before
