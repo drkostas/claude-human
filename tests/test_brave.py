@@ -497,12 +497,44 @@ def test_a_prompt_that_appears_during_the_wait_ends_it(monkeypatch):
 
 def test_no_prompt_is_no_block(monkeypatch):
     import claude_human.consent as consent
+    asked = []
+    silent = lambda app: asked.append(app) or False  # noqa: E731
     monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "CoreServicesUIAgent"}])
-    assert brave.blocked_by() is None
+    assert brave.blocked_by(answering=silent) is None
     monkeypatch.setattr(consent, "prompts", lambda: None)
-    assert brave.blocked_by() is None
+    assert brave.blocked_by(answering=silent) is None
+    assert asked == []         # with no prompt of a blocking owner the browser is not asked at all
     monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "UserNotificationCenter"}])
-    assert brave.blocked_by() == "UserNotificationCenter"
+    assert brave.blocked_by(answering=silent) == "UserNotificationCenter"
+    assert asked == [brave.APP]
+
+
+def test_a_prompt_that_leaves_the_browser_answering_is_no_block(monkeypatch):
+    # a prompt of the same owner can ask for something else (another app's files, say) and hold no
+    # Apple Event, and refusing every run while it waits for a person stopped work that would have run
+    import claude_human.consent as consent
+    monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "UserNotificationCenter"}])
+    assert brave.blocked_by(answering=lambda app: True) is None
+
+
+def test_answers_asks_one_cheap_question_with_a_short_wait(monkeypatch):
+    seen = []
+
+    def osa(script, timeout=30, **k):
+        seen.append((script, timeout))
+        return reply
+    monkeypatch.setattr(brave, "osa", osa)
+    reply = (0, "3")
+    assert brave.answers("Brave Browser") is True
+    reply = (-1, "")             # osa's answer when the call timed out
+    assert brave.answers("Brave Browser") is False
+    reply = (1, "execution error")
+    assert brave.answers("Brave Browser") is False
+    script, timeout = seen[0]
+    assert timeout == brave.ANSWER_WAIT_S
+    # an app that is not running is not started by the question
+    assert script.startswith('if application "Brave Browser" is running then ')
+    assert script.endswith("count windows")
 
 
 #: how far past its own limit a timed run may end before a test calls it a run that does not stop. A
