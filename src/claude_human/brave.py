@@ -959,7 +959,10 @@ def scoped(code: str) -> str:
     the second comes back as UNPARSED with AS_BODY_ONLY. `new Function` stays first because it
     reads the body on its own, so a stray closing brace cannot end that block early and run what
     follows it. A SyntaxError a running script throws itself, such as one from JSON.parse, is
-    not a parse failure and is left to propagate as before."""
+    not a parse failure and is left to propagate as before. A script that starts with "use strict"
+    loses that directive inside the block, but the first reading keeps it (a function body has a
+    directive prologue too), so a syntax error only strict mode has (`delete x`) is still refused
+    there."""
     return ('(function(s){try{new Function(s);}catch(e){return "' + UNPARSED + '"+e;}'
             'try{(0,eval)("if(0){\\n"+s+"\\n}");}catch(e){return "' + UNPARSED + '"+e+'
             + json.dumps(" (" + AS_BODY_ONLY + ")") + ';}'

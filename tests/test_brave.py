@@ -913,7 +913,8 @@ def test_scoped_runs_in_a_real_engine_as_it_says():
             'var kept = 5; function helper(){ return kept * 2 }',
             'helper() + ":" + typeof t',
             'window.__claude_r = "ran"; return 1;',             # a function body, not a script
-            '} window.__claude_r = "escaped"; {']               # a brace that would end the block
+            '} window.__claude_r = "escaped"; {',               # a brace that would end the block
+            '"use strict"; var x = 1; delete x; window.__claude_r = "strict ran";']   # strict only
     js = "const vm = require('vm'); const ctx = vm.createContext({}); vm.runInContext('var window = this;', ctx);\n"
     for code in runs:
         js += f"console.log(JSON.stringify([vm.runInContext({json.dumps(brave.scoped(code))}, ctx), ctx.__claude_r]));\n"
@@ -922,7 +923,7 @@ def test_scoped_runs_in_a_real_engine_as_it_says():
     js += "catch (e) { console.log(JSON.stringify(String(e))); }\n"
     out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
     got = [json.loads(line) for line in out.splitlines()]
-    assert "has already been declared" in (got[7] or ""), got[7]
+    assert "has already been declared" in (got[8] or ""), got[8]
     assert got[0] == ["first 1", "first 1"]
     assert got[1] == ["last 2", "second 2"]                       # the same const again, and the last value
     assert got[2][0].startswith(brave.UNPARSED + "SyntaxError")   # nothing of it ran
@@ -930,7 +931,8 @@ def test_scoped_runs_in_a_real_engine_as_it_says():
     assert got[4][0] == "10:undefined"                            # var and function stay, const does not
     assert got[5][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY in got[5][0], got[5]
     assert got[6][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY not in got[6][0], got[6]
-    assert got[5][1] == got[6][1] == "second 2"                   # neither ran any of it
+    assert got[7][0].startswith(brave.UNPARSED) and "strict mode" in got[7][0], got[7]
+    assert got[5][1] == got[6][1] == got[7][1] == "second 2"      # none of them ran any of it
 
 
 def test_a_syntax_error_the_script_throws_itself_is_not_a_parse_failure():
