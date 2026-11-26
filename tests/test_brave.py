@@ -620,7 +620,7 @@ class FakeTab:
     def __init__(self, href, pages, lag=2, lands_on=None):
         self.href, self.pages, self.lag = href, pages, lag
         self.lands_on, self.sent, self.left = lands_on, None, 0
-        self.ran = []
+        self.ran, self.mark = [], None
 
     def osa(self, script, *a, **k):
         if "get id of every window" in script:
@@ -637,7 +637,13 @@ class FakeTab:
                     self.left -= 1                       # still the old document
                 else:
                     self.href, self.sent = self.lands_on or self.sent, None
+                    self.mark = None                     # a new document carries no mark
             return self.href
+        if code.startswith("window." + brave.DOC_MARK + " = "):
+            self.mark = code.split('"')[1]
+            return self.mark
+        if code.startswith("window." + brave.DOC_MARK + " === "):
+            return "true" if self.mark and self.mark == code.split('"')[1] else "false"
         if code.startswith("!!("):
             return "true"
         if code.startswith("window." + brave.RESULT + " = undefined"):
@@ -679,6 +685,29 @@ def test_a_redirect_counts_as_the_document_having_changed(monkeypatch):
     assert out["result"] == "the sign-in page"
     assert tab.ran == ["https://signin.example.org/"]
 
+
+def test_a_redirect_back_to_the_address_the_window_held_counts_as_a_new_document(monkeypatch):
+    # a site that adds a slash: asked for /messages?mode=user, the new page landed on
+    # /messages/?mode=user, which the window already showed, and waiting for the address to change
+    # ran out and said the browser had not answered
+    held = "https://site.example.org/messages/?mode=user"
+    tab = FakeTab(held, {held: "the new page"}, lands_on=held)
+    _one_window(monkeypatch, tab)
+    out = brave.run("https://site.example.org/messages?mode=user", "1", window="7", timeout=5)
+    assert out["result"] == "the new page" and tab.ran == [held]
+
+
+def test_the_old_document_still_there_is_still_waited_for(monkeypatch):
+    held = "https://site.example.org/messages/?mode=user"
+    tab = FakeTab(held, {held: "old"}, lag=10**6)
+    _one_window(monkeypatch, tab)
+    try:
+        brave.run("https://site.example.org/messages?mode=user", "1", window="7", timeout=0.01)
+    except TimeoutError as e:
+        assert "to leave " + held in str(e)
+    else:
+        raise AssertionError("the run read the old document as the new one")
+    assert tab.ran == []
 
 def test_nothing_is_waited_for_when_the_window_already_holds_that_address(monkeypatch):
     tab = FakeTab("https://example.org/", {"https://example.org/": "here"}, lag=10**6)
@@ -882,7 +911,9 @@ def test_scoped_runs_in_a_real_engine_as_it_says():
             'const t = 2; window.__claude_r = "second " + t; "last " + t',
             'window.__claude_r = ;',
             'var kept = 5; function helper(){ return kept * 2 }',
-            'helper() + ":" + typeof t']
+            'helper() + ":" + typeof t',
+            'window.__claude_r = "ran"; return 1;',             # a function body, not a script
+            '} window.__claude_r = "escaped"; {']               # a brace that would end the block
     js = "const vm = require('vm'); const ctx = vm.createContext({}); vm.runInContext('var window = this;', ctx);\n"
     for code in runs:
         js += f"console.log(JSON.stringify([vm.runInContext({json.dumps(brave.scoped(code))}, ctx), ctx.__claude_r]));\n"
@@ -891,12 +922,51 @@ def test_scoped_runs_in_a_real_engine_as_it_says():
     js += "catch (e) { console.log(JSON.stringify(String(e))); }\n"
     out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
     got = [json.loads(line) for line in out.splitlines()]
-    assert "has already been declared" in (got[5] or ""), got[5]
+    assert "has already been declared" in (got[7] or ""), got[7]
     assert got[0] == ["first 1", "first 1"]
     assert got[1] == ["last 2", "second 2"]                       # the same const again, and the last value
     assert got[2][0].startswith(brave.UNPARSED + "SyntaxError")   # nothing of it ran
     assert got[2][1] == "second 2"
     assert got[4][0] == "10:undefined"                            # var and function stay, const does not
+    assert got[5][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY in got[5][0], got[5]
+    assert got[6][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY not in got[6][0], got[6]
+    assert got[5][1] == got[6][1] == "second 2"                   # neither ran any of it
+
+
+def test_a_syntax_error_the_script_throws_itself_is_not_a_parse_failure():
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    js = ("const vm = require('vm'); const ctx = vm.createContext({}); "
+          f"try {{ vm.runInContext({json.dumps(brave.scoped('JSON.parse("{")'))}, ctx); console.log('none'); }} "
+          "catch (e) { console.log(e.name); }")
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    assert out.strip() == "SyntaxError"                           # thrown by the run, as before
+
+def test_the_run_command_reads_its_flags_wherever_they_stand(monkeypatch, tmp_path, capsys):
+    # `--keep-open URL JS` took --keep-open for the address and the address for the script's file
+    js = tmp_path / "read.js"
+    js.write_text("document.title")
+    seen = []
+
+    def run(url, code, **k):
+        seen.append((url, code, k["keep_open"], k["window"], k["timeout"]))
+        return {"result": "ok", "window": "7", "yabai": None, "reused": False}
+    monkeypatch.setattr(brave, "run", run)
+    monkeypatch.setattr(brave, "default_key", lambda: "key")
+    for argv in (["--keep-open", "https://example.org/", str(js)],
+                 ["https://example.org/", "--keep-open", str(js), "--timeout", "9"],
+                 ["--window", "7", "--keep-open", "https://example.org/", str(js)]):
+        assert brave.main(argv) == 0, argv
+    assert [x[:3] for x in seen] == [("https://example.org/", "document.title", True)] * 3
+    assert seen[1][4] == 9.0 and seen[2][3] == "7"
+    capsys.readouterr()
+    assert brave.main(["--keep-oepn", "https://example.org/", str(js)]) == 2
+    assert "not --keep-oepn" in capsys.readouterr().err
+    assert brave.main(["https://example.org/"]) == 2 and len(seen) == 3
 
 def test_a_window_the_browser_does_not_know_is_refused_at_once(monkeypatch):
     # a window manager's id passed as the browser's: every call failed, the run took that for a page
