@@ -1037,13 +1037,22 @@ def payment_host(url: str) -> str | None:
     return host if any(host == h or host.endswith("." + h) for h in PAYMENT_HOSTS) else None
 
 
-#: why the page is a payment page, or "": a frame from a payment host, or a card field
+#: why the page is a payment page, or "": a frame from a payment host that a person can see, or a
+#: card field. A hidden frame does not count: Stripe.js adds one to every page that loads it (a
+#: metrics frame, visibility hidden and one pixel high), so a booking page that only loads the
+#: library, and takes no payment, read as a payment page. A frame less than 2 px high or wide holds
+#: no field either. Each call checks again, so a card frame that a later step shows is refused then.
 PAYMENT_PAGE_JS = (
     "(function(H){function pay(u){var h;try{h=new URL(u,location.href).hostname.toLowerCase();}"
     "catch(e){return '';}for(var i=0;i<H.length;i++){if(h===H[i]||h.slice(-H[i].length-1)==='.'+H[i])"
-    "return h;}return '';}var h=pay(location.href);if(h)return 'the tab is a payment page ('+h+')';"
+    "return h;}return '';}function seen(e){var r=e.getBoundingClientRect();if(r.width<2||r.height<2)"
+    "return false;if(typeof e.checkVisibility==='function')return e.checkVisibility({checkOpacity:true,"
+    "checkVisibilityCSS:true});var s=getComputedStyle(e);return e.getClientRects().length>0&&"
+    "s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';}"
+    "var h=pay(location.href);if(h)return 'the tab is a payment page ('+h+')';"
     "var f=document.querySelectorAll('iframe[src],frame[src]');for(var i=0;i<f.length;i++){var p=pay("
-    "f[i].src);if(p)return 'the page holds a payment frame ('+p+')';}var c=document.querySelector("
+    "f[i].src);if(p&&seen(f[i]))return 'the page holds a payment frame ('+p+')';}"
+    "var c=document.querySelector("
     "'input[autocomplete*=\"cc-\"]');if(c)return 'the page holds a card field (autocomplete '+"
     "c.getAttribute('autocomplete')+')';return '';})(" + json.dumps(list(PAYMENT_HOSTS)) + ")")
 
@@ -1106,7 +1115,8 @@ def run_in_tab(part: str, code: str, *, timeout: float = 40, app: str = APP, blo
     anything runs. The tab may be one the person opened, so password and payment fields are out of
     its reach, with no way to turn that off (TAB_RULE, raised as Refused):
     - a tab on a payment host (PAYMENT_HOSTS) is refused before any script runs in it, and a page
-      that holds a payment provider's frame or a card field (autocomplete cc-*) before the caller's;
+      that holds a payment provider's frame a person can see, or a card field (autocomplete cc-*),
+      before the caller's (a hidden frame, such as the one Stripe.js adds to every page, holds none);
     - GUARD_JS goes into the page first, and a script that writes to a password input is stopped
       there, with the input left as it was.
     `run` has no such guard: it works in a window of its own.
