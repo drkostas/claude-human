@@ -1034,6 +1034,67 @@ def test_a_page_with_a_payment_frame_is_refused_before_the_callers_script(monkey
     assert b.ran == [] and b.steps == ["pay check"], b.steps
 
 
+def _payment_check_in_a_real_engine(cases):
+    # node runs PAYMENT_PAGE_JS itself against frames shaped like the ones a browser reports
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    js = ("function frame(f){var e={src:f.src,_s:{display:f.display||'block',"
+          "visibility:f.visibility||'visible',opacity:f.opacity||'1'},"
+          "getBoundingClientRect:function(){return {width:f.w,height:f.h};},"
+          "getClientRects:function(){return f.display==='none'?[]:[1];}};"
+          "if('cv' in f)e.checkVisibility=function(){return f.cv;};return e;}\n"
+          "const cases = " + json.dumps(cases) + ";\n"
+          "for (const c of cases) {\n"
+          "  globalThis.location = {href: c.href || 'https://booking.example.org/book?step=time'};\n"
+          "  const frames = (c.frames || []).map(frame);\n"
+          "  globalThis.document = {querySelectorAll: () => frames, querySelector: () => c.card ?\n"
+          "    {getAttribute: () => 'cc-number'} : null};\n"
+          "  globalThis.getComputedStyle = e => e._s;\n"
+          "  console.log(JSON.stringify((0, eval)(" + json.dumps(brave.PAYMENT_PAGE_JS) + ")));\n"
+          "}\n")
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    return [json.loads(line) for line in out.splitlines()]
+
+
+#: the frame Stripe.js adds to every page that loads it, as a browser reported it on a booking page
+#: that takes no payment: hidden, one pixel high, out of the tab order, and with no field in it
+STRIPE_METRICS = {"src": "https://js.stripe.com/v3/m-outer-0edadf75.html", "w": 1639, "h": 1,
+                  "visibility": "hidden", "cv": False}
+#: a card field from the same provider, as a page shows it to a person
+STRIPE_CARD = {"src": "https://js.stripe.com/v3/elements-inner-card.html", "w": 300, "h": 40, "cv": True}
+
+
+def test_a_hidden_payment_frame_is_not_a_payment_page_and_a_visible_one_still_is():
+    got = _payment_check_in_a_real_engine([
+        {"frames": [STRIPE_METRICS]},
+        {"frames": [STRIPE_METRICS, STRIPE_CARD]},
+        {"frames": [dict(STRIPE_CARD, cv=False)]},                         # rendered, then hidden
+        {"frames": [dict(STRIPE_CARD, h=1)]},                              # a line, not a field
+        {"frames": [STRIPE_METRICS], "card": True},
+        {"frames": [STRIPE_METRICS], "href": "https://checkout.stripe.com/c/pay/x"},
+    ])
+    assert got[0] == "", got
+    assert got[1] == "the page holds a payment frame (js.stripe.com)", got
+    assert got[2] == "" and got[3] == "", got
+    assert got[4] == "the page holds a card field (autocomplete cc-number)", got
+    assert got[5] == "the tab is a payment page (checkout.stripe.com)", got
+
+
+def test_an_engine_without_check_visibility_reads_the_frames_style():
+    bare = {k: v for k, v in STRIPE_CARD.items() if k != "cv"}
+    got = _payment_check_in_a_real_engine([
+        {"frames": [bare]},
+        {"frames": [dict(bare, visibility="hidden")]},
+        {"frames": [dict(bare, display="none")]},
+        {"frames": [dict(bare, opacity="0")]},
+    ])
+    assert got == ["the page holds a payment frame (js.stripe.com)", "", "", ""], got
+
+
 def test_a_payment_check_that_cannot_be_read_runs_nothing(monkeypatch):
     b = _browser(monkeypatch, pay="missing value")
     try:

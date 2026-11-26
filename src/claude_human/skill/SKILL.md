@@ -281,7 +281,9 @@ passwords, never in one of their windows. The script may be async and assigns it
   than one, is refused before anything runs, and `brave.find_tab(part)` gives the tab.
 - `run_in_tab` never fills a password or a payment field, and has no option to (`brave.TAB_RULE`,
   raised as `brave.Refused`, exit 2). A tab on a payment host (`brave.PAYMENT_HOSTS`), or a page with a
-  payment provider's frame or a card field, is refused before the script runs. A guard in the page
+  payment provider's frame that a person can see or a card field, is refused before the script runs.
+  A hidden frame does not count (Stripe.js adds one, one pixel high, to every page that loads it, so a
+  booking page that takes no payment is not a payment page), and each call checks again. A guard in the page
   stops the script at its first write to a password input and leaves the input as it was. Read the
   refusal as that rule, never as the tool failing. `brave.run` has no such guard.
 - `--window` takes the browser's own window id (the WINDOW line), never the YABAI one. An id the
