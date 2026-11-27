@@ -3,6 +3,7 @@ carries the data token, its data endpoint answers the four read calls from a sma
 item's original is served from its own address."""
 import datetime as dt
 import hashlib
+import itertools
 import json
 import re
 import shutil
@@ -15,6 +16,7 @@ from claude_human import google_photos as gp
 _PAGE = r"""
 globalThis.window = globalThis;
 let SIGNED_IN = true;
+let HOLD = false;          // the item details call never answers
 const LIB = [];            // {id, t, tz, name, size, w, h, words, bytes, url, badsize}
 const CALLS = [];
 const PAGE = 2;            // items per result page, so paging is exercised
@@ -38,6 +40,7 @@ globalThis.fetch = async (url, opts) => {
       else { data = pageOf(newest.filter(x => x.t < args[1]), null); if (data[1]) data[1] += ':' + args[1]; } }
     if (id === 'EzkLib') data = pageOf(newest.filter(x => x.words.includes(args[0])), args[2]);
     const one = LIB.find(x => x.id === args[0]);
+    if (id === 'fDcn4b' && HOLD) return new Promise(() => {});
     if (id === 'fDcn4b') data = one ? [[one.id, "", one.name, one.t, one.tz, one.badsize || one.size, one.w, one.h]] : null;
     if (id === 'VrseUb') data = one ? [[one.id], one.url] : null;
     return { status: 200, text: async () => wrb(id, data) };
@@ -48,6 +51,7 @@ globalThis.fetch = async (url, opts) => {
 };
 window.add = o => { const bytes = new TextEncoder().encode(o.text); LIB.push({ ...o, bytes, size: bytes.length,
   w: 30, h: 40, url: 'https://originals.example.org/' + o.id + '?k=capability' }); return 'ok'; };
+window.hold = () => { HOLD = true; return 'ok'; };
 window.signOut = () => { SIGNED_IN = false; return 'ok'; };
 window.calls = () => JSON.stringify(CALLS);
 const rl = require('readline').createInterface({ input: process.stdin });
@@ -128,6 +132,51 @@ def test_a_search_cut_by_its_most_items_or_pages_says_so(tab):
     got = _search(tab, max_items=2)
     assert len(got["items"]) == 2 and got["truncated"] is True
     assert _search(tab, max_pages=1)["truncated"] is True
+
+
+def test_a_cut_date_listing_stops_paging_and_says_where_it_is_complete_from(tab):
+    got = _search(tab, max_items=2)
+    assert [i["id"][-5:] for i in got["items"]] == ["oct31", "oct20"]
+    assert got["pages"] == 2, "a listing holding more than its most items stops, rather than paging to the start"
+    assert got["complete_from"] == "2026-10-20T15:00:00+03:00", "the cut drops the oldest, so it is complete from oct20"
+
+
+def test_a_whole_search_is_complete_from_its_start_and_a_cut_word_search_from_nowhere(tab):
+    assert _search(tab)["complete_from"] == "2026-10-01T00:00:00+03:00"
+    assert _search(tab, words="receipt")["complete_from"] == "2026-10-01T00:00:00+03:00"
+    assert _search(tab, words="receipt", max_items=1)["complete_from"] is None
+    assert _search(tab, max_pages=1)["complete_from"] == "2026-10-20T15:00:00+03:00"
+
+
+def test_a_date_listing_that_runs_out_of_time_says_how_far_it_read():
+    def js(script):
+        if "rpc('lcxiM'" in script:
+            return json.dumps({"started": True})
+        if "state:'none'" in script:
+            return json.dumps({"state": "running", "pages": 3, "reached_ms": ms(2026, 10, 20)})
+        return json.dumps({"cleared": True})
+    got = gp.search(js, OCT1, NOV1, wait_s=2, sleep=lambda s: None, clock=itertools.count().__next__)
+    assert got["ok"] is False and got["why"] == "timeout"
+    assert got["pages"] == 3 and got["reached"] == "2026-10-20T15:00:00+03:00"
+    assert "found" not in got, "still listing, so no item details were being read"
+
+
+def test_a_search_that_runs_out_of_time_reading_details_says_how_many_it_read():
+    def js(script):
+        if "rpc('lcxiM'" in script:
+            return json.dumps({"started": True})
+        if "state:'none'" in script:
+            return json.dumps({"state": "running", "pages": 4, "reached_ms": None, "found": 501, "read": 240})
+        return json.dumps({"cleared": True})
+    got = gp.search(js, OCT1, NOV1, words="receipt", wait_s=2, sleep=lambda s: None, clock=itertools.count().__next__)
+    assert got["why"] == "timeout" and got["found"] == 501 and got["read"] == 240 and got["reached"] is None
+
+
+def test_a_search_held_on_its_item_details_times_out_with_its_progress(tab):
+    assert tab("hold()") == "ok"
+    got = gp.search(tab, OCT1, NOV1, step_s=0.01, wait_s=0.5)
+    assert got["why"] == "timeout" and got["found"] == 4 and got["read"] == 0
+    assert got["pages"] == 3 and got["reached"] == "2026-10-01T00:00:00+03:00"
 
 
 def test_only_read_calls_reach_the_data_endpoint(tab):
