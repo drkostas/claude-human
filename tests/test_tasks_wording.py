@@ -1,6 +1,6 @@
 """by_hand: a text that tells the person to act by hand is found; a question, a quote and a sentence
 where someone else acts are not."""
-from claude_human.tasks import by_hand
+from claude_human.tasks import HandAsk, by_hand, hand_ask
 
 
 def test_instructions_to_act_by_hand_are_found():
@@ -63,3 +63,29 @@ def test_a_place_with_someone_else_acting_is_not_an_ask():
                  "On the phone, the app shows the new level.",
                  "In the test, the page scrolls to the end by itself."):
         assert by_hand(text) is None, text
+
+
+def test_hand_ask_names_the_verb_and_keeps_the_quotation():
+    found = hand_ask('Press "Decline": nothing needs your Photos.')
+    assert found == HandAsk(sentence='Press "Decline": nothing needs your Photos.', verb="Press")
+    found = hand_ask("All fine. Please press Decline (Don't Allow): nothing needs your Photos.")
+    assert found.verb == "press"
+    assert found.sentence == "Please press Decline (Don't Allow): nothing needs your Photos."
+    assert by_hand('Press "Decline": nothing needs your Photos.') == 'Press "Decline": nothing needs your Photos.'
+
+
+def test_a_recommendation_of_a_choice_is_not_an_ask():
+    for text in ("Decline on this approval is the right answer.",
+                 "Decline is the right answer, nothing needs your Photos."):
+        assert hand_ask(text) is None, text
+
+
+def test_the_verb_is_given_as_written_with_single_spaces():
+    assert hand_ask("You need to sign   in to the browser.").verb == "sign in"
+    assert hand_ask("In the app on your phone, Open the page.").verb == "Open"
+    assert hand_ask("Feed the cat.", verbs=("feed",)).verb == "Feed"
+
+
+def test_a_quotation_at_the_start_of_the_sentence_found_is_kept():
+    said = 'The tool said "done". "Allow" then tap it.'
+    assert by_hand(said) == '"Allow" then tap it.'

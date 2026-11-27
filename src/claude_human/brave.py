@@ -124,31 +124,47 @@ def yabai_ids(app: str = APP, *, yabai: str = YABAI, env: Mapping[str, str] | No
         return None
 
 
-#: the owners of the prompts behind which every Apple Event waits until a person answers
-#: (claude_human.consent): while one is up, no AppleScript to the browser returns
+#: the owners of the prompts that can hold Apple Events until a person answers (claude_human.consent).
+#: An automation consent prompt holds every AppleScript to the browser while it is up. A prompt of
+#: the same owner that asks for something else, such as access to another app's files, holds none,
+#: so a prompt of one of these owners is a block only when the browser does not answer (`answers`).
 APPLE_EVENT_BLOCKERS = {"UserNotificationCenter"}
+
+#: how long the browser has to answer one cheap Apple Event while such a prompt is on screen. It
+#: answers in well under a second when nothing holds it.
+ANSWER_WAIT_S = 3.0
 
 
 class Blocked(RuntimeError):
     """A prompt on screen holds every Apple Event to the browser, so nothing here can answer."""
 
 
-def blocked_by() -> str | None:
-    """The owner of a prompt on screen that holds every Apple Event to the browser, or None (also
-    when the window list cannot be read)."""
+def answers(app: str = APP, wait: float = ANSWER_WAIT_S) -> bool:
+    """True when the app answers one cheap Apple Event within `wait` seconds. An app that is not
+    running counts as answering, and is not started by the question."""
+    rc, _ = osa(f'if application "{app}" is running then tell application "{app}" to count windows', wait)
+    return rc == 0
+
+
+def blocked_by(app: str = APP, *, answering=None) -> str | None:
+    """The owner of a prompt on screen that holds Apple Events to the browser, or None (also when
+    the window list cannot be read). A prompt of an owner in APPLE_EVENT_BLOCKERS is a block only
+    when the browser then does not answer within ANSWER_WAIT_S, because only some of those prompts
+    hold Apple Events. `answering` stands in for `answers` in a test."""
     from . import consent   # noqa: PLC0415
     for p in consent.prompts() or []:
         if p.get("owner") in APPLE_EVENT_BLOCKERS:
-            return p["owner"]
+            return None if (answering or answers)(app) else p["owner"]
     return None
 
 
 def _refuse_if_blocked(blocker=None) -> None:
-    """Raise Blocked, naming the prompt's owner, when one is on screen."""
+    """Raise Blocked, naming the prompt's owner, when one is on screen and holds the browser."""
     owner = (blocker or blocked_by)()
     if owner:
-        raise Blocked(f"blocked_by {owner}: a macOS prompt is blocking Brave (every Apple Event to the "
-                      f"browser waits behind it until someone answers it; claude-human consent list)")
+        raise Blocked(f"blocked_by {owner}: a macOS prompt is blocking Brave (the browser did not answer "
+                      f"an Apple Event while it is up, and will not until someone answers the prompt; "
+                      f"claude-human consent list)")
 
 
 def new_window(app: str = APP, *, ids=None, yids=None, make=None, wait: float = 10.0,
@@ -539,8 +555,10 @@ def _target(window: str, tab: str | None) -> str:
 
 def _js_once(window: str, code: str, app: str, tab: str | None = None) -> str:
     rc, out = osa(f'tell application "{app}" to execute {_target(window, tab)} javascript "{_escape(code)}"')
+    if rc == -1:
+        raise RuntimeError(f"{app} did not answer the script in the time left")
     if rc != 0:
-        raise RuntimeError(out)
+        raise RuntimeError(out or f"{app} refused the script and gave no reason (osascript exit {rc})")
     return out
 
 
@@ -781,8 +799,31 @@ def address(window: str, app: str = APP) -> str | None:
         return None
 
 
+#: where run leaves a mark in the document a window holds before it is sent to another address
+DOC_MARK = "__claude_doc"
+
+
+def _mark_document(window: str, app: str) -> str | None:
+    """Leave a mark in the document the window holds now and return it, or None when the page lets
+    no script in. A new document starts without it, whatever its address."""
+    import secrets   # noqa: PLC0415
+    mark = secrets.token_hex(8)
+    try:
+        return mark if js_in(window, f'window.{DOC_MARK} = "{mark}"', app) == mark else None
+    except RuntimeError:
+        return None
+
+
+def _still_marked(window: str, app: str, mark: str) -> bool | None:
+    """Whether the window still holds the document `mark` was left in, or None when it cannot be read."""
+    try:
+        return js_in(window, f'window.{DOC_MARK} === "{mark}"', app) == "true"
+    except RuntimeError:
+        return None
+
+
 def _await_new_document(window: str, app: str, before: str | None, url: str, blocker,
-                        timeout: float, pause: float = 0.25) -> None:
+                        timeout: float, pause: float = 0.25, mark: str | None = None) -> None:
     """Wait until the window holds a document other than the one it held before.
 
     Without this, a window that is reused runs the script against the page it already had. The
@@ -792,7 +833,13 @@ def _await_new_document(window: str, app: str, before: str | None, url: str, blo
     where the page that answers is not the one that was asked for.
 
     Nothing is waited for when the previous address could not be read, or when the window already
-    held the address being asked for, since no change is coming in either case."""
+    held the address being asked for, since no change is coming in either case.
+
+    An address alone cannot tell a new document from the old one when the site sends the new page
+    back to the address the window held, as a site that adds a slash does (asked for
+    /messages?mode=user, landed on /messages/?mode=user, which the window already showed). The
+    wait then ran out, and said Brave had not answered. So the old document carries `mark`
+    (`_mark_document`), and a document without it is new at any address."""
     if before is None or before == url:
         return
     while True:
@@ -800,6 +847,8 @@ def _await_new_document(window: str, app: str, before: str | None, url: str, blo
         if now is None:
             _refuse_if_blocked(blocker)        # a prompt holds every call; do not poll behind one
         elif now != before:
+            return
+        elif mark is not None and _still_marked(window, app, mark) is False:
             return
         if time.monotonic() >= _deadline:
             _ran_out(blocker, f"the window to leave {before}", timeout)
@@ -855,9 +904,10 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
                 _refuse_if_blocked(blocker)
                 if given:
                     _refuse_if_gone(window, app)
+            mark = _mark_document(window, app) if before is not None and before != url else None
             osa(f'tell application "{app}" to set URL of active tab of (first window whose id is '
                 f'{window}) to "{url}"')
-            _await_new_document(window, app, before, url, blocker, timeout)
+            _await_new_document(window, app, before, url, blocker, timeout, mark=mark)
         error, checked = None, False
         while True:
             try:
@@ -882,12 +932,52 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
             osa(f'tell application "{app}" to close (first window whose id is {window})', CLOSE_GRACE)
 
 
+#: what the page answers, followed by the parser's message, for a script that does not parse
+UNPARSED = "__claude_unparsed__"
+
+#: added to the parser's message when a script parses as a function body and not as a script
+AS_BODY_ONLY = "it parses as a function body but not as a script, and a top-level return is the usual cause"
+
+
+def scoped(code: str) -> str:
+    """Pure. The script that runs `code` in the page: it is parsed first and, when it parses, run
+    with an indirect eval, which keeps the global scope and gives the value of its last expression.
+
+    The browser never answers a script it cannot parse, so a syntax error used to be waited for
+    until the whole timeout ran out and then reported with no words at all. Now the page answers
+    UNPARSED and the parser's message at once. A tab keeps the scripts' isolated world from one
+    run to the next, so a top-level `const` or `let` stayed behind, and the next script in the same
+    tab that declared the same name did not parse ("Identifier 't' has already been declared").
+    An indirect eval keeps such declarations to the run that made them, while `var` and
+    `function` declarations still land on the global object as before. A value meant for a later
+    script still goes on `window`.
+
+    Two readers answer "does this parse", and they must agree. `new Function` reads the script as a
+    function body and the eval that runs it reads it as a script, and the two differ on a
+    top-level `return`, which a function body allows. So the script is also parsed as a script
+    inside a block that never runs (`if(0){...}`), and one that passes the first reading and fails
+    the second comes back as UNPARSED with AS_BODY_ONLY. `new Function` stays first because it
+    reads the body on its own, so a stray closing brace cannot end that block early and run what
+    follows it. A SyntaxError a running script throws itself, such as one from JSON.parse, is
+    not a parse failure and is left to propagate as before. A script that starts with "use strict"
+    loses that directive inside the block, but the first reading keeps it (a function body has a
+    directive prologue too), so a syntax error only strict mode has (`delete x`) is still refused
+    there."""
+    return ('(function(s){try{new Function(s);}catch(e){return "' + UNPARSED + '"+e;}'
+            'try{(0,eval)("if(0){\\n"+s+"\\n}");}catch(e){return "' + UNPARSED + '"+e+'
+            + json.dumps(" (" + AS_BODY_ONLY + ")") + ';}'
+            'return (0,eval)(s);})(' + json.dumps(code) + ')')
+
+
 def _answer(window: str, code: str, app: str, blocker, timeout: float, tab: str | None = None) -> str:
-    """Run `code` in the tab and return its answer: what it set as window.__claude_r (waited for
-    while the script names it), else the value of its last expression."""
+    """Run `code` in the tab (`scoped`) and return its answer: what it set as window.__claude_r
+    (waited for while the script names it), else the value of its last expression. ValueError,
+    with the parser's message, when the script does not parse, and then nothing of it has run."""
     on = {"tab": tab} if tab else {}
     js_in(window, "window.__claude_r = undefined;", app, **on)
-    last = js_in(window, code, app, **on)
+    last = js_in(window, scoped(code), app, **on)
+    if last.startswith(UNPARSED):
+        raise ValueError(f"the script does not parse, so nothing of it ran ({last[len(UNPARSED):]})")
     while True:
         r = js_in(window, 'window.__claude_r === undefined ? "__PENDING__" : String(window.__claude_r)', app, **on)
         if r != "__PENDING__":
@@ -947,13 +1037,22 @@ def payment_host(url: str) -> str | None:
     return host if any(host == h or host.endswith("." + h) for h in PAYMENT_HOSTS) else None
 
 
-#: why the page is a payment page, or "": a frame from a payment host, or a card field
+#: why the page is a payment page, or "": a frame from a payment host that a person can see, or a
+#: card field. A hidden frame does not count: Stripe.js adds one to every page that loads it (a
+#: metrics frame, visibility hidden and one pixel high), so a booking page that only loads the
+#: library, and takes no payment, read as a payment page. A frame less than 2 px high or wide holds
+#: no field either. Each call checks again, so a card frame that a later step shows is refused then.
 PAYMENT_PAGE_JS = (
     "(function(H){function pay(u){var h;try{h=new URL(u,location.href).hostname.toLowerCase();}"
     "catch(e){return '';}for(var i=0;i<H.length;i++){if(h===H[i]||h.slice(-H[i].length-1)==='.'+H[i])"
-    "return h;}return '';}var h=pay(location.href);if(h)return 'the tab is a payment page ('+h+')';"
+    "return h;}return '';}function seen(e){var r=e.getBoundingClientRect();if(r.width<2||r.height<2)"
+    "return false;if(typeof e.checkVisibility==='function')return e.checkVisibility({checkOpacity:true,"
+    "checkVisibilityCSS:true});var s=getComputedStyle(e);return e.getClientRects().length>0&&"
+    "s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';}"
+    "var h=pay(location.href);if(h)return 'the tab is a payment page ('+h+')';"
     "var f=document.querySelectorAll('iframe[src],frame[src]');for(var i=0;i<f.length;i++){var p=pay("
-    "f[i].src);if(p)return 'the page holds a payment frame ('+p+')';}var c=document.querySelector("
+    "f[i].src);if(p&&seen(f[i]))return 'the page holds a payment frame ('+p+')';}"
+    "var c=document.querySelector("
     "'input[autocomplete*=\"cc-\"]');if(c)return 'the page holds a card field (autocomplete '+"
     "c.getAttribute('autocomplete')+')';return '';})(" + json.dumps(list(PAYMENT_HOSTS)) + ")")
 
@@ -1016,7 +1115,8 @@ def run_in_tab(part: str, code: str, *, timeout: float = 40, app: str = APP, blo
     anything runs. The tab may be one the person opened, so password and payment fields are out of
     its reach, with no way to turn that off (TAB_RULE, raised as Refused):
     - a tab on a payment host (PAYMENT_HOSTS) is refused before any script runs in it, and a page
-      that holds a payment provider's frame or a card field (autocomplete cc-*) before the caller's;
+      that holds a payment provider's frame a person can see, or a card field (autocomplete cc-*),
+      before the caller's (a hidden frame, such as the one Stripe.js adds to every page, holds none);
     - GUARD_JS goes into the page first, and a script that writes to a password input is stopped
       there, with the input left as it was.
     `run` has no such guard: it works in a window of its own.
@@ -1090,6 +1190,10 @@ def has_login(site: str, *, profiles: Path = PROFILES) -> bool | None:
     return found if read else None
 
 
+#: the flags of `brave URL JS_FILE` that take a value
+RUN_VALUE_FLAGS = ("--wait-for", "--timeout", "--window", "--key", "--app")
+
+
 def main(argv: list[str]) -> int:
     """`brave URL JS_FILE [--wait-for EXPR] [--timeout S] [--keep-open] [--window ID] [--key KEY]
     [--app NAME]`: the result on stdout; with --keep-open, "WINDOW <id>[ YABAI <id>]" on stderr.
@@ -1114,15 +1218,31 @@ def main(argv: list[str]) -> int:
         got = has_login(a[1])
         return 0 if got else (1 if got is False else 2)
 
-    def opt(name, default=None):
-        return a[a.index(name) + 1] if name in a else default
-
     if "--tab-url" in a:
         return _tab_main(a)
-    if len(a) < 2:
-        print(main.__doc__, file=sys.stderr)
+    # the flags are read apart from the two positionals, wherever they stand: `--keep-open URL JS`
+    # took --keep-open for the address and the address for the script's file
+    opts, rest, i = {}, [], 0
+    while i < len(a):
+        if a[i] in RUN_VALUE_FLAGS and i + 1 < len(a):
+            opts[a[i]] = a[i + 1]
+            i += 2
+        elif a[i] == "--keep-open":
+            opts[a[i]] = True
+            i += 1
+        else:
+            rest.append(a[i])
+            i += 1
+    other = [x for x in rest if x.startswith("--")]
+    if other or len(rest) != 2:
+        print(main.__doc__ + (f"\n(not {' '.join(other)})" if other else ""), file=sys.stderr)
         return 2
-    keep_open = "--keep-open" in a
+    a = rest
+
+    def opt(name, default=None):
+        return opts.get(name, default)
+
+    keep_open = bool(opts.get("--keep-open"))
     key = opt("--key") or (default_key() if keep_open else None)
     try:
         out = run(a[0], Path(a[1]).read_text(), wait_for=opt("--wait-for", READY),

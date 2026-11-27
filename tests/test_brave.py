@@ -497,12 +497,44 @@ def test_a_prompt_that_appears_during_the_wait_ends_it(monkeypatch):
 
 def test_no_prompt_is_no_block(monkeypatch):
     import claude_human.consent as consent
+    asked = []
+    silent = lambda app: asked.append(app) or False  # noqa: E731
     monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "CoreServicesUIAgent"}])
-    assert brave.blocked_by() is None
+    assert brave.blocked_by(answering=silent) is None
     monkeypatch.setattr(consent, "prompts", lambda: None)
-    assert brave.blocked_by() is None
+    assert brave.blocked_by(answering=silent) is None
+    assert asked == []         # with no prompt of a blocking owner the browser is not asked at all
     monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "UserNotificationCenter"}])
-    assert brave.blocked_by() == "UserNotificationCenter"
+    assert brave.blocked_by(answering=silent) == "UserNotificationCenter"
+    assert asked == [brave.APP]
+
+
+def test_a_prompt_that_leaves_the_browser_answering_is_no_block(monkeypatch):
+    # a prompt of the same owner can ask for something else (another app's files, say) and hold no
+    # Apple Event, and refusing every run while it waits for a person stopped work that would have run
+    import claude_human.consent as consent
+    monkeypatch.setattr(consent, "prompts", lambda: [{"owner": "UserNotificationCenter"}])
+    assert brave.blocked_by(answering=lambda app: True) is None
+
+
+def test_answers_asks_one_cheap_question_with_a_short_wait(monkeypatch):
+    seen = []
+
+    def osa(script, timeout=30, **k):
+        seen.append((script, timeout))
+        return reply
+    monkeypatch.setattr(brave, "osa", osa)
+    reply = (0, "3")
+    assert brave.answers("Brave Browser") is True
+    reply = (-1, "")             # osa's answer when the call timed out
+    assert brave.answers("Brave Browser") is False
+    reply = (1, "execution error")
+    assert brave.answers("Brave Browser") is False
+    script, timeout = seen[0]
+    assert timeout == brave.ANSWER_WAIT_S
+    # an app that is not running is not started by the question
+    assert script.startswith('if application "Brave Browser" is running then ')
+    assert script.endswith("count windows")
 
 
 #: how far past its own limit a timed run may end before a test calls it a run that does not stop. A
@@ -588,7 +620,7 @@ class FakeTab:
     def __init__(self, href, pages, lag=2, lands_on=None):
         self.href, self.pages, self.lag = href, pages, lag
         self.lands_on, self.sent, self.left = lands_on, None, 0
-        self.ran = []
+        self.ran, self.mark = [], None
 
     def osa(self, script, *a, **k):
         if "get id of every window" in script:
@@ -605,7 +637,13 @@ class FakeTab:
                     self.left -= 1                       # still the old document
                 else:
                     self.href, self.sent = self.lands_on or self.sent, None
+                    self.mark = None                     # a new document carries no mark
             return self.href
+        if code.startswith("window." + brave.DOC_MARK + " = "):
+            self.mark = code.split('"')[1]
+            return self.mark
+        if code.startswith("window." + brave.DOC_MARK + " === "):
+            return "true" if self.mark and self.mark == code.split('"')[1] else "false"
         if code.startswith("!!("):
             return "true"
         if code.startswith("window." + brave.RESULT + " = undefined"):
@@ -647,6 +685,29 @@ def test_a_redirect_counts_as_the_document_having_changed(monkeypatch):
     assert out["result"] == "the sign-in page"
     assert tab.ran == ["https://signin.example.org/"]
 
+
+def test_a_redirect_back_to_the_address_the_window_held_counts_as_a_new_document(monkeypatch):
+    # a site that adds a slash: asked for /messages?mode=user, the new page landed on
+    # /messages/?mode=user, which the window already showed, and waiting for the address to change
+    # ran out and said the browser had not answered
+    held = "https://site.example.org/messages/?mode=user"
+    tab = FakeTab(held, {held: "the new page"}, lands_on=held)
+    _one_window(monkeypatch, tab)
+    out = brave.run("https://site.example.org/messages?mode=user", "1", window="7", timeout=5)
+    assert out["result"] == "the new page" and tab.ran == [held]
+
+
+def test_the_old_document_still_there_is_still_waited_for(monkeypatch):
+    held = "https://site.example.org/messages/?mode=user"
+    tab = FakeTab(held, {held: "old"}, lag=10**6)
+    _one_window(monkeypatch, tab)
+    try:
+        brave.run("https://site.example.org/messages?mode=user", "1", window="7", timeout=0.01)
+    except TimeoutError as e:
+        assert "to leave " + held in str(e)
+    else:
+        raise AssertionError("the run read the old document as the new one")
+    assert tab.ran == []
 
 def test_nothing_is_waited_for_when_the_window_already_holds_that_address(monkeypatch):
     tab = FakeTab("https://example.org/", {"https://example.org/": "here"}, lag=10**6)
@@ -754,7 +815,7 @@ def test_run_in_tab_runs_in_the_one_matching_tab_and_loads_nothing(monkeypatch):
     out = brave.run_in_tab("forms.example.org/apply", "document.title")
     assert out == {"result": "the form, filled", "window": "20", "tab": "201",
                    "url": "https://forms.example.org/apply#part-3"}
-    assert b.ran == [("201", "document.title")]
+    assert b.ran == [("201", brave.scoped("document.title"))]
     assert not any("set URL" in c or "activate" in c or "active tab" in c or "set index" in c
                    for c in b.calls), b.calls
 
@@ -807,6 +868,108 @@ def test_the_tab_url_command(monkeypatch, tmp_path, capsys):
     assert brave.main(["--tab-url", "forms.example.org", str(js), "--window", "20"]) == 2
     assert "not --window" in capsys.readouterr().err
 
+
+
+def test_a_script_that_does_not_parse_is_refused_at_once_with_the_parsers_words(monkeypatch, tmp_path, capsys):
+    # the browser never answers a script it cannot parse: the run waited out its whole timeout and
+    # the command then printed an empty line and exited 1
+    said = brave.UNPARSED + "SyntaxError: Identifier 't' has already been declared"
+    _browser(monkeypatch, extra=[("30", "301", "https://steps.example.org/two", said)])
+    start = time.monotonic()
+    try:
+        brave.run_in_tab("steps.example.org", "const t = 2;", timeout=30)
+    except ValueError as e:
+        assert "does not parse" in str(e) and "Identifier 't' has already been declared" in str(e), str(e)
+    else:
+        raise AssertionError("a script that does not parse read as an answer")
+    assert time.monotonic() - start < 5
+    js = tmp_path / "step.js"
+    js.write_text("const t = 2;")
+    assert brave.main(["--tab-url", "steps.example.org", str(js)]) == 2
+    assert "Identifier 't' has already been declared" in capsys.readouterr().err
+
+
+def test_a_browser_that_never_answers_a_script_is_said_in_words(monkeypatch):
+    monkeypatch.setattr(brave, "osa", lambda *a, **k: (-1, ""))
+    try:
+        brave._js_once("20", "1", brave.APP, "201")
+    except RuntimeError as e:
+        assert "did not answer the script" in str(e), str(e)
+    else:
+        raise AssertionError("a script with no answer read as one")
+
+
+def test_scoped_runs_in_a_real_engine_as_it_says():
+    # node stands in for the page's isolated world: one global object kept from run to run
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    runs = ['const t = 1; window.__claude_r = "first " + t;',
+            'const t = 2; window.__claude_r = "second " + t; "last " + t',
+            'window.__claude_r = ;',
+            'var kept = 5; function helper(){ return kept * 2 }',
+            'helper() + ":" + typeof t',
+            'window.__claude_r = "ran"; return 1;',             # a function body, not a script
+            '} window.__claude_r = "escaped"; {',               # a brace that would end the block
+            '"use strict"; var x = 1; delete x; window.__claude_r = "strict ran";']   # strict only
+    js = "const vm = require('vm'); const ctx = vm.createContext({}); vm.runInContext('var window = this;', ctx);\n"
+    for code in runs:
+        js += f"console.log(JSON.stringify([vm.runInContext({json.dumps(brave.scoped(code))}, ctx), ctx.__claude_r]));\n"
+    # the fault itself, so the engine is shown to reproduce it: the same script twice, run as it is
+    js += "try { vm.runInContext('const t = 1;', ctx); vm.runInContext('const t = 2;', ctx); console.log('null'); } "
+    js += "catch (e) { console.log(JSON.stringify(String(e))); }\n"
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    got = [json.loads(line) for line in out.splitlines()]
+    assert "has already been declared" in (got[8] or ""), got[8]
+    assert got[0] == ["first 1", "first 1"]
+    assert got[1] == ["last 2", "second 2"]                       # the same const again, and the last value
+    assert got[2][0].startswith(brave.UNPARSED + "SyntaxError")   # nothing of it ran
+    assert got[2][1] == "second 2"
+    assert got[4][0] == "10:undefined"                            # var and function stay, const does not
+    assert got[5][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY in got[5][0], got[5]
+    assert got[6][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY not in got[6][0], got[6]
+    assert got[7][0].startswith(brave.UNPARSED) and "strict mode" in got[7][0], got[7]
+    assert got[5][1] == got[6][1] == got[7][1] == "second 2"      # none of them ran any of it
+
+
+def test_a_syntax_error_the_script_throws_itself_is_not_a_parse_failure():
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    wrapped = json.dumps(brave.scoped('JSON.parse("{")'))
+    js = ("const vm = require('vm'); const ctx = vm.createContext({}); "
+          "try { vm.runInContext(" + wrapped + ", ctx); console.log('none'); } "
+          "catch (e) { console.log(e.name); }")
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    assert out.strip() == "SyntaxError"                           # thrown by the run, as before
+
+def test_the_run_command_reads_its_flags_wherever_they_stand(monkeypatch, tmp_path, capsys):
+    # `--keep-open URL JS` took --keep-open for the address and the address for the script's file
+    js = tmp_path / "read.js"
+    js.write_text("document.title")
+    seen = []
+
+    def run(url, code, **k):
+        seen.append((url, code, k["keep_open"], k["window"], k["timeout"]))
+        return {"result": "ok", "window": "7", "yabai": None, "reused": False}
+    monkeypatch.setattr(brave, "run", run)
+    monkeypatch.setattr(brave, "default_key", lambda: "key")
+    for argv in (["--keep-open", "https://example.org/", str(js)],
+                 ["https://example.org/", "--keep-open", str(js), "--timeout", "9"],
+                 ["--window", "7", "--keep-open", "https://example.org/", str(js)]):
+        assert brave.main(argv) == 0, argv
+    assert [x[:3] for x in seen] == [("https://example.org/", "document.title", True)] * 3
+    assert seen[1][4] == 9.0 and seen[2][3] == "7"
+    capsys.readouterr()
+    assert brave.main(["--keep-oepn", "https://example.org/", str(js)]) == 2
+    assert "not --keep-oepn" in capsys.readouterr().err
+    assert brave.main(["https://example.org/"]) == 2 and len(seen) == 3
 
 def test_a_window_the_browser_does_not_know_is_refused_at_once(monkeypatch):
     # a window manager's id passed as the browser's: every call failed, the run took that for a page
@@ -869,6 +1032,67 @@ def test_a_page_with_a_payment_frame_is_refused_before_the_callers_script(monkey
     else:
         raise AssertionError("a script ran on a page with a payment frame")
     assert b.ran == [] and b.steps == ["pay check"], b.steps
+
+
+def _payment_check_in_a_real_engine(cases):
+    # node runs PAYMENT_PAGE_JS itself against frames shaped like the ones a browser reports
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    js = ("function frame(f){var e={src:f.src,_s:{display:f.display||'block',"
+          "visibility:f.visibility||'visible',opacity:f.opacity||'1'},"
+          "getBoundingClientRect:function(){return {width:f.w,height:f.h};},"
+          "getClientRects:function(){return f.display==='none'?[]:[1];}};"
+          "if('cv' in f)e.checkVisibility=function(){return f.cv;};return e;}\n"
+          "const cases = " + json.dumps(cases) + ";\n"
+          "for (const c of cases) {\n"
+          "  globalThis.location = {href: c.href || 'https://booking.example.org/book?step=time'};\n"
+          "  const frames = (c.frames || []).map(frame);\n"
+          "  globalThis.document = {querySelectorAll: () => frames, querySelector: () => c.card ?\n"
+          "    {getAttribute: () => 'cc-number'} : null};\n"
+          "  globalThis.getComputedStyle = e => e._s;\n"
+          "  console.log(JSON.stringify((0, eval)(" + json.dumps(brave.PAYMENT_PAGE_JS) + ")));\n"
+          "}\n")
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    return [json.loads(line) for line in out.splitlines()]
+
+
+#: the frame Stripe.js adds to every page that loads it, as a browser reported it on a booking page
+#: that takes no payment: hidden, one pixel high, out of the tab order, and with no field in it
+STRIPE_METRICS = {"src": "https://js.stripe.com/v3/m-outer-0edadf75.html", "w": 1639, "h": 1,
+                  "visibility": "hidden", "cv": False}
+#: a card field from the same provider, as a page shows it to a person
+STRIPE_CARD = {"src": "https://js.stripe.com/v3/elements-inner-card.html", "w": 300, "h": 40, "cv": True}
+
+
+def test_a_hidden_payment_frame_is_not_a_payment_page_and_a_visible_one_still_is():
+    got = _payment_check_in_a_real_engine([
+        {"frames": [STRIPE_METRICS]},
+        {"frames": [STRIPE_METRICS, STRIPE_CARD]},
+        {"frames": [dict(STRIPE_CARD, cv=False)]},                         # rendered, then hidden
+        {"frames": [dict(STRIPE_CARD, h=1)]},                              # a line, not a field
+        {"frames": [STRIPE_METRICS], "card": True},
+        {"frames": [STRIPE_METRICS], "href": "https://checkout.stripe.com/c/pay/x"},
+    ])
+    assert got[0] == "", got
+    assert got[1] == "the page holds a payment frame (js.stripe.com)", got
+    assert got[2] == "" and got[3] == "", got
+    assert got[4] == "the page holds a card field (autocomplete cc-number)", got
+    assert got[5] == "the tab is a payment page (checkout.stripe.com)", got
+
+
+def test_an_engine_without_check_visibility_reads_the_frames_style():
+    bare = {k: v for k, v in STRIPE_CARD.items() if k != "cv"}
+    got = _payment_check_in_a_real_engine([
+        {"frames": [bare]},
+        {"frames": [dict(bare, visibility="hidden")]},
+        {"frames": [dict(bare, display="none")]},
+        {"frames": [dict(bare, opacity="0")]},
+    ])
+    assert got == ["the page holds a payment frame (js.stripe.com)", "", "", ""], got
 
 
 def test_a_payment_check_that_cannot_be_read_runs_nothing(monkeypatch):
