@@ -44,6 +44,15 @@ holds, so a request it names goes on exactly as it would without the watch.
     watch = serving.watch_running(server, after_s=60, log=print)
     ...
     watch.set()                               # stops the watch
+
+A line from the watch is joined to what other tools see of the same request (a database's list of
+sessions, a sample of them, a client's own timeout report) by time and by name. Each line carries
+the wall-clock time the request started and the time of the look, never only an elapsed figure, and
+the labels the request gave itself. `label(key, value)`, called on the thread that answers a
+request, attaches one: a handler that opens a database connection can label the request with that
+connection's server process id, which is the id the database lists the session under.
+
+    serving.label("db pid", conn.info.backend_pid)
 """
 from __future__ import annotations
 
@@ -54,6 +63,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime
 from typing import Callable, Optional, TypeVar
 
 T = TypeVar("T")
@@ -64,6 +74,31 @@ DEFAULT_CAP = 1 << 20
 #: seconds a stopping server waits for the requests it is answering
 DRAIN_S = 10.0
 
+# the labels each request in progress gave itself with `label`, by the id of the thread answering it. A thread
+# answers one request at a time, so its id names the request while it runs; the entry is made when the request's
+# thread starts and dropped when it ends
+_labels: dict[int, dict[str, object]] = {}
+_labels_lock = threading.Lock()
+
+
+def label(key: str, value: object) -> bool:
+    """Attach `key` = `value` to the request the calling thread is answering, for `running` and
+    `watch_running` to show beside it (a second call with the same key replaces the value). Called
+    on a thread that answers no request of a DrainingMixin server, it does nothing. Returns whether
+    the label was attached."""
+    with _labels_lock:
+        mine = _labels.get(threading.get_ident())
+        if mine is None:
+            return False
+        mine[str(key)] = value
+        return True
+
+
+def wall(t: float) -> str:
+    """A time.time() value as local time with milliseconds and its UTC offset
+    (2026-01-02T03:04:05.678+02:00), the form a database prints a session's start in."""
+    return datetime.fromtimestamp(t).astimezone().isoformat(timespec="milliseconds")
+
 
 class DrainingMixin:
     """Mix in before ThreadingHTTPServer: counts the requests in progress, so `drain` can wait for
@@ -73,9 +108,9 @@ class DrainingMixin:
     def __init__(self, *args, **kwargs):
         self._open = 0
         self._idle = threading.Condition()
-        # the thread answering each request in progress: its id -> (monotonic start, client address).
-        # Not `_threads`, which socketserver.ThreadingMixIn keeps for its own list of threads
-        self._answering: dict[int, tuple[float, object]] = {}
+        # the thread answering each request in progress: its id -> (monotonic start, client address, wall-clock
+        # start). Not `_threads`, which socketserver.ThreadingMixIn keeps for its own list of threads
+        self._answering: dict[int, tuple[float, object, float]] = {}
         super().__init__(*args, **kwargs)
 
     @property
@@ -94,35 +129,42 @@ class DrainingMixin:
 
     def process_request_thread(self, request, client_address):
         me = threading.get_ident()
+        with _labels_lock:
+            _labels[me] = {}
         with self._idle:
-            self._answering[me] = (time.monotonic(), client_address)
+            self._answering[me] = (time.monotonic(), client_address, time.time())
         try:
             super().process_request_thread(request, client_address)
         finally:
             with self._idle:
                 self._answering.pop(me, None)
+            with _labels_lock:
+                _labels.pop(me, None)
             self._done()
 
     def running(self, older_than: float = 0.0) -> list[dict]:
         """The requests in progress that have run at least `older_than` seconds, longest first. Each
         is a dict with `thread` (the thread's id), `started` (its time.monotonic() start, which with
-        `thread` names one request, since a thread's id is reused after it ends), `client` (the caller's
-        address), `seconds`, `request`
-        (the request line, None until the handler has read it) and `stack` (the thread's stack as
-        text, innermost call last, empty when the thread has just ended). A request counts from
-        the moment its thread starts."""
+        `thread` names one request, since a thread's id is reused after it ends), `started_at` (the
+        same start as a time.time() value, the wall clock other tools read), `client` (the caller's
+        address), `seconds`, `request` (the request line, None until the handler has read it),
+        `labels` (what the request attached with `label`, a new dict) and `stack` (the thread's
+        stack as text, innermost call last, empty when the thread has just ended). A request counts
+        from the moment its thread starts."""
         now = time.monotonic()
         with self._idle:
             threads = dict(self._answering)
+        with _labels_lock:
+            labels = {ident: dict(_labels.get(ident) or {}) for ident in threads}
         frames = sys._current_frames()
         out = []
-        for ident, (started, client) in threads.items():
+        for ident, (started, client, started_at) in threads.items():
             seconds = now - started
             if seconds < older_than:
                 continue
             frame = frames.get(ident)
-            out.append({"thread": ident, "started": started, "client": client, "seconds": round(seconds, 3),
-                        "request": _request_line(frame),
+            out.append({"thread": ident, "started": started, "started_at": started_at, "client": client,
+                        "seconds": round(seconds, 3), "request": _request_line(frame), "labels": labels[ident],
                         "stack": "".join(traceback.format_stack(frame)) if frame is not None else ""})
         return sorted(out, key=lambda r: -r["seconds"])
 
@@ -155,32 +197,42 @@ def _request_line(frame) -> Optional[str]:
     return None
 
 
+def _labels_text(labels: dict) -> str:
+    return "".join(f", {k} {v}" for k, v in labels.items())
+
+
 def watch_running(server, after_s: float, log: Callable[[str], None], *,
                   every_s: Optional[float] = None) -> threading.Event:
     """Log each request of `server` (a DrainingMixin server) that is still running `after_s` seconds
-    after it started, once, with its request line and stack, and log again when it ends. Looks every
-    `every_s` seconds (a quarter of `after_s` by default, at least 0.05). Runs on a daemon thread
-    and returns an Event, which stops it when set. A failure inside one look is logged and the
-    watch goes on. It only logs: it never ends a request, stops its thread or closes anything the
-    request holds, so a request it names answers as it would have without the watch."""
+    after it started, once, with its request line, the wall-clock time it started and the time of the
+    look, its labels (`label`) and its stack, and log again when it ends, with its start and its
+    labels as last seen. Looks every `every_s` seconds (a quarter of `after_s` by default, at least
+    0.05). Runs on a daemon thread and returns an Event, which stops it when set. A failure inside
+    one look is logged and the watch goes on. It only logs: it never ends a request, stops its
+    thread or closes anything the request holds, so a request it names answers as it would have
+    without the watch."""
     every = every_s if every_s is not None else max(after_s / 4, 0.05)
     stop = threading.Event()
-    # (thread id, start) -> request line, for each request logged as running and not yet seen to end
-    seen: dict[tuple[int, float], Optional[str]] = {}
+    # (thread id, start) -> (request line, wall-clock start, labels as last seen), for each request logged as running
+    # and not yet seen to end
+    seen: dict[tuple[int, float], tuple[Optional[str], float, dict]] = {}
 
     def look() -> None:
         for r in server.running(after_s):
             key = (r["thread"], r["started"])
             if key not in seen:
-                seen[key] = r["request"]
-                log(f"request still running after {r['seconds']:.1f}s: {r['request'] or 'request line not read yet'} "
-                    f"from {r['client']}, thread {r['thread']}, waiting in\n{r['stack'].rstrip()}")
+                log(f"request still running after {r['seconds']:.1f}s (started {wall(r['started_at'])}, "
+                    f"seen {wall(time.time())}): {r['request'] or 'request line not read yet'} "
+                    f"from {r['client']}, thread {r['thread']}{_labels_text(r['labels'])}, waiting in\n"
+                    f"{r['stack'].rstrip()}")
+            seen[key] = (r["request"], r["started_at"], r["labels"])
         with server._idle:
-            alive = {(ident, started) for ident, (started, _client) in server._answering.items()}
+            alive = {(ident, started) for ident, (started, _client, _at) in server._answering.items()}
         for key in [k for k in seen if k not in alive]:
-            request = seen.pop(key)
-            log(f"request that ran past {after_s:g}s has ended after about {time.monotonic() - key[1]:.1f}s: "
-                f"{request or 'request line not read'}, thread {key[0]}")
+            request, started_at, labels = seen.pop(key)
+            log(f"request that ran past {after_s:g}s has ended after about {time.monotonic() - key[1]:.1f}s "
+                f"(started {wall(started_at)}): {request or 'request line not read'}, thread {key[0]}"
+                f"{_labels_text(labels)}")
 
     def run() -> None:
         while not stop.wait(every):
