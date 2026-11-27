@@ -86,6 +86,10 @@ def hand_ask(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> HandAsk |
     for gap in [*_SENTENCES.finditer(plain), None]:
         end = gap.start() if gap else len(plain)
         found = pattern.search(plain[at:end])
+        # a bare verb that ends in a question mark ("Open the PR?") is the asker offering its own next act, and a
+        # question to the reader about it is not an instruction. "Could you press Decline?" still is one.
+        if found and plain[at:end].rstrip().endswith("?") and not re.match(_ASKING, found.group(0).lstrip(), re.I):
+            found = None
         if found and end > at:
             return HandAsk(sentence=(text or "")[starts[at]:ends[end - 1]].strip(),
                            verb=" ".join(found.group("verb").split()))

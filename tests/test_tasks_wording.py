@@ -89,3 +89,11 @@ def test_the_verb_is_given_as_written_with_single_spaces():
 def test_a_quotation_at_the_start_of_the_sentence_found_is_kept():
     said = 'The tool said "done". "Allow" then tap it.'
     assert by_hand(said) == '"Allow" then tap it.'
+
+
+def test_a_question_that_offers_the_askers_own_act_is_not_an_ask():
+    for text in ("Five reply fixes, before and after. Open the PR?", "Open the PR?", "Install the update now?"):
+        assert hand_ask(text) is None, text
+    for text in ("Could you press Decline?", "Can you open the page?", "Please open the page?"):
+        assert hand_ask(text), text
+    assert hand_ask("Open the PR.") is not None
