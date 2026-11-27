@@ -3,12 +3,14 @@ connection is retried while any other failure is not."""
 import errno
 import json
 import os
+import re
 import signal
 import socket
 import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -240,6 +242,10 @@ class Held(BaseHTTPRequestHandler):
     gate = threading.Event()
 
     def do_GET(self):
+        if self.path == "/hold-labelled":
+            Held.labelled = [serving.label("db pid", 4242), serving.label("db pid", 4243),
+                             serving.label("step", "reading")]
+            Held.gate.wait(10)
         if self.path == "/hold":
             Held.gate.wait(10)
         if self.path == "/boom":
@@ -385,3 +391,67 @@ def test_watch_running_goes_on_after_a_look_that_failed(held):
         assert [m for m in logs if "one look failed: RuntimeError: no frames" in m]
     finally:
         stop.set()
+
+
+# ---------------------------------------------------------------------------------------
+# the join: a watch line carries the request's wall-clock start, the time of the look and the request's own labels
+# ---------------------------------------------------------------------------------------
+
+def test_a_label_belongs_to_the_request_its_thread_answers(held):
+    port = held.server_address[1]
+    assert serving.label("db pid", 1) is False   # this thread answers no request, so nothing is attached
+    before = time.time()
+    asker, got = ask_in_background(port, "/hold-labelled")
+    rows = until(lambda: [r for r in held.running() if r["labels"]])
+    assert len(rows) == 1
+    r = rows[0]
+    assert Held.labelled == [True, True, True]
+    assert r["labels"] == {"db pid": 4243, "step": "reading"}   # a second call with a key replaces its value
+    assert before <= r["started_at"] <= time.time()
+    r["labels"]["db pid"] = 0                                 # running() hands out a copy
+    assert held.running()[0]["labels"]["db pid"] == 4243
+    Held.gate.set()
+    asker.join(5)
+    assert got["answer"] == (200, b"done")
+    assert until(lambda: held.running() == [])
+    # the next request starts with no labels, whichever thread id it is given
+    Held.gate = threading.Event()
+    asker, got = ask_in_background(port, "/hold")
+    rows = until(lambda: held.running())
+    assert rows[0]["labels"] == {}
+    Held.gate.set()
+    asker.join(5)
+    assert serving._labels == {} or until(lambda: serving._labels == {})
+
+
+def test_watch_running_prints_the_start_the_look_and_the_labels(held):
+    port = held.server_address[1]
+    logs = []
+    before = time.time()
+    stop = serving.watch_running(held, after_s=0.2, log=logs.append, every_s=0.05)
+    try:
+        asker, got = ask_in_background(port, "/hold-labelled")
+        waiting = until(lambda: [m for m in logs if "still running" in m])
+        assert len(waiting) == 1
+        line = waiting[0].splitlines()[0]
+        m = re.search(r"\(started (\S+), seen (\S+)\): GET /hold-labelled HTTP/1.1 from .*, thread \d+, "
+                      r"db pid 4243, step reading, waiting in$", line)
+        assert m, line
+        started, seen = (datetime.fromisoformat(x).timestamp() for x in m.groups())
+        assert before - 0.01 <= started <= seen <= time.time() + 0.01
+        assert seen - started >= 0.2                      # the look came after the bound, and says when
+        Held.gate.set()
+        asker.join(5)
+        ended = until(lambda: [m for m in logs if "has ended" in m])
+        assert len(ended) == 1
+        assert f"(started {m.group(1)}): GET /hold-labelled HTTP/1.1, thread " in ended[0]
+        assert ended[0].endswith(", db pid 4243, step reading")
+    finally:
+        stop.set()
+
+
+def test_wall_prints_local_time_with_milliseconds_and_its_offset():
+    t = 1767316245.678
+    text = serving.wall(t)
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d", text), text
+    assert abs(datetime.fromisoformat(text).timestamp() - t) < 0.001
