@@ -90,6 +90,13 @@ def hand_ask(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> HandAsk |
         # question to the reader about it is not an instruction. "Could you press Decline?" still is one.
         if found and plain[at:end].rstrip().endswith("?") and not re.match(_ASKING, found.group(0).lstrip(), re.I):
             found = None
+        # a listed verb that stands alone as a heading or label ("Open, each with a date:", "Open:") names a
+        # status and asks nothing. An instruction takes an object ("Open the page"), or is asked of the reader.
+        if found and not re.match(_ASKING, found.group(0).lstrip(), re.I):
+            cut = at + found.end("verb")
+            tail = (text or "")[starts[cut]:ends[end - 1]] if cut < len(starts) and end > 0 else ""
+            if re.match(r"\s*[,:;]", tail) or not tail.strip():   # a quotation after the verb is its object
+                found = None
         if found and end > at:
             return HandAsk(sentence=(text or "")[starts[at]:ends[end - 1]].strip(),
                            verb=" ".join(found.group("verb").split()))

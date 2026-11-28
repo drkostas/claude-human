@@ -97,3 +97,10 @@ def test_a_question_that_offers_the_askers_own_act_is_not_an_ask():
     for text in ("Could you press Decline?", "Can you open the page?", "Please open the page?"):
         assert hand_ask(text), text
     assert hand_ask("Open the PR.") is not None
+
+
+def test_a_verb_used_as_a_label_is_not_an_ask():
+    for text in ("Open, each with a date:", "Open: the list below", "Still waiting. Open, each with a date:\n1. a\n2. b"):
+        assert hand_ask(text) is None, text
+    for text in ("Open the WFM page", "Open WFM", "Please open, then wait", "Please sign in", "Could you open, please?"):
+        assert hand_ask(text), text
