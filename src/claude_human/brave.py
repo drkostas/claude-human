@@ -752,7 +752,9 @@ def run(url: str, code: str, *, wait_for: str = READY, timeout: float = 40, keep
     """Run `code` on `url` in a window of the browser. Returns {"result", "window", "yabai",
     "reused"}. The script may be async: it assigns its answer to window.__claude_r (a string); when it
     does not, the value of its last expression is the result. A window this opened is closed unless
-    `keep_open`; one passed as `window` is never closed. Raises TimeoutError when the page or the
+    `keep_open`. One passed as `window` is closed at the end of a run that succeeds, without `keep_open`,
+    only when a kept run made it (the last step of a flow of several), and its record goes with it; any
+    other window passed in is never closed. Raises TimeoutError when the page or the
     script does not answer in `timeout` seconds.
 
     A window that is reused keeps its previous page until the new one arrives, so the run first
@@ -878,11 +880,31 @@ def _refuse_if_gone(window: str, app: str) -> None:
 CLOSE_GRACE = 5.0
 
 
+def _record_of(window: str, state: Path) -> Path | None:
+    """The record file of the kept run that made `window`, or None when no kept run did."""
+    try:
+        files = sorted(state.glob("*.json"))
+    except OSError:
+        return None
+    for f in files:
+        try:
+            if str(json.loads(f.read_text()).get("window")) == str(window):
+                return f
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
+
+
 def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state, blocker) -> dict:
     """`run`'s body, under its deadline."""
     global _deadline
     owned, yid, reused = window is None, None, False
     given = window is not None
+    # a window a kept run made, given back with `window` and no keep_open, is that flow's last step:
+    # it is closed at the end, and its record goes with it. A window the caller did not get from a kept
+    # run is never closed, whatever opened it.
+    ending = _record_of(window, state) if (given and not keep_open) else None
+    ok = False
     if owned:
         mine = kept(key, state=state, app=app) if (keep_open and key) else None
         if mine:
@@ -923,13 +945,16 @@ def _run_within(url, code, wait_for, timeout, keep_open, window, key, app, state
                 _ran_out(blocker, wait_for, timeout, error)
             time.sleep(0.5)
         result = _answer(window, code, app, blocker, timeout)
+        ok = True
         return {"result": result, "window": window, "yabai": yid, "reused": reused}
     finally:
         # behind a prompt the close would only wait out its own timeout too; past the deadline it
         # gets CLOSE_GRACE seconds of its own
-        if owned and not keep_open and not (blocker or blocked_by)():
+        if (owned and not keep_open or (ending and ok)) and not (blocker or blocked_by)():
             _deadline = None
             osa(f'tell application "{app}" to close (first window whose id is {window})', CLOSE_GRACE)
+            if ending:
+                ending.unlink(missing_ok=True)
 
 
 #: what the page answers, followed by the parser's message, for a script that does not parse
@@ -937,6 +962,12 @@ UNPARSED = "__claude_unparsed__"
 
 #: added to the parser's message when a script parses as a function body and not as a script
 AS_BODY_ONLY = "it parses as a function body but not as a script, and a top-level return is the usual cause"
+
+
+#: what the page answers at once for a script that awaits, whose own answer arrives later, and what
+#: the answer begins with when the awaiting script threw
+ASYNC = "__claude_async__"
+ASYNC_ERROR = "__claude_async_error__"
 
 
 def scoped(code: str) -> str:
@@ -962,8 +993,27 @@ def scoped(code: str) -> str:
     not a parse failure and is left to propagate as before. A script that starts with "use strict"
     loses that directive inside the block, but the first reading keeps it (a function body has a
     directive prologue too), so a syntax error only strict mode has (`delete x`) is still refused
-    there."""
-    return ('(function(s){try{new Function(s);}catch(e){return "' + UNPARSED + '"+e;}'
+    there.
+
+    A script that awaits (`await` at its top level, which a script cannot hold) runs as the body of
+    an async function, so one run can type, wait and read back. Only a script that does not parse
+    as a script and does parse as an async function body takes this path, and `await` must be in
+    its text, so every script that ran before runs as it did, and one with a top-level `return`
+    and no `await` is still refused. The page answers ASYNC at once, and the script's answer is
+    what it returns, or what it set as window.__claude_r (a script that names window.__claude_r
+    and returns nothing leaves the answer to itself). `var` and `function` declarations stay
+    inside the body here. A throw ends the wait with ASYNC_ERROR and its message. A script whose
+    only `await` is written as a call, `await (x)`, reads as a call of a function named await, which a
+    script may hold, so it is not an awaiting script. Write `await x`, or `return await (x)`."""
+    return ('(function(s){try{new Function(s);}catch(e){'
+            'var AF=null;if(/\\bawait\\b/.test(s)){try{AF=(async function(){}).constructor;new AF(s);}'
+            'catch(e2){AF=null;}}'
+            'if(!AF)return "' + UNPARSED + '"+e;'
+            '(async function(){try{var v=await (new AF(s))();'
+            'if(window.__claude_r===undefined&&(v!==undefined||s.indexOf("__claude_r")<0))'
+            'window.__claude_r=v===undefined?"":String(v);}'
+            'catch(x){window.__claude_r="' + ASYNC_ERROR + '"+(x&&x.message?x.message:String(x));}})();'
+            'return "' + ASYNC + '";}'
             'try{(0,eval)("if(0){\\n"+s+"\\n}");}catch(e){return "' + UNPARSED + '"+e+'
             + json.dumps(" (" + AS_BODY_ONLY + ")") + ';}'
             'return (0,eval)(s);})(' + json.dumps(code) + ')')
@@ -978,11 +1028,14 @@ def _answer(window: str, code: str, app: str, blocker, timeout: float, tab: str 
     last = js_in(window, scoped(code), app, **on)
     if last.startswith(UNPARSED):
         raise ValueError(f"the script does not parse, so nothing of it ran ({last[len(UNPARSED):]})")
+    awaiting = last == ASYNC
     while True:
         r = js_in(window, 'window.__claude_r === undefined ? "__PENDING__" : String(window.__claude_r)', app, **on)
         if r != "__PENDING__":
+            if r.startswith(ASYNC_ERROR):
+                raise RuntimeError(f"the script threw ({r[len(ASYNC_ERROR):]})")
             return r
-        if "window.__claude_r" not in code:
+        if "window.__claude_r" not in code and not awaiting:
             return last
         if time.monotonic() >= _deadline:
             _ran_out(blocker, "window.__claude_r", timeout)
