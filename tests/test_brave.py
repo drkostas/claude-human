@@ -1,5 +1,9 @@
 """Working in the person's own browser: tab listing, window reuse, and yabai ids at birth."""
 import json
+import shutil
+import subprocess
+
+import pytest
 
 from claude_human import brave
 
@@ -1192,3 +1196,107 @@ def test_the_guard_refuses_every_write_to_a_password_input_and_only_while_on():
     assert out["pw"] == "" and out["pwtype"] == "password", out          # the input is as it was
     assert out["refused"].startswith(brave.TAB_RULE), out
     assert out["off"] == "ran" and out["after"] == "later", out         # switched off, `run` is untouched
+
+
+# the last step of a flow of several, and a script that waits
+
+def _closing(monkeypatch, tab):
+    _one_window(monkeypatch, tab)
+    closed = []
+    inner = tab.osa
+
+    def osa(script, *a, **k):
+        if "close (first window" in script:
+            closed.append(script)
+        return inner(script, *a, **k)
+    monkeypatch.setattr(brave, "osa", osa)
+    return closed
+
+
+def test_a_window_a_kept_run_made_is_closed_by_the_run_that_ends_the_flow(monkeypatch, tmp_path):
+    # the usage text says a run closes its window unless --keep-open, and a --window run left it open
+    tab = FakeTab("https://app.example.org/", {"https://app.example.org/": "done"})
+    closed = _closing(monkeypatch, tab)
+    brave.keep("claude-a", "7", None, state=tmp_path)
+    out = brave.run("-", "1", window="7", state=tmp_path)
+    assert out["result"] == "done"
+    assert len(closed) == 1 and "window whose id is 7" in closed[0]
+    assert not (tmp_path / "claude-a.json").exists(), "the record of a closed window goes with it"
+
+
+def test_a_window_no_kept_run_made_is_never_closed(monkeypatch, tmp_path):
+    tab = FakeTab("https://app.example.org/", {"https://app.example.org/": "done"})
+    closed = _closing(monkeypatch, tab)
+    brave.keep("claude-a", "9", None, state=tmp_path)             # another window's record
+    brave.run("-", "1", window="7", state=tmp_path)
+    assert closed == [] and (tmp_path / "claude-a.json").exists()
+
+
+def test_a_kept_window_stays_when_the_run_keeps_it_or_fails(monkeypatch, tmp_path):
+    tab = FakeTab("https://app.example.org/", {"https://app.example.org/": "done"})
+    closed = _closing(monkeypatch, tab)
+    brave.keep("claude-a", "7", None, state=tmp_path)
+    brave.run("-", "1", window="7", keep_open=True, state=tmp_path)
+    assert closed == []
+    bad = FakeTab("https://app.example.org/", {"https://app.example.org/": brave.UNPARSED + "SyntaxError"})
+    closed = _closing(monkeypatch, bad)
+    with pytest.raises(ValueError):
+        brave.run("-", "1 +", window="7", state=tmp_path)
+    assert closed == [] and (tmp_path / "claude-a.json").exists(), "a failed last step leaves the window to retry"
+
+
+def _engine(codes):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    js = "const vm = require('vm'); const ctx = vm.createContext({setTimeout, Promise}); vm.runInContext('var window = this;', ctx);\n"
+    js += "(async () => {\n"
+    for code in codes:
+        js += (f"{{ ctx.__claude_r = undefined; const a = vm.runInContext({json.dumps(brave.scoped(code))}, ctx);\n"
+               "await new Promise(r => setTimeout(r, 60));\n"
+               "console.log(JSON.stringify([a, ctx.__claude_r === undefined ? null : ctx.__claude_r])); }\n")
+    js += "})();\n"
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30, check=True).stdout
+    return [json.loads(line) for line in out.splitlines()]
+
+
+def test_a_script_that_awaits_runs_to_its_end_in_one_run():
+    got = _engine(["const t = 'ab'; await new Promise(r => setTimeout(r, 10)); return t + 'c';",
+                   "window.__claude_r = 'set'; await 1;",
+                   "window.__claude_r = 'x'; await 1; return 'y';",
+                   "await 1; throw new Error('no editor');",
+                   "await 1; return;",
+                   "await 1; setTimeout(() => { window.__claude_r = 'later'; }, 10);"])
+    assert got[0] == [brave.ASYNC, "abc"]
+    assert got[1] == [brave.ASYNC, "set"]                        # the script's own answer stands
+    assert got[2] == [brave.ASYNC, "x"]
+    assert got[3][0] == brave.ASYNC and got[3][1] == brave.ASYNC_ERROR + "no editor"
+    assert got[4] == [brave.ASYNC, ""]
+    assert got[5] == [brave.ASYNC, "later"]                      # it names __claude_r and returns nothing
+
+
+def test_every_script_that_ran_before_still_runs_as_it_did():
+    got = _engine(["1 + 1", "var await = 4; await + 1", "'await'", "window.__claude_r = 'a'",
+                   "return 1;", "await 1; return 1; }", "const await = 3;"])
+    assert got[0] == [2, None]
+    assert got[1] == [5, None]                                    # `await` as a name is still a name
+    assert got[2] == ["await", None]                              # and as a word in a string
+    assert got[4][0].startswith(brave.UNPARSED) and brave.AS_BODY_ONLY in got[4][0]   # a return alone: refused
+    assert got[5][0].startswith(brave.UNPARSED)                   # neither reading takes it
+    assert got[6] == [None, None]
+
+
+def test_the_answer_of_a_script_that_awaits_is_waited_for(monkeypatch):
+    monkeypatch.setattr(brave, "_deadline", time.monotonic() + 30)
+    seen = iter([brave.ASYNC, "__PENDING__", "__PENDING__", "typed"])
+
+    def js_in(window, code, app=None, **k):
+        if code.startswith("window.__claude_r = undefined"):
+            return ""
+        return next(seen)
+    monkeypatch.setattr(brave, "js_in", js_in)
+    monkeypatch.setattr(brave.time, "sleep", lambda s: None)
+    assert brave._answer("7", "await 1", brave.APP, lambda: None, 5) == "typed"
+    seen = iter([brave.ASYNC, brave.ASYNC_ERROR + "no editor"])
+    with pytest.raises(RuntimeError, match="no editor"):
+        brave._answer("7", "await 1", brave.APP, lambda: None, 5)
