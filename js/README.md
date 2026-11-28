@@ -112,6 +112,18 @@ const token = buildSecret("apiToken");   // undefined on the web, or when the bu
 
 At prebuild it writes each secret into `android/app/src/main/res/values/build_secrets.xml` (mode 0600, kept from the resource shrinker), and a small Expo module of this package reads it by name. The options name environment variables, never values, so the app config, which an exported update carries, holds no secret. A variable that is unset or empty fails the prebuild. The secrets are still part of the APK, as a BuildConfig field would be, so give each one only what that build needs.
 
+### A token for the update server
+
+An update server that wants a token from the app gets it from expo-updates' request headers. Those come from `updates.requestHeaders` in the app config, which an exported update carries and which the fingerprint of the runtime version reads. A token there is published with every update, and gives every build its own runtime version. Replacing the header at run time with `Updates.setUpdateRequestHeadersOverride` has its own cost. expo-updates keeps the override and from then on launches only the updates it fetched with the same headers, while the update embedded in the APK keeps the build's own. So after the first start every start is an emergency launch of the embedded code.
+
+`updatesRequestHeaders` writes the header into the Android manifest instead, where expo-updates reads the build's own headers.
+
+```json
+["@drkostas/expo-ntfy/build-secrets", { "updatesRequestHeaders": { "Authorization": "Bearer ${MY_UPDATE_TOKEN}" } }]
+```
+
+Each value is a template, and each `${NAME}` in it is filled from that environment variable at prebuild. A variable that is unset or empty fails the prebuild, and so does a template that names no variable (a value that is no secret belongs in `updates.requestHeaders`). Declare the same header in `updates.requestHeaders` with a stand-in value, so the app config says the header exists. The manifest's value replaces the stand-in and keeps the other headers declared there. It is written after expo-updates' own step, so the order of the plugins does not matter. The manifest then holds the token, so it is written with mode 0600 and the generated `android` folder must stay out of version control. Every update then launches with the same headers as the embedded one, and an app that set an override before should clear it with `Updates.setUpdateRequestHeadersOverride(null)`. Android only.
+
 ## Forwarding other apps' notifications
 
 A second config plugin, `@drkostas/expo-ntfy/notification-relay`, adds an Android notification listener that sends each new notification of the apps you name to an HTTPS endpoint as JSON. An assistant can then read messages from apps that offer no API, as they arrive, while the phone is locked and asleep.
