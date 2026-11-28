@@ -42,6 +42,9 @@ _ASKING = r"(?:you\s+(?:need|have)\s+to|you\s+(?:should|must|can)|can\s+you|coul
 #: nouns that make "open" an adjective, so "Open items, each with its date" names a list and asks nothing
 _OPEN_ADJECTIVE = r"open\s+(?:items?|questions?|tasks?|issues?|problems?|points?|tickets?|bugs?|threads?|work|prs?|pull\s+requests?)\b"
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|`[^`]*`")
+#: past-tense words that say what happened, which an instruction never does
+_RESULT = re.compile(r"\b(?:passed|failed|returned|showed|took|gave|ended|finished|completed|worked|printed|answered|"
+                     r"read|ran|was|were|had)\b", re.I)
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
@@ -90,6 +93,13 @@ def hand_ask(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> HandAsk |
         # question to the reader about it is not an instruction. "Could you press Decline?" still is one.
         if found and plain[at:end].rstrip().endswith("?") and not re.match(_ASKING, found.group(0).lstrip(), re.I):
             found = None
+        # a sentence that opens on a verb as a participle and then reports a result ("Run from this Mac against
+        # staging, both test files passed 19 of 19") describes what the writer did and asks nothing. An imperative
+        # does not go on to say what happened, so a past-tense result verb after the first comma marks a report.
+        if found and not re.match(_ASKING, found.group(0).lstrip(), re.I):
+            rest = plain[at:end][found.end("verb"):]
+            if "," in rest and _RESULT.search(rest.split(",", 1)[1]):
+                found = None
         # a listed verb that stands alone as a heading or label ("Open, each with a date:", "Open:") names a
         # status and asks nothing. An instruction takes an object ("Open the page"), or is asked of the reader.
         if found and not re.match(_ASKING, found.group(0).lstrip(), re.I):

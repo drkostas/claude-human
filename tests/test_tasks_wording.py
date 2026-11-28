@@ -104,3 +104,10 @@ def test_a_verb_used_as_a_label_is_not_an_ask():
         assert hand_ask(text) is None, text
     for text in ("Open the WFM page", "Open WFM", "Please open, then wait", "Please sign in", "Could you open, please?"):
         assert hand_ask(text), text
+
+
+def test_a_report_that_opens_on_a_verb_is_not_an_ask():
+    assert hand_ask("Run from this Mac against staging at the same load, both test files passed 19 of 19") is None
+    for text in ("Run the tests, then press Decline", "Run it again and tell me what it printed",
+                 "Open the page, then tap Send"):
+        assert hand_ask(text), text
