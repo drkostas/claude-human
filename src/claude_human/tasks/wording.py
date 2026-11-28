@@ -42,6 +42,9 @@ _ASKING = r"(?:you\s+(?:need|have)\s+to|you\s+(?:should|must|can)|can\s+you|coul
 #: nouns that make "open" an adjective, so "Open items, each with its date" names a list and asks nothing
 _OPEN_ADJECTIVE = r"open\s+(?:items?|questions?|tasks?|issues?|problems?|points?|tickets?|bugs?|threads?|work|prs?|pull\s+requests?)\b"
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|`[^`]*`")
+#: past-tense words that say what happened, which an instruction never does
+_RESULT = re.compile(r"\b(?:passed|failed|returned|showed|took|gave|ended|finished|completed|worked|printed|answered|"
+                     r"read|ran|was|were|had)\b", re.I)
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
@@ -86,6 +89,24 @@ def hand_ask(text: str | None, verbs: tuple[str, ...] = HAND_VERBS) -> HandAsk |
     for gap in [*_SENTENCES.finditer(plain), None]:
         end = gap.start() if gap else len(plain)
         found = pattern.search(plain[at:end])
+        # a bare verb that ends in a question mark ("Open the PR?") is the asker offering its own next act, and a
+        # question to the reader about it is not an instruction. "Could you press Decline?" still is one.
+        if found and plain[at:end].rstrip().endswith("?") and not re.match(_ASKING, found.group(0).lstrip(), re.I):
+            found = None
+        # a sentence that opens on a verb as a participle and then reports a result ("Run from this Mac against
+        # staging, both test files passed 19 of 19") describes what the writer did and asks nothing. An imperative
+        # does not go on to say what happened, so a past-tense result verb after the first comma marks a report.
+        if found and not re.match(_ASKING, found.group(0).lstrip(), re.I):
+            rest = plain[at:end][found.end("verb"):]
+            if "," in rest and _RESULT.search(rest.split(",", 1)[1]):
+                found = None
+        # a listed verb that stands alone as a heading or label ("Open, each with a date:", "Open:") names a
+        # status and asks nothing. An instruction takes an object ("Open the page"), or is asked of the reader.
+        if found and not re.match(_ASKING, found.group(0).lstrip(), re.I):
+            cut = at + found.end("verb")
+            tail = (text or "")[starts[cut]:ends[end - 1]] if cut < len(starts) and end > 0 else ""
+            if re.match(r"\s*[,:;]", tail) or not tail.strip():   # a quotation after the verb is its object
+                found = None
         if found and end > at:
             return HandAsk(sentence=(text or "")[starts[at]:ends[end - 1]].strip(),
                            verb=" ".join(found.group("verb").split()))
